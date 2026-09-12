@@ -2,11 +2,12 @@
 
 一个面向“手机 + Termius SSH 端口转发 + 远程 ComfyUI”的极简中文 Android 客户端。
 
-## V1 功能
+## V1.1 功能
 
 - 输入端口或地址，例如 `8188` / `127.0.0.1:8188` / `http://127.0.0.1:8188`
 - 一键测试 ComfyUI 连接并记住地址
-- 导入 **ComfyUI API 格式 JSON 工作流**
+- 导入 **普通 ComfyUI JSON 工作流或 API JSON 工作流**
+- 普通工作流会读取远程 ComfyUI `/object_info` 自动转换为可执行 API prompt
 - 自动识别 `LoadImage` 输入节点；多个输入节点时让用户选择
 - 从手机选择输入图片并上传到 ComfyUI `input`
 - 一键提交工作流并轮询生成状态
@@ -23,7 +24,7 @@
    - Local: `127.0.0.1:8188`
    - Remote: `127.0.0.1:8188`
 3. 手机浏览器原本能通过这个本地转发地址打开 ComfyUI。
-4. 工作流使用 ComfyUI 的 **API 格式**导出。普通 UI 工作流（顶层含 `nodes` 数组）会被 App 拒绝并提示重新导出。
+4. 普通 ComfyUI `Save` JSON 和 `Export Workflow (API)` JSON 都可以使用；普通 JSON 转换时要求电脑端已安装对应自定义节点。
 
 > 建议始终使用 SSH/Tailscale 隧道，不要把 ComfyUI 的 8188 端口直接暴露到公网。
 
@@ -70,7 +71,8 @@ V1 首选本地 ComfyUI 传统接口：
 
 ## 已知限制（V1）
 
-- 只自动替换一个选定的 `LoadImage` 节点；复杂多输入工作流会让你选择其中一个节点。
+- 只自动替换一个选定的图片加载节点；复杂多输入工作流会让你选择其中一个节点。
+- 普通工作流自动转换采用 `/object_info` + `widgets_values` 映射；少数前端专用节点、子图或特殊第三方节点仍可能要求先在 ComfyUI 中展开/导出 API 格式。
 - 不提供节点参数编辑器，保持界面极简。
 - 图库最多加载最近约 60 张图片，避免手机内存占用过高。
 - 本 App 不负责建立 SSH 隧道；隧道仍由 Termius 负责。
