@@ -22,7 +22,8 @@ import java.util.Set;
 /**
  * Converts a normal ComfyUI UI/LiteGraph workflow (nodes + links) into /prompt API format.
  *
- * V1.4 strengthens ordinary UI workflow conversion:
+ * V1.6 keeps the strengthened ordinary UI workflow conversion:
+ * - supports both legacy and V3 /object_info COMBO schemas;
  * - fills missing required combo widgets from /object_info defaults/options;
  * - validates combo values against the currently running ComfyUI;
  * - fuzzy-matches renamed model files (for example old .sft names to current .safetensors names);
@@ -598,17 +599,30 @@ public final class WorkflowUiConverter {
             if (raw instanceof JSONArray) {
                 JSONArray a = (JSONArray) raw;
                 Object first = a.opt(0);
+                JSONObject opts = a.optJSONObject(1);
+
+                // ComfyUI currently exposes combo widgets in two shapes:
+                // 1) legacy: [["euler", "heun", ...], {...}]
+                // 2) V3/new schema: ["COMBO", {"options": ["euler", "heun", ...], ...}]
+                // The same graph can contain both forms at once.
                 if (first instanceof JSONArray) {
                     combo = true;
                     widget = true;
                     type = "COMBO";
-                    JSONArray opts = (JSONArray) first;
-                    for (int i = 0; i < opts.length(); i++) allowed.add(opts.opt(i));
+                    JSONArray legacyOptions = (JSONArray) first;
+                    for (int i = 0; i < legacyOptions.length(); i++) allowed.add(legacyOptions.opt(i));
                 } else {
                     type = String.valueOf(first);
+                    JSONArray modernOptions = opts == null ? null : opts.optJSONArray("options");
+                    if ("COMBO".equalsIgnoreCase(type) || modernOptions != null) {
+                        combo = true;
+                        widget = true;
+                        if (modernOptions != null) {
+                            for (int i = 0; i < modernOptions.length(); i++) allowed.add(modernOptions.opt(i));
+                        }
+                    }
                 }
 
-                JSONObject opts = a.optJSONObject(1);
                 boolean forceInput = opts != null && opts.optBoolean("forceInput", false);
                 String upper = type.toUpperCase(Locale.ROOT);
                 if (!forceInput && (combo || upper.equals("INT") || upper.equals("FLOAT") || upper.equals("NUMBER") ||
