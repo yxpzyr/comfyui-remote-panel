@@ -70,7 +70,7 @@ public class MainActivity extends Activity {
 
         TextView title = text("ComfyUI 远程面板", 25, true);
         root.addView(title);
-        TextView subtitle = text("Termius 负责隧道，这里只负责工作流、输入图与生成结果。", 13, false);
+        TextView subtitle = text("V1.3 · Termius 负责隧道，这里只负责工作流、输入图与生成结果。", 13, false);
         subtitle.setTextColor(Color.DKGRAY);
         subtitle.setPadding(0, dp(4), 0, dp(16));
         root.addView(subtitle);
@@ -171,7 +171,7 @@ public class MainActivity extends Activity {
             startActivity(new Intent(this, GalleryActivity.class));
         });
 
-        TextView tip = text("提示：工作流需使用 API 格式 JSON；App 不会打开浏览器，也不会暴露远程 ComfyUI 端口。", 12, false);
+        TextView tip = text("提示：普通 ComfyUI JSON 与 API JSON 都可以直接使用；普通工作流会读取远程 /object_info 自动转换。", 12, false);
         tip.setTextColor(Color.GRAY);
         tip.setPadding(0, dp(16), 0, 0);
         root.addView(tip);
@@ -242,16 +242,30 @@ public class MainActivity extends Activity {
     }
 
     private void loadWorkflow(Uri uri) {
+        workflowState.setText("当前：正在读取并解析工作流…");
+        final String server = currentServer();
         pool.submit(() -> {
             try {
-                String raw = readText(uri, 16 * 1024 * 1024);
-                JSONObject prompt = WorkflowUtils.extractPromptObject(new JSONObject(raw));
+                String raw = readText(uri, 32 * 1024 * 1024);
+                JSONObject json = new JSONObject(raw);
+                boolean uiFormat = json.optJSONArray("nodes") != null ||
+                        (json.optJSONObject("workflow") != null && json.optJSONObject("workflow").optJSONArray("nodes") != null);
+                if (uiFormat) setStatus("正在读取远程节点信息并转换普通工作流…");
+                JSONObject prompt = uiFormat
+                        ? WorkflowUiConverter.toApiPrompt(json, server)
+                        : WorkflowUtils.extractPromptObject(json);
                 List<WorkflowUtils.NodeChoice> nodes = WorkflowUtils.findLoadImageNodes(prompt);
-                if (nodes.isEmpty()) throw new Exception("工作流中没有检测到可替换的 LoadImage 输入节点。V1 需要至少一个带 image 输入的 LoadImage 节点。");
+                if (nodes.isEmpty()) throw new Exception("工作流已经读取成功，但没有检测到可替换的图片加载节点（带 image 文件名输入）。请确认工作流中存在 LoadImage 或兼容图片加载节点。");
                 String name = getDisplayName(uri);
-                runOnUiThread(() -> applyWorkflow(prompt, name, nodes));
+                runOnUiThread(() -> {
+                    applyWorkflow(prompt, name, nodes);
+                    statusText.setText(uiFormat ? "状态：普通 JSON 已自动转换，可直接生成" : "状态：API 工作流已载入");
+                });
             } catch (Exception e) {
-                runOnUiThread(() -> showError("工作流读取失败", e));
+                runOnUiThread(() -> {
+                    workflowState.setText("当前：读取失败，请重新选择");
+                    showError("工作流读取失败", e);
+                });
             }
         });
     }
@@ -303,7 +317,7 @@ public class MainActivity extends Activity {
     }
 
     private void startGeneration() {
-        if (workflowPrompt == null) { toast("请先上传 API 工作流 JSON"); return; }
+        if (workflowPrompt == null) { toast("请先上传工作流 JSON"); return; }
         if (selectedImageNodeId == null || selectedImageNodeId.isEmpty()) { toast("请选择工作流输入节点"); return; }
         if (inputUri == null) { toast("请先选择输入图片"); return; }
         saveAddress();

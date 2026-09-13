@@ -19,7 +19,15 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-/** Converts a normal ComfyUI UI/LiteGraph workflow (nodes + links) into /prompt API format. */
+/**
+ * Converts a normal ComfyUI UI/LiteGraph workflow (nodes + links) into /prompt API format.
+ *
+ * V1.2 adds defensive recovery for ordinary workflow JSON:
+ * - fills missing required combo widgets from /object_info defaults/options;
+ * - validates combo values against the currently running ComfyUI;
+ * - fuzzy-matches renamed model files (for example old .sft names to current .safetensors names);
+ * - tolerates widget-order drift between a saved workflow and the current node definition.
+ */
 public final class WorkflowUiConverter {
     private WorkflowUiConverter() {}
 
@@ -30,7 +38,7 @@ public final class WorkflowUiConverter {
         JSONArray nodes = root.optJSONArray("nodes");
         JSONArray links = root.optJSONArray("links");
         if (nodes == null || links == null) {
-            throw new JSONException("无法识别工作流：既不是 API 格式，也没有普通工作流需要的 nodes / links。 ");
+            throw new JSONException("无法识别工作流：既不是 API 格式，也没有普通工作流需要的 nodes / links。");
         }
 
         JSONObject objectInfo = fetchObjectInfo(serverBase);
@@ -86,7 +94,7 @@ public final class WorkflowUiConverter {
 
             NodeSchema schema = NodeSchema.from(def);
             applyWidgetValues(node, schema, apiInputs, connectedNames);
-            applyDefaults(schema, apiInputs, connectedNames);
+            normalizeAndFillRequired(schema, apiInputs, connectedNames);
 
             prompt.put(id, apiNode);
         }
@@ -99,7 +107,7 @@ public final class WorkflowUiConverter {
             sb.append("\n请确认电脑端已经安装并启用了这些自定义节点；如果它们属于前端专用/子图节点，则需要先在 ComfyUI 中展开或导出 API 工作流。");
             throw new JSONException(sb.toString());
         }
-        if (prompt.length() == 0) throw new JSONException("转换后没有可执行节点。 ");
+        if (prompt.length() == 0) throw new JSONException("转换后没有可执行节点。");
         return prompt;
     }
 
@@ -216,6 +224,7 @@ public final class WorkflowUiConverter {
         return null;
     }
 
+    /** Maps widgets_values defensively. Saved UI widget order can drift across ComfyUI/custom-node versions. */
     private static void applyWidgetValues(JSONObject node, NodeSchema schema, JSONObject apiInputs, Set<String> connected) throws JSONException {
         Object w = node.opt("widgets_values");
         if (w instanceof JSONObject) {
@@ -223,41 +232,159 @@ public final class WorkflowUiConverter {
             Iterator<String> it = map.keys();
             while (it.hasNext()) {
                 String name = it.next();
-                if (schema.widgetNames.contains(name) && !connected.contains(name)) apiInputs.put(name, map.opt(name));
+                InputDef def = schema.defs.get(name);
+                if (def == null || !def.widget || connected.contains(name)) continue;
+                Object adapted = adaptValueToDef(map.opt(name), def);
+                if (adapted != null && adapted != JSONObject.NULL) apiInputs.put(name, adapted);
             }
             return;
         }
         if (!(w instanceof JSONArray)) return;
+
         JSONArray values = (JSONArray) w;
-        int vi = 0;
+        int cursor = 0;
         for (String name : schema.widgetNames) {
-            if (connected.contains(name)) continue;
             InputDef def = schema.defs.get(name);
             if (def == null) continue;
-            while (vi < values.length() && isControlToken(values.opt(vi)) && !isStringLike(def)) vi++;
-            if (vi >= values.length()) break;
 
-            Object value = values.opt(vi);
-            if (!matchesDef(value, def)) {
-                int found = -1;
-                for (int look = vi + 1; look < Math.min(values.length(), vi + 4); look++) {
-                    if (matchesDef(values.opt(look), def)) { found = look; break; }
-                }
-                if (found >= 0) vi = found;
-            }
-            value = values.opt(vi++);
+            // If this widget is wired as an input, its literal widget value is irrelevant.
+            if (connected.contains(name)) continue;
+
+            int found = findBestWidgetValue(values, cursor, def);
+            if (found < 0) continue;
+            Object value = adaptValueToDef(values.opt(found), def);
             if (value != null && value != JSONObject.NULL) apiInputs.put(name, value);
+            cursor = found + 1;
 
-            if (isSeedLike(name) && vi < values.length() && isControlToken(values.opt(vi))) vi++;
+            // ComfyUI often stores a seed control token immediately after the numeric seed.
+            if (isSeedLike(name) && cursor < values.length() && isControlToken(values.opt(cursor))) cursor++;
         }
     }
 
-    private static void applyDefaults(NodeSchema schema, JSONObject apiInputs, Set<String> connected) throws JSONException {
-        for (String name : schema.requiredNames) {
-            if (apiInputs.has(name) || connected.contains(name)) continue;
-            InputDef def = schema.defs.get(name);
-            if (def != null && def.widget && def.hasDefault) apiInputs.put(name, def.defaultValue);
+    private static int findBestWidgetValue(JSONArray values, int start, InputDef def) {
+        if (values == null) return -1;
+        int end = Math.min(values.length(), start + 8);
+
+        // Exact/valid combo choices are strongest; then type-compatible values.
+        for (int i = start; i < end; i++) {
+            Object v = values.opt(i);
+            if (isControlToken(v) && !isStringLike(def)) continue;
+            if (def.combo && comboContains(def, v)) return i;
         }
+        for (int i = start; i < end; i++) {
+            Object v = values.opt(i);
+            if (isControlToken(v) && !isStringLike(def)) continue;
+            if (matchesDef(v, def)) return i;
+        }
+        return -1;
+    }
+
+    /** Validate combo values against the live /object_info and fill missing required widgets. */
+    private static void normalizeAndFillRequired(NodeSchema schema, JSONObject apiInputs, Set<String> connected) throws JSONException {
+        for (InputDef def : schema.defs.values()) {
+            String name = def.name;
+            if (connected.contains(name)) continue;
+
+            if (apiInputs.has(name)) {
+                Object current = apiInputs.opt(name);
+                // A [nodeId,slot] array is a real connection; do not treat it as a combo literal.
+                if (def.combo && !(current instanceof JSONArray)) {
+                    Object adapted = adaptValueToDef(current, def);
+                    if (adapted != null && adapted != JSONObject.NULL) apiInputs.put(name, adapted);
+                }
+                continue;
+            }
+
+            if (!def.required) continue;
+            Object fallback = fallbackValue(def);
+            if (fallback != null && fallback != JSONObject.NULL) apiInputs.put(name, fallback);
+        }
+    }
+
+    private static Object fallbackValue(InputDef def) {
+        if (def.hasDefault) return def.defaultValue;
+        if (def.combo && !def.allowedValues.isEmpty()) return def.allowedValues.get(0);
+        return null;
+    }
+
+    private static Object adaptValueToDef(Object value, InputDef def) {
+        if (value == null || value == JSONObject.NULL) return fallbackValue(def);
+        if (!def.combo) return value;
+
+        if (comboContains(def, value)) return value;
+        String text = String.valueOf(value);
+
+        // Case-insensitive exact match.
+        for (Object option : def.allowedValues) {
+            if (String.valueOf(option).equalsIgnoreCase(text)) return option;
+        }
+
+        // Fuzzy match renamed files / path separators / precision suffixes.
+        String target = normalizeComboText(text);
+        if (!target.isEmpty()) {
+            Object best = null;
+            int bestScore = -1;
+            for (Object option : def.allowedValues) {
+                String candidate = normalizeComboText(String.valueOf(option));
+                int score = similarityScore(target, candidate);
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = option;
+                }
+            }
+            if (bestScore >= 80) return best;
+        }
+
+        return fallbackValue(def);
+    }
+
+    private static int similarityScore(String a, String b) {
+        if (a.equals(b)) return 100;
+        if (a.length() >= 5 && (a.startsWith(b) || b.startsWith(a))) return 92;
+        if (a.length() >= 6 && (a.contains(b) || b.contains(a))) return 86;
+
+        // Cheap common-prefix + character-overlap heuristic, enough for model filename aliases.
+        int prefix = 0;
+        int min = Math.min(a.length(), b.length());
+        while (prefix < min && a.charAt(prefix) == b.charAt(prefix)) prefix++;
+        int prefixScore = min == 0 ? 0 : (prefix * 70 / min);
+
+        Set<Character> sa = new HashSet<>();
+        Set<Character> sb = new HashSet<>();
+        for (int i = 0; i < a.length(); i++) sa.add(a.charAt(i));
+        for (int i = 0; i < b.length(); i++) sb.add(b.charAt(i));
+        int common = 0;
+        for (Character c : sa) if (sb.contains(c)) common++;
+        int union = sa.size() + sb.size() - common;
+        int overlap = union == 0 ? 0 : common * 30 / union;
+        return prefixScore + overlap;
+    }
+
+    private static String normalizeComboText(String s) {
+        if (s == null) return "";
+        String t = s.toLowerCase(Locale.ROOT).replace('\\', '/');
+        int slash = t.lastIndexOf('/');
+        if (slash >= 0) t = t.substring(slash + 1);
+        t = t.replaceAll("\\.(safetensors|sft|ckpt|pt|pth|bin)$", "");
+        t = t.replaceAll("(bf16|fp16|fp32|f16|f32|float16|float32)", "");
+        t = t.replaceAll("[^a-z0-9]+", "");
+        return t;
+    }
+
+    private static boolean comboContains(InputDef def, Object value) {
+        if (!def.combo) return false;
+        for (Object option : def.allowedValues) {
+            if (jsonScalarEquals(option, value)) return true;
+        }
+        return false;
+    }
+
+    private static boolean jsonScalarEquals(Object a, Object b) {
+        if (a == null || b == null || a == JSONObject.NULL || b == JSONObject.NULL) return a == b;
+        if (a instanceof Number && b instanceof Number) {
+            return Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue()) == 0;
+        }
+        return String.valueOf(a).equals(String.valueOf(b));
     }
 
     private static boolean matchesDef(Object value, InputDef def) {
@@ -283,19 +410,20 @@ public final class WorkflowUiConverter {
     private static boolean isControlToken(Object v) {
         if (!(v instanceof String)) return false;
         String s = ((String) v).toLowerCase(Locale.ROOT);
-        return s.equals("fixed") || s.equals("randomize") || s.equals("increment") || s.equals("decrement") || s.equals("increment per node") || s.equals("decrement per node");
+        return s.equals("fixed") || s.equals("randomize") || s.equals("increment") || s.equals("decrement") ||
+                s.equals("increment per node") || s.equals("decrement per node");
     }
 
     private static boolean isVirtualNode(String type) {
         if (type == null) return false;
         String t = type.toLowerCase(Locale.ROOT);
-        return t.equals("primitivenode") || isReroute(type) || t.equals("note") || t.equals("markdownnote") || t.equals("group") || t.equals("groupnode");
+        return t.equals("primitivenode") || isReroute(type) || t.equals("note") || t.equals("markdownnote") ||
+                t.equals("group") || t.equals("groupnode");
     }
 
     private static boolean isReroute(String type) {
         if (type == null) return false;
-        String t = type.toLowerCase(Locale.ROOT);
-        return t.equals("reroute") || t.contains("reroute");
+        return type.toLowerCase(Locale.ROOT).contains("reroute");
     }
 
     private static boolean isDecorativeOrUnused(JSONObject node, Map<String, Link> links) {
@@ -372,16 +500,24 @@ public final class WorkflowUiConverter {
         final String name, type;
         final boolean widget, combo, required, hasDefault;
         final Object defaultValue;
-        InputDef(String name, String type, boolean widget, boolean combo, boolean required, boolean hasDefault, Object defaultValue) {
-            this.name = name; this.type = type; this.widget = widget; this.combo = combo; this.required = required; this.hasDefault = hasDefault; this.defaultValue = defaultValue;
+        final List<Object> allowedValues;
+
+        InputDef(String name, String type, boolean widget, boolean combo, boolean required,
+                 boolean hasDefault, Object defaultValue, List<Object> allowedValues) {
+            this.name = name;
+            this.type = type;
+            this.widget = widget;
+            this.combo = combo;
+            this.required = required;
+            this.hasDefault = hasDefault;
+            this.defaultValue = defaultValue;
+            this.allowedValues = allowedValues == null ? new ArrayList<>() : allowedValues;
         }
     }
 
     private static final class NodeSchema {
         final Map<String, InputDef> defs = new LinkedHashMap<>();
-        final List<String> orderedNames = new ArrayList<>();
         final List<String> widgetNames = new ArrayList<>();
-        final List<String> requiredNames = new ArrayList<>();
 
         static NodeSchema from(JSONObject nodeDef) {
             NodeSchema out = new NodeSchema();
@@ -398,18 +534,18 @@ public final class WorkflowUiConverter {
             List<String> names = new ArrayList<>();
             JSONArray ordered = order == null ? null : order.optJSONArray(group);
             if (ordered != null) {
-                for (int i = 0; i < ordered.length(); i++) if (!ordered.optString(i, "").isEmpty()) names.add(ordered.optString(i));
+                for (int i = 0; i < ordered.length(); i++) {
+                    String n = ordered.optString(i, "");
+                    if (!n.isEmpty()) names.add(n);
+                }
             }
             if (names.isEmpty()) {
                 Iterator<String> it = defs.keys();
                 while (it.hasNext()) names.add(it.next());
             }
             for (String name : names) {
-                Object raw = defs.opt(name);
-                InputDef d = parseInputDef(name, raw, required);
+                InputDef d = parseInputDef(name, defs.opt(name), required);
                 out.defs.put(name, d);
-                out.orderedNames.add(name);
-                if (required) out.requiredNames.add(name);
                 if (d.widget) out.widgetNames.add(name);
             }
         }
@@ -418,18 +554,33 @@ public final class WorkflowUiConverter {
             boolean combo = false, widget = false, hasDefault = false;
             String type = "";
             Object defaultValue = null;
+            List<Object> allowed = new ArrayList<>();
+
             if (raw instanceof JSONArray) {
                 JSONArray a = (JSONArray) raw;
                 Object first = a.opt(0);
-                if (first instanceof JSONArray) { combo = true; widget = true; type = "COMBO"; }
-                else type = String.valueOf(first);
+                if (first instanceof JSONArray) {
+                    combo = true;
+                    widget = true;
+                    type = "COMBO";
+                    JSONArray opts = (JSONArray) first;
+                    for (int i = 0; i < opts.length(); i++) allowed.add(opts.opt(i));
+                } else {
+                    type = String.valueOf(first);
+                }
+
                 JSONObject opts = a.optJSONObject(1);
                 boolean forceInput = opts != null && opts.optBoolean("forceInput", false);
                 String upper = type.toUpperCase(Locale.ROOT);
-                if (!forceInput && (combo || upper.equals("INT") || upper.equals("FLOAT") || upper.equals("NUMBER") || upper.equals("STRING") || upper.equals("BOOLEAN"))) widget = true;
-                if (opts != null && opts.has("default")) { hasDefault = true; defaultValue = opts.opt("default"); }
+                if (!forceInput && (combo || upper.equals("INT") || upper.equals("FLOAT") || upper.equals("NUMBER") ||
+                        upper.equals("STRING") || upper.equals("BOOLEAN"))) widget = true;
+                if (opts != null && opts.has("default")) {
+                    hasDefault = true;
+                    defaultValue = opts.opt("default");
+                }
             }
-            return new InputDef(name, type, widget, combo, required, hasDefault, defaultValue);
+
+            return new InputDef(name, type, widget, combo, required, hasDefault, defaultValue, allowed);
         }
     }
 }
