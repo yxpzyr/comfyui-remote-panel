@@ -1,17 +1,17 @@
-# Project status
+# 项目状态
 
-Version: 1.1.0
+**版本：V1.0.0 源码版**
 
-## Completed
-- Android Chinese remote panel
-- Termius-local port connection
-- Normal ComfyUI workflow JSON auto-conversion via `/object_info`
-- API workflow JSON compatibility
-- Image upload and loader-node replacement
-- Queue / prompt polling / output preview
-- Save output to Android Pictures/ComfyRemote
-- History gallery
-- GitHub Actions APK build
+已完成：
+- 中文原生 Android UI
+- ComfyUI 地址/端口记忆与连通检测
+- API JSON 工作流导入与校验
+- LoadImage 自动识别/多节点选择
+- 安卓输入图选择、预览与 multipart 上传
+- `/prompt` 提交与 `/history/{id}` 轮询
+- 输出图获取、首页预览与相册保存
+- 服务器历史图库、预览与保存
+- `/interrupt` 停止请求
+- GitHub Actions APK 自动构建脚本
 
-## Converter notes
-The V1.1 converter resolves regular links, PrimitiveNode values, Reroute nodes and common bypass paths. It maps widget values using the live node schema returned by the user's ComfyUI server. Frontend-only nodes, subgraphs, unusual Get/Set implementations, or missing custom-node packs may still require an API-format workflow.
+当前环境限制：本会话容器未预装 Android SDK/Gradle，无法在本地完成 APK 二进制编译验证；工程已包含无需电脑的 GitHub Actions 构建流程。

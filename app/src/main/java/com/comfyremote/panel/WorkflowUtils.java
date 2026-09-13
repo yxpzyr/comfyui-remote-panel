@@ -47,11 +47,8 @@ public final class WorkflowUtils {
             JSONObject inputs = node.optJSONObject("inputs");
             if (inputs == null || !inputs.has("image")) continue;
 
-            Object imageValue = inputs.opt("image");
             String lower = classType.toLowerCase();
-            boolean looksLikeFileLoader = imageValue instanceof String &&
-                    (lower.contains("load") || lower.contains("image") || lower.contains("input"));
-            if (lower.contains("loadimage") || lower.contains("load_image") || lower.equals("image loader") || looksLikeFileLoader) {
+            if (lower.contains("loadimage") || lower.contains("load_image") || lower.equals("image loader")) {
                 String title = "";
                 JSONObject meta = node.optJSONObject("_meta");
                 if (meta != null) title = meta.optString("title", "");
