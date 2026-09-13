@@ -22,10 +22,13 @@ import java.util.Set;
 /**
  * Converts a normal ComfyUI UI/LiteGraph workflow (nodes + links) into /prompt API format.
  *
- * V1.2 adds defensive recovery for ordinary workflow JSON:
+ * V1.4 strengthens ordinary UI workflow conversion:
  * - fills missing required combo widgets from /object_info defaults/options;
  * - validates combo values against the currently running ComfyUI;
  * - fuzzy-matches renamed model files (for example old .sft names to current .safetensors names);
+ * - preserves widget cursor alignment even when a widget is connected as an input;
+ * - merges partial input_order metadata with every live /object_info input;
+ * - validates numeric min/max so seed-like values cannot leak into cfg/steps;
  * - tolerates widget-order drift between a saved workflow and the current node definition.
  */
 public final class WorkflowUiConverter {
@@ -247,14 +250,16 @@ public final class WorkflowUiConverter {
             InputDef def = schema.defs.get(name);
             if (def == null) continue;
 
-            // If this widget is wired as an input, its literal widget value is irrelevant.
-            if (connected.contains(name)) continue;
-
+            // IMPORTANT: connected widgets are still serialized in widgets_values on many
+            // ComfyUI versions. We must consume their slot to keep every later widget aligned,
+            // even though the connected value itself is not submitted as a literal.
             int found = findBestWidgetValue(values, cursor, def);
             if (found < 0) continue;
             Object value = adaptValueToDef(values.opt(found), def);
-            if (value != null && value != JSONObject.NULL) apiInputs.put(name, value);
             cursor = found + 1;
+            if (!connected.contains(name) && value != null && value != JSONObject.NULL) {
+                apiInputs.put(name, value);
+            }
 
             // ComfyUI often stores a seed control token immediately after the numeric seed.
             if (isSeedLike(name) && cursor < values.length() && isControlToken(values.opt(cursor))) cursor++;
@@ -287,10 +292,12 @@ public final class WorkflowUiConverter {
 
             if (apiInputs.has(name)) {
                 Object current = apiInputs.opt(name);
-                // A [nodeId,slot] array is a real connection; do not treat it as a combo literal.
-                if (def.combo && !(current instanceof JSONArray)) {
+                // A [nodeId,slot] array is a real connection. For scalar/widget literals,
+                // validate type/range/combo membership against the live node definition.
+                if (!(current instanceof JSONArray)) {
                     Object adapted = adaptValueToDef(current, def);
                     if (adapted != null && adapted != JSONObject.NULL) apiInputs.put(name, adapted);
+                    else apiInputs.remove(name);
                 }
                 continue;
             }
@@ -309,7 +316,22 @@ public final class WorkflowUiConverter {
 
     private static Object adaptValueToDef(Object value, InputDef def) {
         if (value == null || value == JSONObject.NULL) return fallbackValue(def);
-        if (!def.combo) return value;
+        if (!def.combo) {
+            String t = def.type.toUpperCase(Locale.ROOT);
+            if (("INT".equals(t) || "FLOAT".equals(t) || "NUMBER".equals(t)) && value instanceof Number) {
+                double n = ((Number) value).doubleValue();
+                if ((def.hasMin && n < def.minValue) || (def.hasMax && n > def.maxValue)) {
+                    return fallbackValue(def);
+                }
+                if ("INT".equals(t)) return ((Number) value).longValue();
+                return n;
+            }
+            if ("BOOLEAN".equals(t) && !(value instanceof Boolean)) return fallbackValue(def);
+            if ("STRING".equals(t) && !(value instanceof String) && !(value instanceof JSONObject) && !(value instanceof JSONArray)) {
+                return fallbackValue(def);
+            }
+            return value;
+        }
 
         if (comboContains(def, value)) return value;
         String text = String.valueOf(value);
@@ -391,8 +413,13 @@ public final class WorkflowUiConverter {
         if (value == null || value == JSONObject.NULL) return true;
         if (def.combo) return value instanceof String || value instanceof Number || value instanceof Boolean;
         String t = def.type.toUpperCase(Locale.ROOT);
-        if ("INT".equals(t)) return value instanceof Number;
-        if ("FLOAT".equals(t) || "NUMBER".equals(t)) return value instanceof Number;
+        if ("INT".equals(t) || "FLOAT".equals(t) || "NUMBER".equals(t)) {
+            if (!(value instanceof Number)) return false;
+            double n = ((Number) value).doubleValue();
+            if (def.hasMin && n < def.minValue) return false;
+            if (def.hasMax && n > def.maxValue) return false;
+            return true;
+        }
         if ("BOOLEAN".equals(t)) return value instanceof Boolean;
         if ("STRING".equals(t)) return value instanceof String || value instanceof JSONObject || value instanceof JSONArray;
         return true;
@@ -501,9 +528,12 @@ public final class WorkflowUiConverter {
         final boolean widget, combo, required, hasDefault;
         final Object defaultValue;
         final List<Object> allowedValues;
+        final boolean hasMin, hasMax;
+        final double minValue, maxValue;
 
         InputDef(String name, String type, boolean widget, boolean combo, boolean required,
-                 boolean hasDefault, Object defaultValue, List<Object> allowedValues) {
+                 boolean hasDefault, Object defaultValue, List<Object> allowedValues,
+                 boolean hasMin, double minValue, boolean hasMax, double maxValue) {
             this.name = name;
             this.type = type;
             this.widget = widget;
@@ -512,6 +542,10 @@ public final class WorkflowUiConverter {
             this.hasDefault = hasDefault;
             this.defaultValue = defaultValue;
             this.allowedValues = allowedValues == null ? new ArrayList<>() : allowedValues;
+            this.hasMin = hasMin;
+            this.minValue = minValue;
+            this.hasMax = hasMax;
+            this.maxValue = maxValue;
         }
     }
 
@@ -539,9 +573,12 @@ public final class WorkflowUiConverter {
                     if (!n.isEmpty()) names.add(n);
                 }
             }
-            if (names.isEmpty()) {
-                Iterator<String> it = defs.keys();
-                while (it.hasNext()) names.add(it.next());
+            // Some custom nodes publish a partial input_order. Never drop required inputs
+            // just because they are absent from that ordering hint. Append every remaining key.
+            Iterator<String> all = defs.keys();
+            while (all.hasNext()) {
+                String n = all.next();
+                if (!names.contains(n)) names.add(n);
             }
             for (String name : names) {
                 InputDef d = parseInputDef(name, defs.opt(name), required);
@@ -552,6 +589,8 @@ public final class WorkflowUiConverter {
 
         private static InputDef parseInputDef(String name, Object raw, boolean required) {
             boolean combo = false, widget = false, hasDefault = false;
+            boolean hasMin = false, hasMax = false;
+            double minValue = 0.0, maxValue = 0.0;
             String type = "";
             Object defaultValue = null;
             List<Object> allowed = new ArrayList<>();
@@ -578,9 +617,18 @@ public final class WorkflowUiConverter {
                     hasDefault = true;
                     defaultValue = opts.opt("default");
                 }
+                if (opts != null && opts.has("min") && opts.opt("min") instanceof Number) {
+                    hasMin = true;
+                    minValue = ((Number) opts.opt("min")).doubleValue();
+                }
+                if (opts != null && opts.has("max") && opts.opt("max") instanceof Number) {
+                    hasMax = true;
+                    maxValue = ((Number) opts.opt("max")).doubleValue();
+                }
             }
 
-            return new InputDef(name, type, widget, combo, required, hasDefault, defaultValue, allowed);
+            return new InputDef(name, type, widget, combo, required, hasDefault, defaultValue, allowed,
+                    hasMin, minValue, hasMax, maxValue);
         }
     }
 }

@@ -70,7 +70,7 @@ public class MainActivity extends Activity {
 
         TextView title = text("ComfyUI 远程面板", 25, true);
         root.addView(title);
-        TextView subtitle = text("V1.3 · Termius 负责隧道，这里只负责工作流、输入图与生成结果。", 13, false);
+        TextView subtitle = text("V1.4 · Termius 负责隧道，这里只负责工作流、输入图与生成结果。", 13, false);
         subtitle.setTextColor(Color.DKGRAY);
         subtitle.setPadding(0, dp(4), 0, dp(16));
         root.addView(subtitle);
