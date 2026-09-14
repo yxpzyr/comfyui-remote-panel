@@ -75,7 +75,7 @@ public class MainActivity extends Activity {
         scroll.addView(root);
 
         root.addView(text("ComfyUI 远程面板", 25, true));
-        TextView subtitle = text("V1.6 · 通用多输入 / 提示词 / 多输出工作流面板", 13, false);
+        TextView subtitle = text("V1.7 · history 输出兼容修复 / 通用多输入 / 多输出", 13, false);
         subtitle.setTextColor(Color.DKGRAY);
         subtitle.setPadding(0, dp(4), 0, dp(16));
         root.addView(subtitle);
@@ -427,6 +427,7 @@ public class MainActivity extends Activity {
 
                 JSONObject lastHistory = null;
                 List<ImageRef> refs = null;
+                int completedWithoutImages = 0;
                 for (int i = 0; i < 900 && !cancelPolling; i++) {
                     Thread.sleep(2000);
                     try {
@@ -437,10 +438,27 @@ public class MainActivity extends Activity {
                         if (!err.isEmpty()) throw new Exception("ComfyUI 执行失败：" + err);
                         if (api.isHistoryCompleted(lastHistory, promptId)) {
                             refs = findImageRefsDeepInOutputs(lastHistory, promptId);
-                            if (refs == null || refs.isEmpty()) {
-                                throw new Exception("工作流已完成，但历史记录中没有发现可读取的图像文件输出。可能是自定义输出节点没有向 history 返回 filename/subfolder/type。");
+                            if (refs != null && !refs.isEmpty()) break;
+
+                            // Some ComfyUI/custom-node combinations mark a prompt completed
+                            // before /history/{prompt_id} exposes its image metadata. The full
+                            // history endpoint is often updated first, so use it as a fallback.
+                            try {
+                                JSONObject fullHistory = api.getAllHistory();
+                                refs = api.parseImagesFromPromptHistory(fullHistory, promptId);
+                                if (refs == null || refs.isEmpty()) {
+                                    refs = findImageRefsDeepInOutputs(fullHistory, promptId);
+                                }
+                                if (refs != null && !refs.isEmpty()) break;
+                            } catch (Exception ignored) {
+                                // Keep polling the prompt-specific endpoint below.
                             }
-                            break;
+
+                            completedWithoutImages++;
+                            if (completedWithoutImages >= 15) {
+                                throw new Exception("工作流已完成，但等待约 30 秒后仍未在 history 中发现可读取的图片输出。请确认工作流末端包含 SaveImage 或 PreviewImage 节点，并且节点向 history 返回 filename/subfolder/type。");
+                            }
+                            setStatus("工作流已完成，正在等待输出记录… " + completedWithoutImages + "/15");
                         }
                     } catch (java.io.FileNotFoundException ignored) {}
                 }
