@@ -8,6 +8,7 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/AppTheme">
         <activity android:name=".GalleryActivity" />
+        <activity android:name=".QueueActivity" />
         <activity
             android:name=".MainActivity"
             android:screenOrientation="portrait"

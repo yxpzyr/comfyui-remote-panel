@@ -10,6 +10,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.FileNotFoundException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -24,6 +25,10 @@ import java.util.Map;
 import java.util.UUID;
 
 public class ComfyApiClient {
+    public static final String QUEUE_RUNNING = "running";
+    public static final String QUEUE_PENDING = "pending";
+    public static final String QUEUE_UNKNOWN = "unknown";
+
     private final String base;
     private final String clientId = UUID.randomUUID().toString();
 
@@ -113,47 +118,103 @@ public class ComfyApiClient {
     }
 
     public JSONObject getAllHistory() throws Exception {
-        HttpResult r = getAny(new String[]{"/history?max_items=80", "/api/history_v2?max_items=80"}, 8000, 20000);
+        return getAllHistory(120);
+    }
+
+    public JSONObject getAllHistory(int maxItems) throws Exception {
+        int n = Math.max(1, Math.min(maxItems, 500));
+        HttpResult r = getAny(new String[]{"/history?max_items=" + n, "/api/history_v2?max_items=" + n}, 8000, 25000);
         return new JSONObject(r.text());
     }
 
     public List<ImageRef> parseImagesFromPromptHistory(JSONObject history, String promptId) {
-        JSONObject entry = history.optJSONObject(promptId);
-        if (entry == null && history.has("outputs")) entry = history;
+        JSONObject entry = findPromptEntry(history, promptId);
         if (entry == null) return new ArrayList<>();
-        return parseImagesFromEntry(entry);
+        return parseImagesFromEntry(entry, promptId, historyTimestamp(entry, System.currentTimeMillis()));
+    }
+
+    public List<ImageRef> parseImagesDeepForPrompt(JSONObject history, String promptId) {
+        JSONObject entry = findPromptEntry(history, promptId);
+        if (entry == null) return new ArrayList<>();
+        long ts = historyTimestamp(entry, System.currentTimeMillis());
+        List<ImageRef> out = new ArrayList<>();
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        collectImagesDeep(entry.opt("outputs"), out, seen, ts, promptId, 0);
+        return out;
     }
 
     public List<ImageRef> parseImagesFromAllHistory(JSONObject history, int limit) {
         LinkedHashMap<String, ImageRef> dedupe = new LinkedHashMap<>();
+        int safeLimit = Math.max(1, limit);
+        long fallback = System.currentTimeMillis();
 
         JSONArray historyArray = history.optJSONArray("history");
         if (historyArray != null) {
             for (int i = 0; i < historyArray.length(); i++) {
                 JSONObject entry = historyArray.optJSONObject(i);
                 if (entry == null) continue;
-                for (ImageRef ref : parseImagesFromEntry(entry)) dedupe.put(ref.key(), ref);
-                if (dedupe.size() >= limit) break;
+                String promptId = promptIdFromEntry(entry, "");
+                long ts = historyTimestamp(entry, fallback - i);
+                for (ImageRef ref : parseImagesFromEntry(entry, promptId, ts)) dedupe.put(ref.key(), ref);
+                if (dedupe.size() >= safeLimit) break;
             }
         } else {
             List<String> keys = new ArrayList<>();
             Iterator<String> it = history.keys();
             while (it.hasNext()) keys.add(it.next());
-            // Local ComfyUI commonly returns newest-first insertion order; preserve server order.
+            int order = 0;
             for (String key : keys) {
                 JSONObject entry = history.optJSONObject(key);
                 if (entry == null) continue;
-                for (ImageRef ref : parseImagesFromEntry(entry)) dedupe.put(ref.key(), ref);
-                if (dedupe.size() >= limit) break;
+                String promptId = promptIdFromEntry(entry, key);
+                long ts = historyTimestamp(entry, fallback - order++);
+                for (ImageRef ref : parseImagesFromEntry(entry, promptId, ts)) dedupe.put(ref.key(), ref);
+                if (dedupe.size() >= safeLimit) break;
             }
         }
 
         List<ImageRef> out = new ArrayList<>(dedupe.values());
-        if (out.size() > limit) return new ArrayList<>(out.subList(0, limit));
+        if (out.size() > safeLimit) return new ArrayList<>(out.subList(0, safeLimit));
         return out;
     }
 
-    private List<ImageRef> parseImagesFromEntry(JSONObject entry) {
+    private JSONObject findPromptEntry(JSONObject history, String promptId) {
+        if (history == null) return null;
+        JSONObject direct = promptId == null ? null : history.optJSONObject(promptId);
+        if (direct != null) return direct;
+        if (history.has("outputs")) {
+            String p = promptIdFromEntry(history, "");
+            if (promptId == null || promptId.isEmpty() || p.isEmpty() || promptId.equals(p)) return history;
+        }
+        JSONArray a = history.optJSONArray("history");
+        if (a != null) {
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject e = a.optJSONObject(i);
+                if (e != null && promptId != null && promptId.equals(promptIdFromEntry(e, ""))) return e;
+            }
+        }
+        Iterator<String> keys = history.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            JSONObject e = history.optJSONObject(key);
+            if (e != null && promptId != null && promptId.equals(promptIdFromEntry(e, key))) return e;
+        }
+        return null;
+    }
+
+    private String promptIdFromEntry(JSONObject entry, String fallback) {
+        if (entry == null) return fallback == null ? "" : fallback;
+        String id = entry.optString("prompt_id", "");
+        if (!id.isEmpty()) return id;
+        JSONArray prompt = entry.optJSONArray("prompt");
+        if (prompt != null && prompt.length() > 1) {
+            String p = prompt.optString(1, "");
+            if (!p.isEmpty()) return p;
+        }
+        return fallback == null ? "" : fallback;
+    }
+
+    private List<ImageRef> parseImagesFromEntry(JSONObject entry, String promptId, long timestamp) {
         List<ImageRef> refs = new ArrayList<>();
         JSONObject outputs = entry.optJSONObject("outputs");
         if (outputs == null) return refs;
@@ -165,15 +226,57 @@ public class ComfyApiClient {
             if (images == null) continue;
             for (int i = 0; i < images.length(); i++) {
                 JSONObject img = images.optJSONObject(i);
-                if (img != null && !img.optString("filename", "").isEmpty()) refs.add(ImageRef.fromJson(img));
+                if (img != null && !img.optString("filename", "").isEmpty()) {
+                    refs.add(ImageRef.fromJson(img, timestamp, promptId));
+                }
             }
         }
         return refs;
     }
 
+    private void collectImagesDeep(Object value, List<ImageRef> out, java.util.Set<String> seen,
+                                   long timestamp, String promptId, int depth) {
+        if (value == null || value == JSONObject.NULL || depth > 12) return;
+        if (value instanceof JSONObject) {
+            JSONObject o = (JSONObject) value;
+            String filename = o.optString("filename", "");
+            if (!filename.isEmpty()) {
+                ImageRef ref = ImageRef.fromJson(o, timestamp, promptId);
+                if (seen.add(ref.key())) out.add(ref);
+            }
+            Iterator<String> it = o.keys();
+            while (it.hasNext()) collectImagesDeep(o.opt(it.next()), out, seen, timestamp, promptId, depth + 1);
+        } else if (value instanceof JSONArray) {
+            JSONArray a = (JSONArray) value;
+            for (int i = 0; i < a.length(); i++) collectImagesDeep(a.opt(i), out, seen, timestamp, promptId, depth + 1);
+        }
+    }
+
+    private long historyTimestamp(JSONObject entry, long fallback) {
+        long best = 0L;
+        JSONObject status = entry == null ? null : entry.optJSONObject("status");
+        JSONArray messages = status == null ? null : status.optJSONArray("messages");
+        if (messages != null) {
+            for (int i = 0; i < messages.length(); i++) {
+                JSONArray msg = messages.optJSONArray(i);
+                if (msg == null || msg.length() < 2) continue;
+                JSONObject data = msg.optJSONObject(1);
+                if (data == null) continue;
+                long ts = data.optLong("timestamp", 0L);
+                if (ts > 0 && ts < 10_000_000_000L) ts *= 1000L;
+                if (ts > best) best = ts;
+            }
+        }
+        if (best <= 0) {
+            long ts = entry == null ? 0 : entry.optLong("timestamp", 0L);
+            if (ts > 0 && ts < 10_000_000_000L) ts *= 1000L;
+            best = ts;
+        }
+        return best > 0 ? best : fallback;
+    }
+
     public boolean isHistoryCompleted(JSONObject history, String promptId) {
-        JSONObject entry = history.optJSONObject(promptId);
-        if (entry == null && history.has("status")) entry = history;
+        JSONObject entry = findPromptEntry(history, promptId);
         if (entry == null) return false;
         JSONObject status = entry.optJSONObject("status");
         if (status == null) return false;
@@ -183,14 +286,47 @@ public class ComfyApiClient {
     }
 
     public String historyError(JSONObject history, String promptId) {
-        JSONObject entry = history.optJSONObject(promptId);
-        if (entry == null && history.has("status")) entry = history;
+        JSONObject entry = findPromptEntry(history, promptId);
         if (entry == null) return "";
         JSONObject status = entry.optJSONObject("status");
         if (status == null) return "";
         String s = status.optString("status_str", "").toLowerCase();
         if (!s.equals("error")) return "";
         return status.toString();
+    }
+
+    public String getQueueState(String promptId) throws Exception {
+        HttpResult r = getAny(new String[]{"/queue", "/api/queue"}, 8000, 15000);
+        JSONObject q = new JSONObject(r.text());
+        if (queueArrayContains(q.optJSONArray("queue_running"), promptId)) return QUEUE_RUNNING;
+        if (queueArrayContains(q.optJSONArray("queue_pending"), promptId)) return QUEUE_PENDING;
+        if (queueArrayContains(q.optJSONArray("running"), promptId)) return QUEUE_RUNNING;
+        if (queueArrayContains(q.optJSONArray("pending"), promptId)) return QUEUE_PENDING;
+        return QUEUE_UNKNOWN;
+    }
+
+    private boolean queueArrayContains(JSONArray a, String promptId) {
+        if (a == null || promptId == null) return false;
+        for (int i = 0; i < a.length(); i++) {
+            Object item = a.opt(i);
+            if (item instanceof JSONArray) {
+                JSONArray row = (JSONArray) item;
+                for (int j = 0; j < row.length(); j++) {
+                    Object v = row.opt(j);
+                    if (promptId.equals(String.valueOf(v))) return true;
+                }
+            } else if (item instanceof JSONObject) {
+                JSONObject o = (JSONObject) item;
+                if (promptId.equals(o.optString("prompt_id", ""))) return true;
+            }
+        }
+        return false;
+    }
+
+    public void deleteQueuePrompt(String promptId) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("delete", new JSONArray().put(promptId));
+        postJsonAny(new String[]{"/queue", "/api/queue"}, body, 8000, 15000);
     }
 
     public ImageDownload fetchImage(ImageRef ref) throws Exception {
@@ -209,7 +345,8 @@ public class ComfyApiClient {
             try {
                 HttpResult r = request("GET", p, null, null, connect, read);
                 if (r.code >= 200 && r.code < 300) return r;
-                last = new Exception("HTTP " + r.code + " " + p + ": " + r.text());
+                if (r.code == 404) last = new FileNotFoundException("HTTP 404 " + p);
+                else last = new Exception("HTTP " + r.code + " " + p + ": " + r.text());
             } catch (Exception e) { last = e; }
         }
         throw last == null ? new Exception("请求失败") : last;
