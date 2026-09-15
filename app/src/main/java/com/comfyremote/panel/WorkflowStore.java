@@ -39,7 +39,7 @@ public final class WorkflowStore {
             if (files != null) {
                 for (File f : files) {
                     try {
-                        String raw = Files.readString(f.toPath(), StandardCharsets.UTF_8);
+                        String raw = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
                         out.add(WorkflowProfile.fromJson(new JSONObject(raw)));
                     } catch (Exception ignored) {}
                 }
@@ -143,7 +143,7 @@ public final class WorkflowStore {
         File target = new File(dir, profile.id + ".json");
         File temp = new File(dir, profile.id + ".json.tmp");
         try {
-            Files.writeString(temp.toPath(), profile.toJson().toString(), StandardCharsets.UTF_8);
+            Files.write(temp.toPath(), profile.toJson().toString().getBytes(StandardCharsets.UTF_8));
             try {
                 Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             } catch (Exception atomicUnsupported) {
