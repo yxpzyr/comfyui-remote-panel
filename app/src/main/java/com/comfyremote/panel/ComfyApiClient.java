@@ -37,6 +37,7 @@ public class ComfyApiClient {
     }
 
     public String getBase() { return base; }
+    public String getClientId() { return clientId; }
 
     public static String normalizeBase(String text) {
         String s = text == null ? "" : text.trim();
@@ -155,8 +156,12 @@ public class ComfyApiClient {
                 if (entry == null) continue;
                 String promptId = promptIdFromEntry(entry, "");
                 long ts = historyTimestamp(entry, fallback - i);
-                for (ImageRef ref : parseImagesFromEntry(entry, promptId, ts)) dedupe.put(ref.key(), ref);
-                if (dedupe.size() >= safeLimit) break;
+                List<ImageRef> refs = parseImagesFromEntry(entry, promptId, ts);
+                List<ImageRef> deep = new ArrayList<>();
+                java.util.HashSet<String> seen = new java.util.HashSet<>();
+                collectImagesDeep(entry.opt("outputs"), deep, seen, ts, promptId, 0);
+                refs.addAll(deep);
+                for (ImageRef ref : refs) putNewest(dedupe, ref);
             }
         } else {
             List<String> keys = new ArrayList<>();
@@ -168,14 +173,24 @@ public class ComfyApiClient {
                 if (entry == null) continue;
                 String promptId = promptIdFromEntry(entry, key);
                 long ts = historyTimestamp(entry, fallback - order++);
-                for (ImageRef ref : parseImagesFromEntry(entry, promptId, ts)) dedupe.put(ref.key(), ref);
-                if (dedupe.size() >= safeLimit) break;
+                List<ImageRef> refs = parseImagesFromEntry(entry, promptId, ts);
+                List<ImageRef> deep = new ArrayList<>();
+                java.util.HashSet<String> seen = new java.util.HashSet<>();
+                collectImagesDeep(entry.opt("outputs"), deep, seen, ts, promptId, 0);
+                refs.addAll(deep);
+                for (ImageRef ref : refs) putNewest(dedupe, ref);
             }
         }
 
         List<ImageRef> out = new ArrayList<>(dedupe.values());
+        out.sort(java.util.Comparator.comparingLong((ImageRef x) -> x.timestamp).reversed());
         if (out.size() > safeLimit) return new ArrayList<>(out.subList(0, safeLimit));
         return out;
+    }
+
+    private void putNewest(LinkedHashMap<String, ImageRef> map, ImageRef ref) {
+        ImageRef old = map.get(ref.key());
+        if (old == null || ref.timestamp >= old.timestamp) map.put(ref.key(), ref);
     }
 
     private JSONObject findPromptEntry(JSONObject history, String promptId) {

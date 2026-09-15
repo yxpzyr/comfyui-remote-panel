@@ -3,9 +3,10 @@ package com.comfyremote.panel;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.graphics.Bitmap;
-import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -22,79 +23,100 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
-import java.util.HashMap;
-import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class GalleryActivity extends Activity {
     private static final int MAX_IMAGES = 100;
+    private static final long AUTO_REFRESH_MS = 5000L;
 
-    private final ExecutorService thumbPool = Executors.newFixedThreadPool(4);
-    private final ExecutorService downloadPool = Executors.newSingleThreadExecutor();
+    private final ExecutorService thumbPool = Executors.newFixedThreadPool(5);
+    private final ExecutorService downloadPool = Executors.newFixedThreadPool(2);
+    private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<ImageRef> allRefs = new ArrayList<>();
-    private final Set<String> selectedKeys = new HashSet<>();
-    private final Map<String, LinearLayout> tileByKey = new HashMap<>();
+    private final Set<String> selectedKeys = ConcurrentHashMap.newKeySet();
+    private final Map<String, LinearLayout> tileByKey = new LinkedHashMap<>();
 
     private GridLayout grid;
     private TextView state;
     private Button sortButton, selectAllButton, downloadButton, clearSelectButton;
     private String server;
     private SortMode sortMode = SortMode.TIME_DESC;
-    private volatile int renderGeneration = 0;
+    private int renderGeneration = 0;
+    private volatile boolean fetching = false;
+    private volatile boolean batchDownloading = false;
+
+    private final Runnable autoRefresh = new Runnable() {
+        @Override public void run() {
+            refreshGallery(false);
+            handler.postDelayed(this, AUTO_REFRESH_MS);
+        }
+    };
 
     private enum SortMode { TIME_DESC, TIME_ASC, NAME_ASC, NAME_DESC }
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    @Override protected void onCreate(Bundle savedInstanceState) {
+        ThemeManager.prepare(this);
         super.onCreate(savedInstanceState);
+        ThemeManager.applyWindow(this);
         server = getSharedPreferences("comfy_remote", MODE_PRIVATE).getString("server", "8188");
         buildUi();
-        refreshGallery();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        handler.removeCallbacks(autoRefresh);
+        refreshGallery(true);
+        handler.postDelayed(autoRefresh, AUTO_REFRESH_MS);
+    }
+
+    @Override protected void onPause() {
+        handler.removeCallbacks(autoRefresh);
+        super.onPause();
     }
 
     private void buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(14), dp(14), dp(14), dp(16));
-        root.setBackgroundColor(Color.rgb(246, 247, 249));
+        root.setBackgroundColor(ThemeManager.background(this));
 
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
         Button back = button("← 返回");
-        TextView title = text("生成图库", 22, true);
-        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        titleLp.setMargins(dp(8), 0, dp(8), 0);
+        TextView title = text("图库", 22, true);
+        sortButton = button("时间 ↓");
         Button refresh = button("刷新");
-        header.addView(back, new LinearLayout.LayoutParams(dp(86), dp(48)));
+        header.addView(back, new LinearLayout.LayoutParams(dp(82), dp(46)));
+        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        titleLp.setMargins(dp(8), 0, dp(6), 0);
         header.addView(title, titleLp);
-        header.addView(refresh, new LinearLayout.LayoutParams(dp(82), dp(48)));
+        header.addView(sortButton, new LinearLayout.LayoutParams(dp(92), dp(46)));
+        header.addView(refresh, new LinearLayout.LayoutParams(dp(76), dp(46)));
         root.addView(header);
 
-        LinearLayout controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.HORIZONTAL);
-        controls.setGravity(Gravity.CENTER_VERTICAL);
-        sortButton = button("时间 ↓");
+        state = text("正在同步最新图库…", 12, false);
+        state.setTextColor(ThemeManager.secondary(this));
+        state.setPadding(0, dp(7), 0, dp(7));
+        root.addView(state);
+
+        LinearLayout selection = new LinearLayout(this);
+        selection.setOrientation(LinearLayout.HORIZONTAL);
         selectAllButton = button("全选");
         downloadButton = button("下载 0");
         clearSelectButton = button("取消选择");
-        controls.addView(sortButton, weightedButton());
-        LinearLayout.LayoutParams mid1 = weightedButton(); mid1.setMargins(dp(6), 0, dp(6), 0);
-        controls.addView(selectAllButton, mid1);
-        controls.addView(downloadButton, weightedButton());
-        LinearLayout.LayoutParams end = weightedButton(); end.setMargins(dp(6), 0, 0, 0);
-        controls.addView(clearSelectButton, end);
-        root.addView(controls);
-
-        state = text("正在读取服务器历史…", 13, false);
-        state.setTextColor(Color.DKGRAY);
-        state.setPadding(0, dp(8), 0, dp(8));
-        root.addView(state);
+        selection.addView(selectAllButton, weightedButton());
+        LinearLayout.LayoutParams middle = weightedButton(); middle.setMargins(dp(6), 0, dp(6), 0);
+        selection.addView(downloadButton, middle);
+        selection.addView(clearSelectButton, weightedButton());
+        root.addView(selection);
 
         ScrollView scroll = new ScrollView(this);
         grid = new GridLayout(this);
@@ -104,8 +126,8 @@ public class GalleryActivity extends Activity {
         root.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         back.setOnClickListener(v -> finish());
-        refresh.setOnClickListener(v -> refreshGallery());
-        sortButton.setOnClickListener(this::showSortMenu);
+        sortButton.setOnClickListener(v -> showSortMenu(v));
+        refresh.setOnClickListener(v -> refreshGallery(true));
         selectAllButton.setOnClickListener(v -> selectAll());
         downloadButton.setOnClickListener(v -> downloadSelected());
         clearSelectButton.setOnClickListener(v -> clearSelection());
@@ -113,32 +135,65 @@ public class GalleryActivity extends Activity {
         setContentView(root);
     }
 
-    private void refreshGallery() {
-        int generation = ++renderGeneration;
-        grid.removeAllViews();
-        allRefs.clear();
-        tileByKey.clear();
-        selectedKeys.clear();
-        updateSelectionControls();
-        state.setText("正在读取服务器历史…");
+    private void refreshGallery(boolean forceMessage) {
+        if (fetching || batchDownloading) return;
+        fetching = true;
+        if (forceMessage) state.setText("正在同步 ComfyUI history 与已完成队列…");
         thumbPool.submit(() -> {
+            List<ImageRef> merged = new ArrayList<>();
+            String warning = "";
             try {
                 ComfyApiClient api = new ComfyApiClient(server);
-                List<ImageRef> refs = api.parseImagesFromAllHistory(api.getAllHistory(160), MAX_IMAGES);
-                runOnUiThread(() -> {
-                    if (generation != renderGeneration) return;
-                    allRefs.clear();
-                    allRefs.addAll(refs);
-                    renderGrid();
-                });
+                merged.addAll(api.parseImagesFromAllHistory(api.getAllHistory(300), 300));
             } catch (Exception e) {
-                runOnUiThread(() -> new AlertDialog.Builder(this)
-                        .setTitle("图库读取失败")
-                        .setMessage(e.getMessage() == null ? e.toString() : e.getMessage())
-                        .setPositiveButton("知道了", null)
-                        .show());
+                warning = e.getMessage() == null ? "history 读取失败" : e.getMessage();
             }
+            // Queue results are persisted independently of Activity lifecycle and can fill the
+            // short window where ComfyUI /history has not exposed the newest result yet.
+            merged.addAll(JobStore.recentOutputRefs(this, 300));
+            List<ImageRef> normalized = normalizeLatest(merged, MAX_IMAGES);
+            String finalWarning = warning;
+            runOnUiThread(() -> {
+                fetching = false;
+                boolean changed = !sameRefs(allRefs, normalized);
+                if (changed) {
+                    allRefs.clear();
+                    allRefs.addAll(normalized);
+                    selectedKeys.retainAll(keysOf(allRefs));
+                    renderGrid();
+                } else {
+                    updateState(finalWarning);
+                }
+            });
         });
+    }
+
+    private List<ImageRef> normalizeLatest(List<ImageRef> refs, int limit) {
+        LinkedHashMap<String, ImageRef> map = new LinkedHashMap<>();
+        for (ImageRef ref : refs) {
+            if (ref == null || ref.filename == null || ref.filename.isEmpty()) continue;
+            ImageRef old = map.get(ref.key());
+            if (old == null || ref.timestamp >= old.timestamp) map.put(ref.key(), ref);
+        }
+        List<ImageRef> out = new ArrayList<>(map.values());
+        out.sort(Comparator.comparingLong((ImageRef x) -> x.timestamp).reversed());
+        if (out.size() > limit) return new ArrayList<>(out.subList(0, limit));
+        return out;
+    }
+
+    private boolean sameRefs(List<ImageRef> a, List<ImageRef> b) {
+        if (a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); i++) {
+            ImageRef x = a.get(i), y = b.get(i);
+            if (!x.key().equals(y.key()) || x.timestamp != y.timestamp) return false;
+        }
+        return true;
+    }
+
+    private Set<String> keysOf(List<ImageRef> refs) {
+        Set<String> out = ConcurrentHashMap.newKeySet();
+        for (ImageRef r : refs) out.add(r.key());
+        return out;
     }
 
     private void renderGrid() {
@@ -147,12 +202,19 @@ public class GalleryActivity extends Activity {
         tileByKey.clear();
         List<ImageRef> sorted = new ArrayList<>(allRefs);
         sortRefs(sorted);
-        state.setText(sorted.isEmpty() ? "服务器历史里暂时没有图像输出" :
-                "显示最近 " + sorted.size() + " 张（最多 100 张）· 长按图片进入多选");
-
+        updateState("");
         ComfyApiClient api = new ComfyApiClient(server);
         for (ImageRef ref : sorted) addTile(api, ref, generation);
         updateSelectionControls();
+    }
+
+    private void updateState(String warning) {
+        if (allRefs.isEmpty()) {
+            state.setText(warning == null || warning.isEmpty() ? "暂时没有图像输出" : "暂时没有可显示图片 · " + warning);
+        } else {
+            String suffix = warning == null || warning.isEmpty() ? "" : " · history 暂不可用，已显示本地任务结果";
+            state.setText("已同步最近 " + allRefs.size() + " 张（最多 100 张）· 每 5 秒自动刷新 · 长按多选" + suffix);
+        }
     }
 
     private void sortRefs(List<ImageRef> refs) {
@@ -172,18 +234,18 @@ public class GalleryActivity extends Activity {
 
         ImageView image = new ImageView(this);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        image.setBackgroundColor(Color.rgb(232, 234, 239));
+        image.setBackgroundColor(ThemeManager.imagePlaceholder(this));
         tile.addView(image, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(168)));
 
         TextView filename = text(ref.filename, 11, false);
-        filename.setTextColor(Color.DKGRAY);
+        filename.setTextColor(ThemeManager.secondary(this));
         filename.setMaxLines(2);
         filename.setPadding(dp(2), dp(6), dp(2), 0);
         tile.addView(filename);
 
         if (ref.timestamp > 0) {
             TextView time = text(formatTime(ref.timestamp), 10, false);
-            time.setTextColor(Color.GRAY);
+            time.setTextColor(ThemeManager.muted(this));
             time.setPadding(dp(2), dp(2), dp(2), 0);
             tile.addView(time);
         }
@@ -226,9 +288,11 @@ public class GalleryActivity extends Activity {
         LinearLayout holder = new LinearLayout(this);
         holder.setGravity(Gravity.CENTER);
         holder.setPadding(dp(8), dp(8), dp(8), dp(8));
+        holder.setBackgroundColor(ThemeManager.card(this));
         ImageView large = new ImageView(this);
         large.setAdjustViewBounds(true);
         large.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        large.setBackgroundColor(ThemeManager.imagePlaceholder(this));
         holder.addView(large, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(480)));
 
         AlertDialog dialog = new AlertDialog.Builder(this)
@@ -242,7 +306,7 @@ public class GalleryActivity extends Activity {
             thumbPool.submit(() -> {
                 try {
                     ComfyApiClient.ImageDownload dl = new ComfyApiClient(server).fetchImage(ref);
-                    Bitmap b = MainActivity.decodeScaled(dl.bytes, 1800, 1800);
+                    Bitmap b = MainActivity.decodeScaled(dl.bytes, 2200, 2200);
                     runOnUiThread(() -> {
                         large.setImageBitmap(b);
                         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
@@ -297,6 +361,7 @@ public class GalleryActivity extends Activity {
         List<ImageRef> selected = new ArrayList<>();
         for (ImageRef ref : allRefs) if (selectedKeys.contains(ref.key())) selected.add(ref);
         downloadButton.setEnabled(false);
+        batchDownloading = true;
         state.setText("准备批量下载 " + selected.size() + " 张图片…");
         downloadPool.submit(() -> {
             ComfyApiClient api = new ComfyApiClient(server);
@@ -314,10 +379,11 @@ public class GalleryActivity extends Activity {
             }
             int finalOk = ok;
             runOnUiThread(() -> {
+                batchDownloading = false;
                 downloadButton.setEnabled(true);
                 Toast.makeText(this, "批量下载完成：" + finalOk + " / " + selected.size(), Toast.LENGTH_LONG).show();
                 clearSelection();
-                state.setText("显示最近 " + allRefs.size() + " 张（最多 100 张）· 长按图片进入多选");
+                updateState("");
             });
         });
     }
@@ -350,14 +416,14 @@ public class GalleryActivity extends Activity {
 
     private void setTileBackground(LinearLayout tile, boolean selected) {
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(selected ? Color.rgb(222, 235, 255) : Color.WHITE);
+        bg.setColor(selected ? ThemeManager.selected(this) : ThemeManager.card(this));
         bg.setCornerRadius(dp(14));
-        if (selected) bg.setStroke(dp(2), Color.rgb(45, 110, 220));
+        if (selected) bg.setStroke(dp(2), ThemeManager.accent(this));
         tile.setBackground(bg);
     }
 
     private String formatTime(long t) {
-        return new SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(new Date(t));
+        return new SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(new Date(t));
     }
 
     private LinearLayout.LayoutParams weightedButton() { return new LinearLayout.LayoutParams(0, dp(44), 1f); }
@@ -375,7 +441,7 @@ public class GalleryActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(s);
         t.setTextSize(sp);
-        t.setTextColor(Color.rgb(28, 30, 35));
+        t.setTextColor(ThemeManager.text(this));
         if (bold) t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         return t;
     }

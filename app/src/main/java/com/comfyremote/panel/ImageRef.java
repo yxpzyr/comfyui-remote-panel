@@ -35,6 +35,18 @@ public class ImageRef {
         );
     }
 
+    public JSONObject toJson() {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("filename", filename);
+            o.put("subfolder", subfolder);
+            o.put("type", type);
+            o.put("timestamp", timestamp);
+            o.put("prompt_id", promptId);
+        } catch (Exception ignored) {}
+        return o;
+    }
+
     public String key() {
         return type + "|" + subfolder + "|" + filename;
     }

@@ -61,8 +61,7 @@ public class MainActivity extends Activity {
         if (job == null) return;
         if (JobRecord.COMPLETED.equals(job.status)) {
             statusText.setText("状态：" + job.workflowName + " 已完成 · " + job.message);
-            if (job.promptId != null && !job.promptId.isEmpty() && !job.promptId.equals(lastPreviewedPromptId)) {
-                lastPreviewedPromptId = job.promptId;
+            if (!job.outputRefs().isEmpty() && (!safe(job.promptId).equals(lastPreviewedPromptId) || outputBindings.isEmpty())) {
                 loadJobOutputs(job);
             }
         } else if (JobRecord.FAILED.equals(job.status)) {
@@ -72,27 +71,31 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        ThemeManager.prepare(this);
         super.onCreate(savedInstanceState);
+        ThemeManager.applyWindow(this);
         prefs = getSharedPreferences("comfy_remote", MODE_PRIVATE);
         profiles = WorkflowStore.load(this);
         resolveActiveProfile();
         buildUi();
         rebuildWorkflowStrip();
         rebuildDynamicControls();
-        JobStore.markInterruptedSubmissionsFailed(this);
         GenerationManager.resumePending(this, currentServer());
+        syncLatestCompletedOutput();
     }
 
     @Override protected void onStart() {
         super.onStart();
         GenerationManager.addListener(jobListener);
         refreshQueueButton();
+        syncLatestCompletedOutput();
     }
 
     @Override protected void onResume() {
         super.onResume();
         GenerationManager.resumePending(this, currentServer());
         refreshQueueButton();
+        syncLatestCompletedOutput();
     }
 
     @Override protected void onStop() {
@@ -108,12 +111,20 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(18), dp(18), dp(18), dp(28));
-        root.setBackgroundColor(Color.rgb(246, 247, 249));
+        root.setBackgroundColor(ThemeManager.background(this));
         scroll.addView(root);
 
-        root.addView(text("ComfyUI 远程面板", 25, true));
-        TextView subtitle = text("V1.8 · 多工作流常驻 / 连续队列 / 100 张增强图库", 13, false);
-        subtitle.setTextColor(Color.DKGRAY);
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView mainTitle = text("ComfyUI 远程面板", 25, true);
+        Button appearanceBtn = button(ThemeManager.isDark(this) ? "🌙 深色" : "☀ 外观");
+        titleRow.addView(mainTitle, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
+        root.addView(titleRow);
+        appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
+        TextView subtitle = text("V1.9 · 后台队列 / 实时图库 / 任务进度 / 夜间模式", 13, false);
+        subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(16));
         root.addView(subtitle);
 
@@ -135,7 +146,7 @@ public class MainActivity extends Activity {
         connRow.addView(connectBtn, btnLp);
         connectionCard.addView(connRow);
         connectionState = text("● 未检测", 13, false);
-        connectionState.setTextColor(Color.GRAY);
+        connectionState.setTextColor(ThemeManager.muted(this));
         connectionState.setPadding(0, dp(6), 0, 0);
         connectionCard.addView(connectionState);
         connectBtn.setOnClickListener(v -> testConnection());
@@ -152,7 +163,7 @@ public class MainActivity extends Activity {
         workflowButtons.addView(manageBtn, manageLp);
         workflowCard.addView(workflowButtons);
         workflowState = text("当前：未选择", 13, false);
-        workflowState.setTextColor(Color.DKGRAY);
+        workflowState.setTextColor(ThemeManager.secondary(this));
         workflowState.setPadding(0, dp(8), 0, dp(6));
         workflowCard.addView(workflowState);
 
@@ -163,7 +174,7 @@ public class MainActivity extends Activity {
         workflowScroll.addView(workflowStrip);
         workflowCard.addView(workflowScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         TextView workflowTip = text("工作流只需导入一次，会保存在 App 中；可同时保存多个并随时切换。", 12, false);
-        workflowTip.setTextColor(Color.GRAY);
+        workflowTip.setTextColor(ThemeManager.muted(this));
         workflowTip.setPadding(0, dp(6), 0, 0);
         workflowCard.addView(workflowTip);
         importBtn.setOnClickListener(v -> chooseWorkflow());
@@ -171,8 +182,8 @@ public class MainActivity extends Activity {
 
         LinearLayout inputCard = cardWithTopMargin(root);
         inputCard.addView(sectionTitle("输入图片"));
-        TextView inputTip = text("提交后当前任务会进入 ComfyUI 队列；一旦提交成功即可立即换下一张图继续排队。", 12, false);
-        inputTip.setTextColor(Color.GRAY);
+        TextView inputTip = text("工作流保持常驻。选择图片后会先自动上传；上传完成即可点“开始生成”，点击后立刻可以继续选择下一张图片排队。", 12, false);
+        inputTip.setTextColor(ThemeManager.muted(this));
         inputTip.setPadding(0, 0, 0, dp(8));
         inputCard.addView(inputTip);
         inputList = new LinearLayout(this);
@@ -182,7 +193,7 @@ public class MainActivity extends Activity {
         LinearLayout paramCard = cardWithTopMargin(root);
         paramCard.addView(sectionTitle("提示词 / 开关"));
         TextView paramTip = text("每个工作流会分别记住自己的可编辑参数；切换工作流不会互相覆盖。", 12, false);
-        paramTip.setTextColor(Color.GRAY);
+        paramTip.setTextColor(ThemeManager.muted(this));
         paramTip.setPadding(0, 0, 0, dp(8));
         paramCard.addView(paramTip);
         parameterList = new LinearLayout(this);
@@ -194,7 +205,7 @@ public class MainActivity extends Activity {
         outputList = new LinearLayout(this);
         outputList.setOrientation(LinearLayout.VERTICAL);
         outputCard.addView(outputList);
-        outputList.addView(text("任务完成后会在这里显示最近一次可读取输出；完整历史请打开图库。", 13, false));
+        outputList.addView(text("任务完成后会自动恢复最新输出，即使曾切后台、锁屏或切换页面；完整历史请打开图库。", 13, false));
         saveAllButton = button("全部保存当前输出");
         saveAllButton.setEnabled(false);
         LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46));
@@ -205,7 +216,7 @@ public class MainActivity extends Activity {
         LinearLayout actionCard = cardWithTopMargin(root);
         LinearLayout buttons = new LinearLayout(this);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
-        submitButton = button("＋ 加入队列");
+        submitButton = button("▶ 开始生成");
         queueButton = button("队列");
         Button galleryBtn = button("图库");
         buttons.addView(submitButton, weightedButton());
@@ -226,8 +237,8 @@ public class MainActivity extends Activity {
             startActivity(new Intent(this, GalleryActivity.class));
         });
 
-        TextView tip = text("可以在工作流 A 排队后立刻切到工作流 B 再提交。真正的 GPU 执行顺序由 ComfyUI 队列负责。", 12, false);
-        tip.setTextColor(Color.GRAY);
+        TextView tip = text("提交按钮不会等待上一张生成完成；工作流 A / B / C 可交叉连续排队，真正的 GPU 执行顺序由 ComfyUI 队列负责。", 12, false);
+        tip.setTextColor(ThemeManager.muted(this));
         tip.setPadding(0, dp(16), 0, 0);
         root.addView(tip);
         setContentView(scroll);
@@ -253,7 +264,7 @@ public class MainActivity extends Activity {
         workflowStrip.removeAllViews();
         if (profiles.isEmpty()) {
             TextView empty = text("还没有保存的工作流", 13, false);
-            empty.setTextColor(Color.GRAY);
+            empty.setTextColor(ThemeManager.muted(this));
             workflowStrip.addView(empty);
             workflowState.setText("当前：未选择");
             return;
@@ -263,9 +274,9 @@ public class MainActivity extends Activity {
             boolean active = activeProfile != null && activeProfile.id.equals(profile.id);
             Button b = button((profile.favorite ? "★ " : "") + profile.name);
             GradientDrawable bg = new GradientDrawable();
-            bg.setColor(active ? Color.rgb(222, 235, 255) : Color.rgb(238, 240, 244));
+            bg.setColor(active ? ThemeManager.selected(this) : ThemeManager.imagePlaceholder(this));
             bg.setCornerRadius(dp(12));
-            if (active) bg.setStroke(dp(2), Color.rgb(50, 110, 215));
+            if (active) bg.setStroke(dp(2), ThemeManager.accent(this));
             b.setBackground(bg);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(44));
             lp.setMargins(0, 0, dp(8), 0);
@@ -409,7 +420,7 @@ public class MainActivity extends Activity {
     private void rebuildDynamicControls() {
         rebuildInputControls();
         rebuildParameterControls();
-        submitButton.setEnabled(activeProfile != null);
+        refreshSubmitEnabled();
     }
 
     private void rebuildInputControls() {
@@ -417,12 +428,14 @@ public class MainActivity extends Activity {
         imageBindings.clear();
         if (activeProfile == null) {
             inputList.addView(text("先导入或选择一个工作流", 13, false));
+            refreshSubmitEnabled();
             return;
         }
         try {
             List<WorkflowUtils.NodeChoice> nodes = WorkflowUtils.findLoadImageNodes(activeProfile.promptObject());
             if (nodes.isEmpty()) {
                 inputList.addView(text("这个工作流没有需要从手机替换的文件型图片输入。", 13, false));
+                refreshSubmitEnabled();
                 return;
             }
             Map<String, Uri> remembered = sessionInputUris.get(activeProfile.id);
@@ -446,15 +459,29 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
                 blp.setMargins(0, dp(6), 0, 0);
                 box.addView(b.selectButton, blp);
+                b.uploadState = text(b.uri == null ? "等待选择图片" : "准备上传…", 11, false);
+                b.uploadState.setTextColor(ThemeManager.muted(this));
+                b.uploadState.setPadding(0, dp(5), 0, 0);
+                box.addView(b.uploadState);
                 b.selectButton.setOnClickListener(v -> chooseInputImage(b));
+                b.replaceSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                    if (isChecked && b.uri != null && (b.remoteFilename == null || b.remoteFilename.isEmpty()) && !b.uploading) {
+                        startInputUpload(b, b.uri);
+                    }
+                    refreshSubmitEnabled();
+                });
                 LinearLayout.LayoutParams boxLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
                 boxLp.setMargins(0, 0, 0, dp(10));
                 inputList.addView(box, boxLp);
-                if (b.uri != null) loadPreviewOnly(b, b.uri);
+                if (b.uri != null) {
+                    loadPreviewOnly(b, b.uri);
+                    startInputUpload(b, b.uri);
+                }
             }
         } catch (Exception e) {
             inputList.addView(text("读取工作流输入失败：" + e.getMessage(), 13, false));
         }
+        refreshSubmitEnabled();
     }
 
     private void chooseInputImage(ImageBinding binding) {
@@ -466,13 +493,58 @@ public class MainActivity extends Activity {
 
     private void loadInputPreview(ImageBinding binding, Uri uri) {
         binding.uri = uri;
+        binding.remoteFilename = "";
+        binding.uploadError = "";
         binding.replaceSwitch.setChecked(true);
         binding.selectButton.setText("已选择：" + getDisplayName(uri));
         if (activeProfile != null) {
             sessionInputUris.computeIfAbsent(activeProfile.id, x -> new HashMap<>()).put(inputKey(binding.choice), uri);
         }
-        statusText.setText("状态：已选择输入图 " + (binding.index + 1));
+        statusText.setText("状态：已选择输入图 " + (binding.index + 1) + "，正在上传到 ComfyUI…");
         loadPreviewOnly(binding, uri);
+        startInputUpload(binding, uri);
+    }
+
+    private void startInputUpload(ImageBinding binding, Uri uri) {
+        if (binding == null || uri == null) return;
+        final long token = ++binding.uploadToken;
+        binding.uploading = true;
+        binding.remoteFilename = "";
+        binding.uploadError = "";
+        if (binding.uploadState != null) {
+            binding.uploadState.setText("上传中…");
+            binding.uploadState.setTextColor(ThemeManager.warning(this));
+        }
+        refreshSubmitEnabled();
+        final String server = currentServer();
+        pool.submit(() -> {
+            try {
+                ComfyApiClient.UploadResult uploaded = new ComfyApiClient(server).uploadImage(this, uri);
+                runOnUiThread(() -> {
+                    if (token != binding.uploadToken || binding.uri == null || !binding.uri.equals(uri)) return;
+                    binding.uploading = false;
+                    binding.remoteFilename = uploaded.workflowFilename();
+                    if (binding.uploadState != null) {
+                        binding.uploadState.setText("✓ 已上传，可开始生成");
+                        binding.uploadState.setTextColor(ThemeManager.success(this));
+                    }
+                    statusText.setText("状态：输入图 " + (binding.index + 1) + " 已上传，可直接开始生成");
+                    refreshSubmitEnabled();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (token != binding.uploadToken) return;
+                    binding.uploading = false;
+                    binding.uploadError = e.getMessage() == null ? e.toString() : e.getMessage();
+                    if (binding.uploadState != null) {
+                        binding.uploadState.setText("上传失败 · 点“选择图片”重试");
+                        binding.uploadState.setTextColor(ThemeManager.error(this));
+                    }
+                    statusText.setText("状态：输入图片上传失败");
+                    refreshSubmitEnabled();
+                });
+            }
+        });
     }
 
     private void loadPreviewOnly(ImageBinding binding, Uri uri) {
@@ -486,6 +558,22 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> toast("图片预览失败：" + e.getMessage()));
             }
         });
+    }
+
+    private void refreshSubmitEnabled() {
+        if (submitButton == null) return;
+        boolean ready = activeProfile != null;
+        if (ready) {
+            for (ImageBinding b : imageBindings) {
+                if (b.replaceSwitch != null && b.replaceSwitch.isChecked()) {
+                    if (b.uri == null || b.uploading || b.remoteFilename == null || b.remoteFilename.isEmpty()) {
+                        ready = false;
+                        break;
+                    }
+                }
+            }
+        }
+        submitButton.setEnabled(ready);
     }
 
     private void captureSessionInputs() {
@@ -587,74 +675,57 @@ public class MainActivity extends Activity {
         final List<FieldOverride> overrides = snapshotFieldOverrides();
 
         for (ImageJob j : imageJobs) {
-            if (j.replace && j.uri == null) {
+            if (!j.replace) continue;
+            if (j.uri == null) {
                 showError("缺少输入图片", new Exception("输入图 " + (j.index + 1) + " 已开启“替换此输入”，请先选择图片；如果想保留工作流原图，请关闭该开关。"));
+                return;
+            }
+            if (j.uploading || j.remoteFilename == null || j.remoteFilename.isEmpty()) {
+                toast(j.uploadError == null || j.uploadError.isEmpty() ? "图片还在上传，请稍候" : "图片上传失败，请重新选择后再试");
                 return;
             }
         }
 
-        final String server = currentServer();
-        final JobRecord record = JobRecord.create(profile.id, profile.name, buildInputSummary(imageJobs));
-        JobStore.add(this, record);
-        GenerationManager.notifySubmitted(this, record.localId);
-        submitButton.setEnabled(false);
-        statusText.setText("状态：正在上传并提交 " + profile.name + "…");
-        refreshQueueButton();
-
-        final String capturedPrompt = profile.promptJson;
-        final String capturedUi = profile.uiJson;
-
-        pool.submit(() -> {
-            try {
-                ComfyApiClient api = new ComfyApiClient(server);
-                JSONObject prompt;
-                if (capturedUi != null && !capturedUi.trim().isEmpty()) {
-                    prompt = WorkflowUiConverter.toApiPrompt(new JSONObject(capturedUi), server);
-                } else {
-                    prompt = new JSONObject(capturedPrompt);
-                }
-                applyFieldOverrides(prompt, overrides);
-
-                for (ImageJob b : imageJobs) {
-                    if (!b.replace || b.uri == null) continue;
-                    setStatus("正在上传输入图 " + (b.index + 1) + "…");
-                    ComfyApiClient.UploadResult uploaded = api.uploadImage(this, b.uri);
-                    WorkflowUtils.setInputValue(prompt, b.choice.id, b.choice.inputName, uploaded.workflowFilename());
-                }
-
-                setStatus("正在提交到 ComfyUI 队列…");
-                String promptId = api.queuePrompt(prompt);
-                JobStore.attachPrompt(this, record.localId, promptId);
-                GenerationManager.notifySubmitted(this, record.localId);
-                GenerationManager.monitorPrompt(this, server, record.localId, promptId);
-
-                runOnUiThread(() -> {
-                    submitButton.setEnabled(true);
-                    if (activeProfile != null && activeProfile.id.equals(profile.id)) clearCurrentInputSelections();
-                    statusText.setText("状态：已加入队列 · " + shortId(promptId) + " · 现在可以继续选择下一张图");
-                    refreshQueueButton();
-                    toast("已加入 ComfyUI 队列");
-                });
-            } catch (Exception e) {
-                JobStore.updateStatus(this, record.localId, JobRecord.FAILED,
-                        "提交失败：" + (e.getMessage() == null ? e.toString() : e.getMessage()), 0);
-                GenerationManager.notifySubmitted(this, record.localId);
-                runOnUiThread(() -> {
-                    submitButton.setEnabled(true);
-                    statusText.setText("状态：提交失败");
-                    showError("任务提交失败", e);
-                    refreshQueueButton();
-                });
+        try {
+            JSONObject prompt = new JSONObject(profile.promptJson); // V1.9: loaded workflow stays compiled; no repeated /object_info conversion
+            applyFieldOverrides(prompt, overrides);
+            for (ImageJob b : imageJobs) {
+                if (!b.replace) continue;
+                WorkflowUtils.setInputValue(prompt, b.choice.id, b.choice.inputName, b.remoteFilename);
             }
-        });
+
+            final String server = currentServer();
+            final String previewUri = firstInputUri(imageJobs);
+            final JobRecord record = JobRecord.create(profile.id, profile.name, buildInputSummary(imageJobs),
+                    previewUri, server, prompt.toString());
+            JobStore.add(this, record);
+            GenerationManager.notifySubmitted(this, record.localId);
+            GenerationManager.enqueueSubmission(this, record.localId);
+
+            // Important: release the UI immediately. The serial submitter preserves click order in background.
+            if (activeProfile != null && activeProfile.id.equals(profile.id)) clearCurrentInputSelections();
+            statusText.setText("状态：已加入提交队列 · 现在可以立刻选择下一张图片");
+            refreshQueueButton();
+            refreshSubmitEnabled();
+            toast("已加入队列");
+        } catch (Exception e) {
+            showError("准备任务失败", e);
+        }
     }
 
     private List<ImageJob> snapshotImageJobs() {
         List<ImageJob> out = new ArrayList<>();
         for (ImageBinding b : imageBindings) {
-            out.add(new ImageJob(b.index, b.choice, b.uri, b.replaceSwitch != null && b.replaceSwitch.isChecked()));
+            out.add(new ImageJob(b.index, b.choice, b.uri,
+                    b.replaceSwitch != null && b.replaceSwitch.isChecked(),
+                    b.remoteFilename, b.uploading, b.uploadError));
         }
         return out;
+    }
+
+    private String firstInputUri(List<ImageJob> jobs) {
+        for (ImageJob j : jobs) if (j.replace && j.uri != null) return j.uri.toString();
+        return "";
     }
 
     private String buildInputSummary(List<ImageJob> jobs) {
@@ -668,10 +739,18 @@ public class MainActivity extends Activity {
         if (activeProfile == null) return;
         Map<String, Uri> map = sessionInputUris.computeIfAbsent(activeProfile.id, x -> new HashMap<>());
         for (ImageBinding b : imageBindings) {
+            b.uploadToken++;
             b.uri = null;
+            b.remoteFilename = "";
+            b.uploading = false;
+            b.uploadError = "";
             map.remove(inputKey(b.choice));
             if (b.preview != null) b.preview.setImageDrawable(null);
             if (b.selectButton != null) b.selectButton.setText("选择下一张图片");
+            if (b.uploadState != null) {
+                b.uploadState.setText("等待选择图片");
+                b.uploadState.setTextColor(ThemeManager.muted(this));
+            }
         }
     }
 
@@ -685,24 +764,40 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void syncLatestCompletedOutput() {
+        JobRecord latest = JobStore.latestCompleted(this);
+        if (latest == null) return;
+        if (!safe(latest.promptId).equals(lastPreviewedPromptId) || outputBindings.isEmpty()) loadJobOutputs(latest);
+    }
+
     private void loadJobOutputs(JobRecord job) {
-        final String serverForJob = currentServer();
-        if (job.outputCount <= 0) {
-            outputList.removeAllViews();
-            outputList.addView(text("任务已完成，但 history 中没有可下载图片。可在电脑端检查最终输出节点。", 13, false));
-            saveAllButton.setEnabled(false);
-            return;
-        }
+        if (job == null) return;
+        final String serverForJob = job.server == null || job.server.isEmpty() ? currentServer() : job.server;
         pool.submit(() -> {
             try {
                 ComfyApiClient api = new ComfyApiClient(serverForJob);
-                JSONObject history = api.getHistoryForPrompt(job.promptId);
-                List<ImageRef> refs = api.parseImagesFromPromptHistory(history, job.promptId);
-                if (refs.isEmpty()) refs = api.parseImagesDeepForPrompt(history, job.promptId);
+                List<ImageRef> refs = new ArrayList<>(job.outputRefs());
+                if (refs.isEmpty() && job.promptId != null && !job.promptId.isEmpty()) {
+                    try {
+                        JSONObject history = api.getHistoryForPrompt(job.promptId);
+                        refs = api.parseImagesFromPromptHistory(history, job.promptId);
+                        if (refs.isEmpty()) refs = api.parseImagesDeepForPrompt(history, job.promptId);
+                    } catch (Exception ignored) {}
+                    if (refs.isEmpty()) {
+                        try {
+                            JSONObject all = api.getAllHistory(300);
+                            refs = api.parseImagesFromPromptHistory(all, job.promptId);
+                            if (refs.isEmpty()) refs = api.parseImagesDeepForPrompt(all, job.promptId);
+                        } catch (Exception ignored) {}
+                    }
+                }
                 if (refs.isEmpty()) {
-                    JSONObject all = api.getAllHistory(160);
-                    refs = api.parseImagesFromPromptHistory(all, job.promptId);
-                    if (refs.isEmpty()) refs = api.parseImagesDeepForPrompt(all, job.promptId);
+                    runOnUiThread(() -> {
+                        outputList.removeAllViews();
+                        outputList.addView(text("任务已完成，但没有可读取的图片记录。", 13, false));
+                        saveAllButton.setEnabled(false);
+                    });
+                    return;
                 }
                 List<OutputBinding> loaded = new ArrayList<>();
                 int limit = Math.min(refs.size(), 12);
@@ -714,7 +809,10 @@ public class MainActivity extends Activity {
                         if (bmp != null) loaded.add(new OutputBinding(ref, dl, bmp));
                     } catch (Exception ignored) {}
                 }
-                if (!loaded.isEmpty()) runOnUiThread(() -> renderOutputs(loaded));
+                if (!loaded.isEmpty()) runOnUiThread(() -> {
+                    lastPreviewedPromptId = safe(job.promptId);
+                    renderOutputs(loaded);
+                });
             } catch (Exception ignored) {}
         });
     }
@@ -774,24 +872,42 @@ public class MainActivity extends Activity {
     private void testConnection() {
         saveAddress();
         connectionState.setText("● 正在检测…");
-        connectionState.setTextColor(Color.rgb(210, 140, 0));
+        connectionState.setTextColor(ThemeManager.warning(this));
         pool.submit(() -> {
             try {
                 new ComfyApiClient(currentServer()).testConnection();
                 runOnUiThread(() -> {
                     connectionState.setText("● 已连接  " + ComfyApiClient.normalizeBase(currentServer()));
-                    connectionState.setTextColor(Color.rgb(30, 150, 80));
+                    connectionState.setTextColor(ThemeManager.success(this));
                     toast("ComfyUI 连接成功");
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
                     connectionState.setText("● 连接失败");
-                    connectionState.setTextColor(Color.rgb(200, 60, 60));
+                    connectionState.setTextColor(ThemeManager.error(this));
                     showError("连接失败", e);
                 });
             }
         });
     }
+
+    private void showAppearanceMenu() {
+        String current = ThemeManager.getMode(this);
+        int checked = ThemeManager.MODE_LIGHT.equals(current) ? 1 : ThemeManager.MODE_DARK.equals(current) ? 2 : 0;
+        String[] items = new String[]{"跟随系统", "浅色模式", "深色模式"};
+        new AlertDialog.Builder(this)
+                .setTitle("外观模式")
+                .setSingleChoiceItems(items, checked, (dialog, which) -> {
+                    String mode = which == 1 ? ThemeManager.MODE_LIGHT : which == 2 ? ThemeManager.MODE_DARK : ThemeManager.MODE_SYSTEM;
+                    ThemeManager.setMode(this, mode);
+                    dialog.dismiss();
+                    recreate();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private String safe(String s) { return s == null ? "" : s; }
 
     private void saveAddress() {
         prefs.edit().putString("server", addressEdit.getText().toString().trim()).apply();
@@ -875,7 +991,7 @@ public class MainActivity extends Activity {
         l.setOrientation(LinearLayout.VERTICAL);
         l.setPadding(dp(14), dp(14), dp(14), dp(14));
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.WHITE);
+        bg.setColor(ThemeManager.card(this));
         bg.setCornerRadius(dp(16));
         l.setBackground(bg);
         return l;
@@ -886,7 +1002,7 @@ public class MainActivity extends Activity {
         l.setOrientation(LinearLayout.VERTICAL);
         l.setPadding(dp(10), dp(10), dp(10), dp(10));
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.rgb(248, 249, 251));
+        bg.setColor(ThemeManager.miniCard(this));
         bg.setCornerRadius(dp(12));
         l.setBackground(bg);
         return l;
@@ -902,7 +1018,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(s);
         t.setTextSize(sp);
-        t.setTextColor(Color.rgb(28, 30, 35));
+        t.setTextColor(ThemeManager.text(this));
         if (bold) t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         return t;
     }
@@ -918,7 +1034,7 @@ public class MainActivity extends Activity {
     private ImageView previewImage() {
         ImageView i = new ImageView(this);
         i.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        i.setBackgroundColor(Color.rgb(238, 240, 244));
+        i.setBackgroundColor(ThemeManager.imagePlaceholder(this));
         i.setPadding(dp(4), dp(4), dp(4), dp(4));
         return i;
     }
@@ -931,8 +1047,15 @@ public class MainActivity extends Activity {
         final WorkflowUtils.NodeChoice choice;
         final Uri uri;
         final boolean replace;
-        ImageJob(int index, WorkflowUtils.NodeChoice choice, Uri uri, boolean replace) {
+        final String remoteFilename;
+        final boolean uploading;
+        final String uploadError;
+        ImageJob(int index, WorkflowUtils.NodeChoice choice, Uri uri, boolean replace,
+                 String remoteFilename, boolean uploading, String uploadError) {
             this.index = index; this.choice = choice; this.uri = uri; this.replace = replace;
+            this.remoteFilename = remoteFilename == null ? "" : remoteFilename;
+            this.uploading = uploading;
+            this.uploadError = uploadError == null ? "" : uploadError;
         }
     }
 
@@ -949,6 +1072,11 @@ public class MainActivity extends Activity {
         Switch replaceSwitch;
         ImageView preview;
         Button selectButton;
+        TextView uploadState;
+        String remoteFilename = "";
+        String uploadError = "";
+        boolean uploading = false;
+        long uploadToken = 0;
         ImageBinding(int index, WorkflowUtils.NodeChoice choice) { this.index = index; this.choice = choice; }
     }
 

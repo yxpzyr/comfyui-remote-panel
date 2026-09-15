@@ -13,8 +13,8 @@ import java.util.List;
 public final class JobStore {
     private static final Object LOCK = new Object();
     private static final String PREFS = "comfy_remote";
-    private static final String KEY = "generation_jobs_v18";
-    private static final int MAX_RECORDS = 250;
+    private static final String KEY = "generation_jobs_v18"; // preserve V1.8 history
+    private static final int MAX_RECORDS = 300;
 
     private JobStore() {}
 
@@ -47,8 +47,22 @@ public final class JobStore {
     }
 
     public static JobRecord find(Context context, String localId) {
-        for (JobRecord j : list(context)) if (j.localId.equals(localId)) return j;
+        if (localId == null) return null;
+        for (JobRecord j : list(context)) if (localId.equals(j.localId)) return j;
         return null;
+    }
+
+    public static JobRecord latestCompleted(Context context) {
+        for (JobRecord j : list(context)) if (JobRecord.COMPLETED.equals(j.status)) return j;
+        return null;
+    }
+
+    public static void markSubmitting(Context context, String localId) {
+        update(context, localId, j -> {
+            j.status = JobRecord.SUBMITTING;
+            j.message = "正在提交到 ComfyUI";
+            j.progressPercent = Math.max(j.progressPercent, 2);
+        });
     }
 
     public static void attachPrompt(Context context, String localId, String promptId) {
@@ -56,6 +70,30 @@ public final class JobStore {
             j.promptId = promptId == null ? "" : promptId;
             j.status = JobRecord.QUEUED;
             j.message = "已提交到 ComfyUI 队列";
+            j.promptSubmittedAt = System.currentTimeMillis();
+            j.progressPercent = Math.max(j.progressPercent, 5);
+        });
+    }
+
+    public static void markStarted(Context context, String localId, String message) {
+        update(context, localId, j -> {
+            if (j.startedAt <= 0) j.startedAt = System.currentTimeMillis();
+            j.status = JobRecord.RUNNING;
+            if (message != null && !message.isEmpty()) j.message = message;
+            j.progressPercent = Math.max(j.progressPercent, 10);
+        });
+    }
+
+    public static void updateProgress(Context context, String localId, int percent, String currentNode, String message) {
+        update(context, localId, j -> {
+            int p = Math.max(0, Math.min(99, percent));
+            j.progressPercent = Math.max(j.progressPercent, p);
+            if (currentNode != null) j.currentNode = currentNode;
+            if (message != null && !message.isEmpty()) j.message = message;
+            if (p >= 10 && !JobRecord.SYNCING.equals(j.status)) {
+                j.status = JobRecord.RUNNING;
+                if (j.startedAt <= 0) j.startedAt = System.currentTimeMillis();
+            }
         });
     }
 
@@ -64,6 +102,28 @@ public final class JobStore {
             j.status = status;
             j.message = message == null ? "" : message;
             if (outputCount >= 0) j.outputCount = outputCount;
+            if (JobRecord.SYNCING.equals(status)) j.progressPercent = Math.max(j.progressPercent, 95);
+            if (JobRecord.COMPLETED.equals(status)) {
+                j.progressPercent = 100;
+                if (j.completedAt <= 0) j.completedAt = System.currentTimeMillis();
+            }
+            if (JobRecord.FAILED.equals(status) || JobRecord.CANCELLED.equals(status)) {
+                if (j.completedAt <= 0) j.completedAt = System.currentTimeMillis();
+            }
+        });
+    }
+
+    public static void complete(Context context, String localId, List<ImageRef> refs, String message) {
+        update(context, localId, j -> {
+            JSONArray a = new JSONArray();
+            if (refs != null) for (ImageRef ref : refs) a.put(ref.toJson());
+            j.outputRefsJson = a.toString();
+            j.outputCount = refs == null ? 0 : refs.size();
+            j.status = JobRecord.COMPLETED;
+            j.progressPercent = 100;
+            j.message = message == null ? "生成完成" : message;
+            j.completedAt = System.currentTimeMillis();
+            if (j.startedAt <= 0) j.startedAt = j.promptSubmittedAt > 0 ? j.promptSubmittedAt : j.submittedAt;
         });
     }
 
@@ -75,20 +135,21 @@ public final class JobStore {
         }
     }
 
-    public static void markInterruptedSubmissionsFailed(Context context) {
-        synchronized (LOCK) {
-            List<JobRecord> list = list(context);
-            boolean changed = false;
-            for (JobRecord j : list) {
-                if (JobRecord.UPLOADING.equals(j.status) && (j.promptId == null || j.promptId.isEmpty())) {
-                    j.status = JobRecord.FAILED;
-                    j.message = "App 在任务提交完成前被关闭，请重新提交";
-                    j.updatedAt = System.currentTimeMillis();
-                    changed = true;
-                }
+    public static List<ImageRef> recentOutputRefs(Context context, int max) {
+        List<ImageRef> out = new ArrayList<>();
+        java.util.LinkedHashMap<String, ImageRef> seen = new java.util.LinkedHashMap<>();
+        for (JobRecord j : list(context)) {
+            if (!JobRecord.COMPLETED.equals(j.status)) continue;
+            for (ImageRef ref : j.outputRefs()) {
+                ImageRef normalized = ref.timestamp > 0 ? ref : new ImageRef(ref.filename, ref.subfolder, ref.type,
+                        j.completedAt > 0 ? j.completedAt : j.updatedAt, j.promptId);
+                seen.putIfAbsent(normalized.key(), normalized);
             }
-            if (changed) save(context, list);
         }
+        out.addAll(seen.values());
+        out.sort(Comparator.comparingLong((ImageRef x) -> x.timestamp).reversed());
+        if (out.size() > max) return new ArrayList<>(out.subList(0, max));
+        return out;
     }
 
     private interface Mutator { void apply(JobRecord j); }

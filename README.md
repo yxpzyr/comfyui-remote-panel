@@ -1,8 +1,11 @@
-# ComfyUI 远程面板（Android）V1.8
+# ComfyUI 远程面板（Android）V1.9
 
 一个面向“手机 + Termius/Tailscale/SSH 转发 + 远程 ComfyUI”的中文 Android 控制端。
 
-## V1.8 重点升级
+## V1.9 重点升级
+
+V1.9 在 V1.8 多工作流/队列基础上，重点加入夜间模式、输入图片预上传、真正不阻塞 UI 的连续提交、后台恢复最近输出、实时图库，以及带缩略图/进度/耗时/原图预览的增强队列。详见 `V1.9_CHANGELOG.md`。
+
 
 - **多工作流常驻**：工作流只需导入一次，之后保存在 App 私有目录中；支持同时保存多个工作流、快速切换、重命名、收藏置顶和删除。
 - **普通 UI JSON + API JSON**：普通 ComfyUI UI 工作流会结合远程 `/object_info` 自动转换，API JSON 可直接使用。
@@ -63,7 +66,7 @@
 4. 在运行页面底部 **Artifacts** 下载 `ComfyUI-Remote-Panel-debug`。
 5. 解压后安装 `app-debug.apk`。
 
-## V1.8 数据保存
+## V1.9 数据保存
 
 - 工作流正文保存在 App 私有目录 `workflows_v18`，避免把大型 JSON 全塞进 SharedPreferences。
 - 当前工作流、服务器地址、任务队列状态等轻量信息保存在 SharedPreferences。
