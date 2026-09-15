@@ -30,8 +30,11 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -45,12 +48,14 @@ public class MainActivity extends Activity {
     private EditText addressEdit;
     private TextView connectionState, workflowState, statusText;
     private Button submitButton, queueButton, saveAllButton;
-    private LinearLayout workflowStrip, inputList, parameterList, outputList;
+    private LinearLayout workflowStrip, inputList, parameterList, outputSelectorList, outputList;
 
     private final List<ImageBinding> imageBindings = new ArrayList<>();
     private final List<FieldBinding> fieldBindings = new ArrayList<>();
+    private final List<OutputNodeBinding> outputNodeBindings = new ArrayList<>();
     private final List<OutputBinding> outputBindings = new ArrayList<>();
     private final Map<String, Map<String, Uri>> sessionInputUris = new HashMap<>();
+    private final Set<String> outputRefreshInFlight = new HashSet<>();
 
     private List<WorkflowProfile> profiles = new ArrayList<>();
     private WorkflowProfile activeProfile;
@@ -101,6 +106,7 @@ public class MainActivity extends Activity {
     @Override protected void onStop() {
         captureSessionInputs();
         saveCurrentOverrides();
+        saveOutputSelection();
         GenerationManager.removeListener(jobListener);
         super.onStop();
     }
@@ -123,7 +129,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V1.9 · 后台队列 / 实时图库 / 任务进度 / 夜间模式", 13, false);
+        TextView subtitle = text("V2.0 · 多输出选择 / 后台队列 / 实时图库 / 夜间模式", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(16));
         root.addView(subtitle);
@@ -199,6 +205,21 @@ public class MainActivity extends Activity {
         parameterList = new LinearLayout(this);
         parameterList.setOrientation(LinearLayout.VERTICAL);
         paramCard.addView(parameterList);
+
+        LinearLayout outputSelectCard = cardWithTopMargin(root);
+        outputSelectCard.addView(sectionTitle("输出节点"));
+        TextView outputSelectTip = text("工作流有多个输出点时，可独立开启/关闭。未勾选的输出节点不会参与本次 ComfyUI 执行；至少保留一个输出。", 12, false);
+        outputSelectTip.setTextColor(ThemeManager.muted(this));
+        outputSelectTip.setPadding(0, 0, 0, dp(8));
+        outputSelectCard.addView(outputSelectTip);
+        outputSelectorList = new LinearLayout(this);
+        outputSelectorList.setOrientation(LinearLayout.VERTICAL);
+        outputSelectCard.addView(outputSelectorList);
+        Button refreshOutputBtn = button("重新检测输出节点");
+        LinearLayout.LayoutParams outputRefreshLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
+        outputRefreshLp.setMargins(0, dp(6), 0, 0);
+        outputSelectCard.addView(refreshOutputBtn, outputRefreshLp);
+        refreshOutputBtn.setOnClickListener(v -> refreshOutputMetadataAsync(true));
 
         LinearLayout outputCard = cardWithTopMargin(root);
         outputCard.addView(sectionTitle("最近完成输出"));
@@ -290,6 +311,7 @@ public class MainActivity extends Activity {
         if (activeProfile != null && activeProfile.id.equals(profileId)) return;
         captureSessionInputs();
         saveCurrentOverrides();
+        saveOutputSelection();
         WorkflowProfile next = WorkflowStore.find(profiles, profileId);
         if (next == null) return;
         activeProfile = next;
@@ -339,6 +361,12 @@ public class MainActivity extends Activity {
                 String name = WorkflowStore.uniqueName(latest, desired);
                 JSONObject uiCopy = uiFormat ? new JSONObject(json.toString()) : null;
                 WorkflowProfile profile = WorkflowProfile.create(name, prompt, uiCopy);
+                try {
+                    JSONObject objectInfo = new ComfyApiClient(server).getObjectInfo();
+                    profile.setOutputChoices(WorkflowUtils.findOutputNodes(prompt, objectInfo), true, false);
+                } catch (Exception detectionError) {
+                    profile.setOutputChoices(WorkflowUtils.findOutputNodes(prompt), false, false);
+                }
                 WorkflowStore.upsert(this, profile);
                 WorkflowStore.setActiveId(this, profile.id);
                 runOnUiThread(() -> {
@@ -420,6 +448,7 @@ public class MainActivity extends Activity {
     private void rebuildDynamicControls() {
         rebuildInputControls();
         rebuildParameterControls();
+        rebuildOutputNodeControls();
         refreshSubmitEnabled();
     }
 
@@ -573,6 +602,7 @@ public class MainActivity extends Activity {
                 }
             }
         }
+        if (ready && !outputNodeBindings.isEmpty() && countEnabledOutputs() == 0) ready = false;
         submitButton.setEnabled(ready);
     }
 
@@ -634,6 +664,118 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void rebuildOutputNodeControls() {
+        if (outputSelectorList == null) return;
+        outputSelectorList.removeAllViews();
+        outputNodeBindings.clear();
+        if (activeProfile == null) {
+            outputSelectorList.addView(text("当前没有工作流", 13, false));
+            return;
+        }
+        List<WorkflowUtils.OutputChoice> choices = activeProfile.outputChoices();
+        if (choices.isEmpty()) {
+            try {
+                choices = WorkflowUtils.findOutputNodes(activeProfile.promptObject());
+                if (!choices.isEmpty()) {
+                    activeProfile.setOutputChoices(choices, false, false);
+                    WorkflowStore.upsert(this, activeProfile);
+                }
+            } catch (Exception ignored) {}
+        }
+        if (choices.isEmpty()) {
+            TextView empty = text("暂未检测到明确的输出节点。可以点“重新检测输出节点”读取 ComfyUI /object_info。", 13, false);
+            empty.setTextColor(ThemeManager.muted(this));
+            outputSelectorList.addView(empty);
+        } else {
+            Set<String> selected = activeProfile.selectedOutputNodeIds();
+            if (selected.isEmpty()) {
+                for (WorkflowUtils.OutputChoice c : choices) selected.add(c.id);
+                activeProfile.setSelectedOutputNodeIds(selected);
+                WorkflowStore.upsert(this, activeProfile);
+            }
+            for (WorkflowUtils.OutputChoice choice : choices) {
+                OutputNodeBinding binding = new OutputNodeBinding(choice);
+                outputNodeBindings.add(binding);
+                LinearLayout box = miniCard();
+                Switch sw = new Switch(this);
+                sw.setText(choice.label());
+                sw.setChecked(selected.contains(choice.id));
+                binding.switchView = sw;
+                box.addView(sw);
+                TextView note = text("关闭后，本次提交会从 API Prompt 中移除此输出节点。", 11, false);
+                note.setTextColor(ThemeManager.muted(this));
+                box.addView(note);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                lp.setMargins(0, 0, 0, dp(8));
+                outputSelectorList.addView(box, lp);
+                sw.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                    if (!isChecked && countEnabledOutputs() == 0) {
+                        buttonView.setChecked(true);
+                        toast("至少保留一个输出节点");
+                        return;
+                    }
+                    saveOutputSelection();
+                    refreshSubmitEnabled();
+                });
+            }
+            TextView verified = text(activeProfile.outputNodesVerified ? "✓ 已根据当前 ComfyUI 节点定义确认输出点" : "当前为本地识别结果；App 会尝试连接 ComfyUI 进一步确认。", 11, false);
+            verified.setTextColor(activeProfile.outputNodesVerified ? ThemeManager.success(this) : ThemeManager.warning(this));
+            outputSelectorList.addView(verified);
+        }
+        if (!activeProfile.outputNodesVerified) refreshOutputMetadataAsync(false);
+    }
+
+    private int countEnabledOutputs() {
+        int n = 0;
+        for (OutputNodeBinding b : outputNodeBindings) if (b.switchView != null && b.switchView.isChecked()) n++;
+        return n;
+    }
+
+    private void saveOutputSelection() {
+        if (activeProfile == null || outputNodeBindings.isEmpty()) return;
+        Set<String> selected = new LinkedHashSet<>();
+        for (OutputNodeBinding b : outputNodeBindings) if (b.switchView != null && b.switchView.isChecked()) selected.add(b.choice.id);
+        if (selected.isEmpty()) return;
+        activeProfile.setSelectedOutputNodeIds(selected);
+        WorkflowStore.upsert(this, activeProfile);
+    }
+
+    private void refreshOutputMetadataAsync(boolean userInitiated) {
+        if (activeProfile == null) { if (userInitiated) toast("请先选择工作流"); return; }
+        final String profileId = activeProfile.id;
+        if (!outputRefreshInFlight.add(profileId)) { if (userInitiated) toast("正在检测输出节点…"); return; }
+        if (userInitiated) statusText.setText("状态：正在读取 ComfyUI 输出节点定义…");
+        final String server = currentServer();
+        pool.submit(() -> {
+            try {
+                WorkflowProfile profile = WorkflowStore.find(WorkflowStore.load(this), profileId);
+                if (profile == null) return;
+                JSONObject objectInfo = new ComfyApiClient(server).getObjectInfo();
+                List<WorkflowUtils.OutputChoice> detectedTmp = WorkflowUtils.findOutputNodes(profile.promptObject(), objectInfo);
+                if (detectedTmp.isEmpty()) detectedTmp = WorkflowUtils.findOutputNodes(profile.promptObject());
+                final List<WorkflowUtils.OutputChoice> detected = detectedTmp;
+                profile.setOutputChoices(detected, true, true);
+                WorkflowStore.upsert(this, profile);
+                runOnUiThread(() -> {
+                    profiles = WorkflowStore.load(this);
+                    if (activeProfile != null && profileId.equals(activeProfile.id)) {
+                        activeProfile = WorkflowStore.find(profiles, profileId);
+                        rebuildOutputNodeControls();
+                        refreshSubmitEnabled();
+                    }
+                    if (userInitiated) {
+                        statusText.setText("状态：输出节点检测完成 · " + detected.size() + " 个");
+                        toast("检测到 " + detected.size() + " 个输出节点");
+                    }
+                });
+            } catch (Exception e) {
+                if (userInitiated) runOnUiThread(() -> showError("输出节点检测失败", e));
+            } finally {
+                outputRefreshInFlight.remove(profileId);
+            }
+        });
+    }
+
     private void saveCurrentOverrides() {
         if (activeProfile == null || fieldBindings.isEmpty()) return;
         try {
@@ -668,6 +810,7 @@ public class MainActivity extends Activity {
         if (activeProfile == null) { toast("请先导入或选择工作流"); return; }
         saveAddress();
         saveCurrentOverrides();
+        saveOutputSelection();
         captureSessionInputs();
 
         final WorkflowProfile profile = activeProfile;
@@ -687,8 +830,14 @@ public class MainActivity extends Activity {
         }
 
         try {
-            JSONObject prompt = new JSONObject(profile.promptJson); // V1.9: loaded workflow stays compiled; no repeated /object_info conversion
+            JSONObject prompt = new JSONObject(profile.promptJson); // V2.0: reusable compiled prompt; output sinks are filtered per submission
             applyFieldOverrides(prompt, overrides);
+            List<WorkflowUtils.OutputChoice> availableOutputs = profile.outputChoices();
+            Set<String> selectedOutputs = profile.selectedOutputNodeIds();
+            if (!availableOutputs.isEmpty()) {
+                if (selectedOutputs.isEmpty()) throw new Exception("至少选择一个输出节点");
+                prompt = WorkflowUtils.keepSelectedOutputNodes(prompt, availableOutputs, selectedOutputs);
+            }
             for (ImageJob b : imageJobs) {
                 if (!b.replace) continue;
                 WorkflowUtils.setInputValue(prompt, b.choice.id, b.choice.inputName, b.remoteFilename);
@@ -698,6 +847,8 @@ public class MainActivity extends Activity {
             final String previewUri = firstInputUri(imageJobs);
             final JobRecord record = JobRecord.create(profile.id, profile.name, buildInputSummary(imageJobs),
                     previewUri, server, prompt.toString());
+            record.selectedOutputNodeIdsJson = new JSONArray(selectedOutputs).toString();
+            record.outputSelectionSummary = WorkflowUtils.outputSummary(availableOutputs, selectedOutputs);
             JobStore.add(this, record);
             GenerationManager.notifySubmitted(this, record.localId);
             GenerationManager.enqueueSubmission(this, record.localId);
@@ -1078,6 +1229,12 @@ public class MainActivity extends Activity {
         boolean uploading = false;
         long uploadToken = 0;
         ImageBinding(int index, WorkflowUtils.NodeChoice choice) { this.index = index; this.choice = choice; }
+    }
+
+    private static final class OutputNodeBinding {
+        final WorkflowUtils.OutputChoice choice;
+        Switch switchView;
+        OutputNodeBinding(WorkflowUtils.OutputChoice choice) { this.choice = choice; }
     }
 
     private static final class FieldBinding {

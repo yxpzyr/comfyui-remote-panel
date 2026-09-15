@@ -174,6 +174,13 @@ public class QueueActivity extends Activity {
         input.setTextColor(ThemeManager.secondary(this));
         info.addView(input);
 
+        if (job.outputSelectionSummary != null && !job.outputSelectionSummary.isEmpty()) {
+            TextView outputSel = text("输出：" + job.outputSelectionSummary, 11, false);
+            outputSel.setTextColor(ThemeManager.secondary(this));
+            outputSel.setPadding(0, dp(3), 0, 0);
+            info.addView(outputSel);
+        }
+
         if (waitingPosition != null) {
             TextView pos = text("等待队列：第 " + waitingPosition + " 位", 11, true);
             pos.setTextColor(ThemeManager.warning(this));

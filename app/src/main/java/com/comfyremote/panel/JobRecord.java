@@ -4,7 +4,9 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 public final class JobRecord {
@@ -37,6 +39,8 @@ public final class JobRecord {
     public int progressPercent;
     public String currentNode;
     public String outputRefsJson;
+    public String selectedOutputNodeIdsJson;
+    public String outputSelectionSummary;
 
     public JobRecord() {}
 
@@ -58,7 +62,19 @@ public final class JobRecord {
         j.progressPercent = 0;
         j.currentNode = "";
         j.outputRefsJson = "[]";
+        j.selectedOutputNodeIdsJson = "[]";
+        j.outputSelectionSummary = "";
         return j;
+    }
+
+
+    public Set<String> selectedOutputNodeIds() {
+        Set<String> out = new LinkedHashSet<>();
+        try {
+            JSONArray a = new JSONArray(selectedOutputNodeIdsJson == null || selectedOutputNodeIdsJson.isEmpty() ? "[]" : selectedOutputNodeIdsJson);
+            for (int i = 0; i < a.length(); i++) { String id = a.optString(i, ""); if (!id.isEmpty()) out.add(id); }
+        } catch (Exception ignored) {}
+        return out;
     }
 
     public boolean isTerminal() {
@@ -114,6 +130,8 @@ public final class JobRecord {
             o.put("progress_percent", progressPercent);
             o.put("current_node", currentNode);
             o.put("output_refs_json", outputRefsJson);
+            o.put("selected_output_node_ids_json", selectedOutputNodeIdsJson);
+            o.put("output_selection_summary", outputSelectionSummary);
         } catch (Exception ignored) {}
         return o;
     }
@@ -139,6 +157,8 @@ public final class JobRecord {
         j.progressPercent = o.optInt("progress_percent", COMPLETED.equals(j.status) ? 100 : 0);
         j.currentNode = o.optString("current_node", "");
         j.outputRefsJson = o.optString("output_refs_json", "[]");
+        j.selectedOutputNodeIdsJson = o.optString("selected_output_node_ids_json", "[]");
+        j.outputSelectionSummary = o.optString("output_selection_summary", "");
         // V1.8 migration: an interrupted upload without a prompt becomes locally queued only
         // when enough payload exists to safely resume; otherwise retain the old failure semantics.
         if (UPLOADING.equals(j.status) && j.promptId.isEmpty()) {

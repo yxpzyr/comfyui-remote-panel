@@ -1,7 +1,12 @@
 package com.comfyremote.panel;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /** Persisted reusable workflow profile for V1.8. */
@@ -14,6 +19,9 @@ public final class WorkflowProfile {
     public long createdAt;
     public long updatedAt;
     public JSONObject overrides;
+    public String outputNodesJson = "[]";
+    public String selectedOutputNodeIdsJson = "[]";
+    public boolean outputNodesVerified = false;
 
     public WorkflowProfile(String id, String name, String promptJson, String uiJson,
                            boolean favorite, long createdAt, long updatedAt, JSONObject overrides) {
@@ -41,6 +49,49 @@ public final class WorkflowProfile {
         );
     }
 
+
+    public List<WorkflowUtils.OutputChoice> outputChoices() {
+        List<WorkflowUtils.OutputChoice> out = new ArrayList<>();
+        try {
+            JSONArray a = new JSONArray(outputNodesJson == null || outputNodesJson.isEmpty() ? "[]" : outputNodesJson);
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject o = a.optJSONObject(i);
+                if (o != null) out.add(WorkflowUtils.OutputChoice.fromJson(o));
+            }
+        } catch (Exception ignored) {}
+        return out;
+    }
+
+    public Set<String> selectedOutputNodeIds() {
+        Set<String> out = new LinkedHashSet<>();
+        try {
+            JSONArray a = new JSONArray(selectedOutputNodeIdsJson == null || selectedOutputNodeIdsJson.isEmpty() ? "[]" : selectedOutputNodeIdsJson);
+            for (int i = 0; i < a.length(); i++) {
+                String id = a.optString(i, "");
+                if (!id.isEmpty()) out.add(id);
+            }
+        } catch (Exception ignored) {}
+        return out;
+    }
+
+    public void setOutputChoices(List<WorkflowUtils.OutputChoice> choices, boolean verified, boolean preserveSelection) {
+        JSONArray nodes = new JSONArray();
+        Set<String> valid = new LinkedHashSet<>();
+        if (choices != null) for (WorkflowUtils.OutputChoice c : choices) { nodes.put(c.toJson()); valid.add(c.id); }
+        Set<String> chosen = preserveSelection ? selectedOutputNodeIds() : new LinkedHashSet<>();
+        chosen.retainAll(valid);
+        if (chosen.isEmpty()) chosen.addAll(valid);
+        outputNodesJson = nodes.toString();
+        setSelectedOutputNodeIds(chosen);
+        outputNodesVerified = verified;
+    }
+
+    public void setSelectedOutputNodeIds(Set<String> ids) {
+        JSONArray a = new JSONArray();
+        if (ids != null) for (String id : ids) if (id != null && !id.isEmpty()) a.put(id);
+        selectedOutputNodeIdsJson = a.toString();
+    }
+
     public JSONObject promptObject() throws Exception {
         return new JSONObject(promptJson);
     }
@@ -60,13 +111,16 @@ public final class WorkflowProfile {
             o.put("created_at", createdAt);
             o.put("updated_at", updatedAt);
             o.put("overrides", overrides == null ? new JSONObject() : overrides);
+            o.put("output_nodes", new JSONArray(outputNodesJson == null || outputNodesJson.isEmpty() ? "[]" : outputNodesJson));
+            o.put("selected_output_node_ids", new JSONArray(selectedOutputNodeIdsJson == null || selectedOutputNodeIdsJson.isEmpty() ? "[]" : selectedOutputNodeIdsJson));
+            o.put("output_nodes_verified", outputNodesVerified);
         } catch (Exception ignored) {}
         return o;
     }
 
     public static WorkflowProfile fromJson(JSONObject o) {
         JSONObject overrides = o.optJSONObject("overrides");
-        return new WorkflowProfile(
+        WorkflowProfile p = new WorkflowProfile(
                 o.optString("id", ""),
                 o.optString("name", "未命名工作流"),
                 o.optString("prompt_json", "{}"),
@@ -76,6 +130,12 @@ public final class WorkflowProfile {
                 o.optLong("updated_at", System.currentTimeMillis()),
                 overrides == null ? new JSONObject() : overrides
         );
+        JSONArray outputNodes = o.optJSONArray("output_nodes");
+        JSONArray selected = o.optJSONArray("selected_output_node_ids");
+        p.outputNodesJson = outputNodes == null ? o.optString("output_nodes_json", "[]") : outputNodes.toString();
+        p.selectedOutputNodeIdsJson = selected == null ? o.optString("selected_output_node_ids_json", "[]") : selected.toString();
+        p.outputNodesVerified = o.optBoolean("output_nodes_verified", false);
+        return p;
     }
 
     public static String overrideKey(String nodeId, String inputName) {

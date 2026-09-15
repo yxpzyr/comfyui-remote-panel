@@ -154,8 +154,9 @@ public final class GenerationManager {
                         return;
                     }
 
-                    List<ImageRef> refs = api.parseImagesFromPromptHistory(history, promptId);
-                    if (refs.isEmpty()) refs = api.parseImagesDeepForPrompt(history, promptId);
+                    java.util.Set<String> allowedOutputs = current.selectedOutputNodeIds();
+                    List<ImageRef> refs = api.parseImagesFromPromptHistory(history, promptId, allowedOutputs);
+                    if (refs.isEmpty()) refs = api.parseImagesDeepForPrompt(history, promptId, allowedOutputs);
                     if (!refs.isEmpty()) {
                         complete(context, localId, refs);
                         return;
@@ -165,8 +166,8 @@ public final class GenerationManager {
                         List<ImageRef> fallbackRefs = new ArrayList<>();
                         try {
                             JSONObject all = api.getAllHistory(300);
-                            fallbackRefs = api.parseImagesFromPromptHistory(all, promptId);
-                            if (fallbackRefs.isEmpty()) fallbackRefs = api.parseImagesDeepForPrompt(all, promptId);
+                            fallbackRefs = api.parseImagesFromPromptHistory(all, promptId, allowedOutputs);
+                            if (fallbackRefs.isEmpty()) fallbackRefs = api.parseImagesDeepForPrompt(all, promptId, allowedOutputs);
                         } catch (Exception ignored) {}
                         if (!fallbackRefs.isEmpty()) {
                             complete(context, localId, fallbackRefs);

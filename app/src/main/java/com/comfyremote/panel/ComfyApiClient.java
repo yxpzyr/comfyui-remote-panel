@@ -118,6 +118,11 @@ public class ComfyApiClient {
         return new JSONObject(r.text());
     }
 
+    public JSONObject getObjectInfo() throws Exception {
+        HttpResult r = getAny(new String[]{"/object_info", "/api/object_info"}, 8000, 30000);
+        return new JSONObject(r.text());
+    }
+
     public JSONObject getAllHistory() throws Exception {
         return getAllHistory(120);
     }
@@ -129,18 +134,33 @@ public class ComfyApiClient {
     }
 
     public List<ImageRef> parseImagesFromPromptHistory(JSONObject history, String promptId) {
+        return parseImagesFromPromptHistory(history, promptId, null);
+    }
+
+    public List<ImageRef> parseImagesFromPromptHistory(JSONObject history, String promptId, java.util.Set<String> allowedOutputNodes) {
         JSONObject entry = findPromptEntry(history, promptId);
         if (entry == null) return new ArrayList<>();
-        return parseImagesFromEntry(entry, promptId, historyTimestamp(entry, System.currentTimeMillis()));
+        return parseImagesFromEntry(entry, promptId, historyTimestamp(entry, System.currentTimeMillis()), allowedOutputNodes);
     }
 
     public List<ImageRef> parseImagesDeepForPrompt(JSONObject history, String promptId) {
+        return parseImagesDeepForPrompt(history, promptId, null);
+    }
+
+    public List<ImageRef> parseImagesDeepForPrompt(JSONObject history, String promptId, java.util.Set<String> allowedOutputNodes) {
         JSONObject entry = findPromptEntry(history, promptId);
         if (entry == null) return new ArrayList<>();
         long ts = historyTimestamp(entry, System.currentTimeMillis());
         List<ImageRef> out = new ArrayList<>();
         java.util.HashSet<String> seen = new java.util.HashSet<>();
-        collectImagesDeep(entry.opt("outputs"), out, seen, ts, promptId, 0);
+        JSONObject outputs = entry.optJSONObject("outputs");
+        if (outputs == null) return out;
+        Iterator<String> nodes = outputs.keys();
+        while (nodes.hasNext()) {
+            String nodeId = nodes.next();
+            if (allowedOutputNodes != null && !allowedOutputNodes.isEmpty() && !allowedOutputNodes.contains(nodeId)) continue;
+            collectImagesDeep(outputs.opt(nodeId), out, seen, ts, promptId, 0);
+        }
         return out;
     }
 
@@ -230,12 +250,18 @@ public class ComfyApiClient {
     }
 
     private List<ImageRef> parseImagesFromEntry(JSONObject entry, String promptId, long timestamp) {
+        return parseImagesFromEntry(entry, promptId, timestamp, null);
+    }
+
+    private List<ImageRef> parseImagesFromEntry(JSONObject entry, String promptId, long timestamp, java.util.Set<String> allowedOutputNodes) {
         List<ImageRef> refs = new ArrayList<>();
         JSONObject outputs = entry.optJSONObject("outputs");
         if (outputs == null) return refs;
         Iterator<String> nodes = outputs.keys();
         while (nodes.hasNext()) {
-            JSONObject node = outputs.optJSONObject(nodes.next());
+            String nodeId = nodes.next();
+            if (allowedOutputNodes != null && !allowedOutputNodes.isEmpty() && !allowedOutputNodes.contains(nodeId)) continue;
+            JSONObject node = outputs.optJSONObject(nodeId);
             if (node == null) continue;
             JSONArray images = node.optJSONArray("images");
             if (images == null) continue;

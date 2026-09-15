@@ -6,8 +6,10 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 public final class WorkflowUtils {
     private WorkflowUtils() {}
@@ -73,6 +75,64 @@ public final class WorkflowUtils {
             if ((n.contains("image") || n.contains("file")) && (lowerType.contains("load") || lowerType.contains("input"))) return name;
         }
         return null;
+    }
+
+
+    /** Finds executable ComfyUI output nodes. /object_info output_node=true is authoritative;
+     * common image/video output class names are used as a fallback for offline/legacy profiles. */
+    public static List<OutputChoice> findOutputNodes(JSONObject prompt) {
+        return findOutputNodes(prompt, null);
+    }
+
+    public static List<OutputChoice> findOutputNodes(JSONObject prompt, JSONObject objectInfo) {
+        List<OutputChoice> result = new ArrayList<>();
+        if (prompt == null) return result;
+        Iterator<String> keys = prompt.keys();
+        while (keys.hasNext()) {
+            String id = keys.next();
+            JSONObject node = prompt.optJSONObject(id);
+            if (node == null) continue;
+            String classType = node.optString("class_type", "");
+            String title = nodeTitle(node, classType);
+            JSONObject def = objectInfo == null ? null : objectInfo.optJSONObject(classType);
+            boolean outputNode = def != null && def.optBoolean("output_node", false);
+            if (!outputNode) outputNode = looksLikeOutputNode(classType, title);
+            if (outputNode) result.add(new OutputChoice(id, title, classType));
+        }
+        result.sort((a, b) -> {
+            try { return Integer.compare(Integer.parseInt(a.id), Integer.parseInt(b.id)); }
+            catch (Exception ignored) { return a.id.compareToIgnoreCase(b.id); }
+        });
+        return result;
+    }
+
+    private static boolean looksLikeOutputNode(String classType, String title) {
+        String c = ((classType == null ? "" : classType) + " " + (title == null ? "" : title))
+                .toLowerCase(Locale.ROOT).replace("_", "").replace("-", "").replace(" ", "");
+        return c.contains("saveimage") || c.contains("previewimage") || c.contains("imagesave") ||
+                c.contains("imageoutput") || c.contains("outputimage") || c.contains("saveanimated") ||
+                c.contains("savewebp") || c.contains("savegif") || c.contains("savevideo") ||
+                c.contains("videocombine") || c.contains("saveaudio") || c.contains("savefile");
+    }
+
+    /** Remove unselected output/sink nodes from the prompt. Their upstream branches remain in the
+     * prompt but are not executed by ComfyUI when no selected output depends on them. */
+    public static JSONObject keepSelectedOutputNodes(JSONObject original, List<OutputChoice> allOutputs, Set<String> selectedIds)
+            throws JSONException {
+        JSONObject prompt = new JSONObject(original.toString());
+        if (allOutputs == null || allOutputs.isEmpty()) return prompt;
+        Set<String> selected = selectedIds == null ? new LinkedHashSet<>() : selectedIds;
+        for (OutputChoice choice : allOutputs) {
+            if (!selected.contains(choice.id)) prompt.remove(choice.id);
+        }
+        return prompt;
+    }
+
+    public static String outputSummary(List<OutputChoice> outputs, Set<String> selectedIds) {
+        if (outputs == null || outputs.isEmpty()) return "自动读取工作流输出";
+        List<String> names = new ArrayList<>();
+        for (OutputChoice o : outputs) if (selectedIds != null && selectedIds.contains(o.id)) names.add(o.title + " [" + o.id + "]");
+        return names.isEmpty() ? "未选择输出节点" : String.join("、", names);
     }
 
     /** Finds user-facing prompt/switch-like scalar inputs from an API prompt. */
@@ -143,6 +203,25 @@ public final class WorkflowUtils {
             if (!t.isEmpty()) return t;
         }
         return fallback == null || fallback.isEmpty() ? "节点" : fallback;
+    }
+
+
+    public static class OutputChoice {
+        public final String id, title, classType;
+        public OutputChoice(String id, String title, String classType) {
+            this.id = id == null ? "" : id;
+            this.title = title == null || title.isEmpty() ? "输出节点" : title;
+            this.classType = classType == null ? "" : classType;
+        }
+        public JSONObject toJson() {
+            JSONObject o = new JSONObject();
+            try { o.put("id", id); o.put("title", title); o.put("class_type", classType); } catch (Exception ignored) {}
+            return o;
+        }
+        public static OutputChoice fromJson(JSONObject o) {
+            return new OutputChoice(o.optString("id", ""), o.optString("title", "输出节点"), o.optString("class_type", ""));
+        }
+        public String label() { return title + " · " + classType + " · 节点 " + id; }
     }
 
     public static class NodeChoice {
