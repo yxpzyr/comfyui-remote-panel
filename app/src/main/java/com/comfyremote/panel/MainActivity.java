@@ -2,16 +2,19 @@ package com.comfyremote.panel;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.view.Gravity;
+import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
@@ -40,15 +43,23 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     private static final int REQ_WORKFLOW = 101;
+    private static final int REQ_BACKGROUND = 102;
+    private static final int REQ_SPLASH = 103;
     private static final int REQ_IMAGE_BASE = 1000;
+    private static final int REQ_MULTI_IMAGE_BASE = 2000;
 
     private final ExecutorService pool = Executors.newFixedThreadPool(6);
+    // Keep batch uploads/submissions strictly ordered.
+    private final ExecutorService batchPool = Executors.newSingleThreadExecutor();
     private SharedPreferences prefs;
 
     private EditText addressEdit;
     private TextView connectionState, workflowState, statusText;
-    private Button submitButton, queueButton, saveAllButton;
+    private Button submitButton, queueButton, saveAllButton, advancedToggleButton;
     private LinearLayout workflowStrip, inputList, parameterList, outputSelectorList, outputList;
+    private LinearLayout connectionCardView, parameterCardView, outputSelectCardView;
+    private ScrollView mainScroll;
+    private boolean advancedExpanded = false;
 
     private final List<ImageBinding> imageBindings = new ArrayList<>();
     private final List<FieldBinding> fieldBindings = new ArrayList<>();
@@ -112,31 +123,71 @@ public class MainActivity extends Activity {
     }
 
     private void buildUi() {
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
+        mainScroll = new ScrollView(this);
+        mainScroll.setFillViewport(true);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(18), dp(18), dp(18), dp(28));
         root.setBackgroundColor(ThemeManager.background(this));
-        scroll.addView(root);
+        mainScroll.addView(root);
+        applyCustomBackground(mainScroll, root);
 
         LinearLayout titleRow = new LinearLayout(this);
         titleRow.setOrientation(LinearLayout.HORIZONTAL);
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
         TextView mainTitle = text("ComfyUI 远程面板", 25, true);
-        Button appearanceBtn = button(ThemeManager.isDark(this) ? "🌙 深色" : "☀ 外观");
+        Button appearanceBtn = button(ThemeManager.isDark(this) ? "🌙 外观" : "☀ 外观");
         titleRow.addView(mainTitle, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.0 · 多输出选择 / 后台队列 / 实时图库 / 夜间模式", 13, false);
+        TextView subtitle = text("V2.1 · 输入常驻 / 批量顺序生成 / 精简主页 / 个性化", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
-        subtitle.setPadding(0, dp(4), 0, dp(16));
+        subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
 
-        LinearLayout connectionCard = card();
-        root.addView(connectionCard);
-        connectionCard.addView(sectionTitle("ComfyUI 端口地址"));
+        LinearLayout workflowCard = cardWithTopMargin(root);
+        workflowCard.addView(sectionTitle("工作流"));
+        LinearLayout workflowButtons = new LinearLayout(this);
+        workflowButtons.setOrientation(LinearLayout.HORIZONTAL);
+        Button importBtn = button("＋ 导入");
+        Button listBtn = button("工作流列表");
+        Button manageBtn = button("管理当前");
+        workflowButtons.addView(importBtn, weightedButton());
+        LinearLayout.LayoutParams listLp = weightedButton(); listLp.setMargins(dp(8), 0, dp(8), 0);
+        workflowButtons.addView(listBtn, listLp);
+        workflowButtons.addView(manageBtn, weightedButton());
+        workflowCard.addView(workflowButtons);
+        workflowState = text("当前：未选择", 13, false);
+        workflowState.setTextColor(ThemeManager.secondary(this));
+        workflowState.setPadding(0, dp(8), 0, dp(6));
+        workflowCard.addView(workflowState);
+
+        HorizontalScrollView workflowScroll = new HorizontalScrollView(this);
+        workflowScroll.setHorizontalScrollBarEnabled(false);
+        workflowStrip = new LinearLayout(this);
+        workflowStrip.setOrientation(LinearLayout.HORIZONTAL);
+        workflowScroll.addView(workflowStrip);
+        workflowCard.addView(workflowScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        TextView workflowTip = text("横向按钮用于快速切换；“工作流列表”适合保存较多工作流时使用。", 12, false);
+        workflowTip.setTextColor(ThemeManager.muted(this));
+        workflowTip.setPadding(0, dp(6), 0, 0);
+        workflowCard.addView(workflowTip);
+        importBtn.setOnClickListener(v -> chooseWorkflow());
+        listBtn.setOnClickListener(v -> showWorkflowList());
+        manageBtn.setOnClickListener(v -> manageCurrentWorkflow());
+
+        advancedToggleButton = button("⚙ 展开高级设置（连接 / 参数 / 输出节点）");
+        LinearLayout.LayoutParams advLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46));
+        advLp.setMargins(0, dp(12), 0, 0);
+        root.addView(advancedToggleButton, advLp);
+        advancedToggleButton.setOnClickListener(v -> {
+            advancedExpanded = !advancedExpanded;
+            applyAdvancedVisibility();
+        });
+
+        connectionCardView = cardWithTopMargin(root);
+        connectionCardView.addView(sectionTitle("ComfyUI 端口地址"));
         LinearLayout connRow = new LinearLayout(this);
         connRow.setOrientation(LinearLayout.HORIZONTAL);
         connRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -150,75 +201,51 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(dp(84), dp(48));
         btnLp.setMargins(dp(8), 0, 0, 0);
         connRow.addView(connectBtn, btnLp);
-        connectionCard.addView(connRow);
+        connectionCardView.addView(connRow);
         connectionState = text("● 未检测", 13, false);
         connectionState.setTextColor(ThemeManager.muted(this));
         connectionState.setPadding(0, dp(6), 0, 0);
-        connectionCard.addView(connectionState);
+        connectionCardView.addView(connectionState);
         connectBtn.setOnClickListener(v -> testConnection());
-
-        LinearLayout workflowCard = cardWithTopMargin(root);
-        workflowCard.addView(sectionTitle("工作流库"));
-        LinearLayout workflowButtons = new LinearLayout(this);
-        workflowButtons.setOrientation(LinearLayout.HORIZONTAL);
-        Button importBtn = button("＋ 导入工作流");
-        Button manageBtn = button("管理当前");
-        workflowButtons.addView(importBtn, new LinearLayout.LayoutParams(0, dp(48), 1f));
-        LinearLayout.LayoutParams manageLp = new LinearLayout.LayoutParams(0, dp(48), 1f);
-        manageLp.setMargins(dp(8), 0, 0, 0);
-        workflowButtons.addView(manageBtn, manageLp);
-        workflowCard.addView(workflowButtons);
-        workflowState = text("当前：未选择", 13, false);
-        workflowState.setTextColor(ThemeManager.secondary(this));
-        workflowState.setPadding(0, dp(8), 0, dp(6));
-        workflowCard.addView(workflowState);
-
-        HorizontalScrollView workflowScroll = new HorizontalScrollView(this);
-        workflowScroll.setHorizontalScrollBarEnabled(false);
-        workflowStrip = new LinearLayout(this);
-        workflowStrip.setOrientation(LinearLayout.HORIZONTAL);
-        workflowScroll.addView(workflowStrip);
-        workflowCard.addView(workflowScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-        TextView workflowTip = text("工作流只需导入一次，会保存在 App 中；可同时保存多个并随时切换。", 12, false);
-        workflowTip.setTextColor(ThemeManager.muted(this));
-        workflowTip.setPadding(0, dp(6), 0, 0);
-        workflowCard.addView(workflowTip);
-        importBtn.setOnClickListener(v -> chooseWorkflow());
-        manageBtn.setOnClickListener(v -> manageCurrentWorkflow());
 
         LinearLayout inputCard = cardWithTopMargin(root);
         inputCard.addView(sectionTitle("输入图片"));
-        TextView inputTip = text("工作流保持常驻。选择图片后会先自动上传；上传完成即可点“开始生成”，点击后立刻可以继续选择下一张图片排队。", 12, false);
+        TextView inputTip = text("V2.1 会按工作流记住输入图，生成后不会自动清空。单张可直接生成；批量选择会按系统返回顺序逐张上传并加入队列。", 12, false);
         inputTip.setTextColor(ThemeManager.muted(this));
         inputTip.setPadding(0, 0, 0, dp(8));
         inputCard.addView(inputTip);
         inputList = new LinearLayout(this);
         inputList.setOrientation(LinearLayout.VERTICAL);
         inputCard.addView(inputList);
+        Button clearInputsBtn = button("清空本工作流已记住的输入图");
+        LinearLayout.LayoutParams clearLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
+        clearLp.setMargins(0, dp(4), 0, 0);
+        inputCard.addView(clearInputsBtn, clearLp);
+        clearInputsBtn.setOnClickListener(v -> clearPersistedInputs());
 
-        LinearLayout paramCard = cardWithTopMargin(root);
-        paramCard.addView(sectionTitle("提示词 / 开关"));
-        TextView paramTip = text("每个工作流会分别记住自己的可编辑参数；切换工作流不会互相覆盖。", 12, false);
+        parameterCardView = cardWithTopMargin(root);
+        parameterCardView.addView(sectionTitle("提示词 / 开关"));
+        TextView paramTip = text("每个工作流分别记住自己的可编辑参数；切换工作流不会互相覆盖。", 12, false);
         paramTip.setTextColor(ThemeManager.muted(this));
         paramTip.setPadding(0, 0, 0, dp(8));
-        paramCard.addView(paramTip);
+        parameterCardView.addView(paramTip);
         parameterList = new LinearLayout(this);
         parameterList.setOrientation(LinearLayout.VERTICAL);
-        paramCard.addView(parameterList);
+        parameterCardView.addView(parameterList);
 
-        LinearLayout outputSelectCard = cardWithTopMargin(root);
-        outputSelectCard.addView(sectionTitle("输出节点"));
+        outputSelectCardView = cardWithTopMargin(root);
+        outputSelectCardView.addView(sectionTitle("输出节点"));
         TextView outputSelectTip = text("工作流有多个输出点时，可独立开启/关闭。未勾选的输出节点不会参与本次 ComfyUI 执行；至少保留一个输出。", 12, false);
         outputSelectTip.setTextColor(ThemeManager.muted(this));
         outputSelectTip.setPadding(0, 0, 0, dp(8));
-        outputSelectCard.addView(outputSelectTip);
+        outputSelectCardView.addView(outputSelectTip);
         outputSelectorList = new LinearLayout(this);
         outputSelectorList.setOrientation(LinearLayout.VERTICAL);
-        outputSelectCard.addView(outputSelectorList);
+        outputSelectCardView.addView(outputSelectorList);
         Button refreshOutputBtn = button("重新检测输出节点");
         LinearLayout.LayoutParams outputRefreshLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
         outputRefreshLp.setMargins(0, dp(6), 0, 0);
-        outputSelectCard.addView(refreshOutputBtn, outputRefreshLp);
+        outputSelectCardView.addView(refreshOutputBtn, outputRefreshLp);
         refreshOutputBtn.setOnClickListener(v -> refreshOutputMetadataAsync(true));
 
         LinearLayout outputCard = cardWithTopMargin(root);
@@ -226,7 +253,7 @@ public class MainActivity extends Activity {
         outputList = new LinearLayout(this);
         outputList.setOrientation(LinearLayout.VERTICAL);
         outputCard.addView(outputList);
-        outputList.addView(text("任务完成后会自动恢复最新输出，即使曾切后台、锁屏或切换页面；完整历史请打开图库。", 13, false));
+        outputList.addView(text("任务完成后会自动恢复最新输出；完整历史请打开图库。", 13, false));
         saveAllButton = button("全部保存当前输出");
         saveAllButton.setEnabled(false);
         LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46));
@@ -237,7 +264,7 @@ public class MainActivity extends Activity {
         LinearLayout actionCard = cardWithTopMargin(root);
         LinearLayout buttons = new LinearLayout(this);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
-        submitButton = button("▶ 开始生成");
+        submitButton = button("▶ 生成当前图");
         queueButton = button("队列");
         Button galleryBtn = button("图库");
         buttons.addView(submitButton, weightedButton());
@@ -258,11 +285,12 @@ public class MainActivity extends Activity {
             startActivity(new Intent(this, GalleryActivity.class));
         });
 
-        TextView tip = text("提交按钮不会等待上一张生成完成；工作流 A / B / C 可交叉连续排队，真正的 GPU 执行顺序由 ComfyUI 队列负责。", 12, false);
+        TextView tip = text("批量图片会先顺序上传，再按同一顺序进入手机提交队列；ComfyUI 最终仍按自身队列执行。", 12, false);
         tip.setTextColor(ThemeManager.muted(this));
         tip.setPadding(0, dp(16), 0, 0);
         root.addView(tip);
-        setContentView(scroll);
+        applyAdvancedVisibility();
+        setContentView(mainScroll);
     }
 
     private void resolveActiveProfile() {
@@ -307,6 +335,65 @@ public class MainActivity extends Activity {
         workflowState.setText("当前：" + (activeProfile == null ? "未选择" : activeProfile.name) + " · 已保存 " + profiles.size() + " 个");
     }
 
+    private void showWorkflowList() {
+        if (profiles == null || profiles.isEmpty()) { toast("还没有保存的工作流"); return; }
+        WorkflowStore.sort(profiles);
+        String[] names = new String[profiles.size()];
+        int checked = -1;
+        for (int i = 0; i < profiles.size(); i++) {
+            WorkflowProfile p = profiles.get(i);
+            names[i] = (p.favorite ? "★ " : "") + p.name;
+            if (activeProfile != null && activeProfile.id.equals(p.id)) checked = i;
+        }
+        final int initial = checked;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("工作流列表")
+                .setSingleChoiceItems(names, checked, null)
+                .setNegativeButton("关闭", null)
+                .create();
+        dialog.setOnShowListener(x -> dialog.getListView().setOnItemClickListener((parent, view, position, id) -> {
+            String profileId = profiles.get(position).id;
+            dialog.dismiss();
+            if (position != initial || activeProfile == null || !profileId.equals(activeProfile.id)) switchWorkflow(profileId);
+        }));
+        dialog.show();
+    }
+
+    private void applyAdvancedVisibility() {
+        int visibility = advancedExpanded ? View.VISIBLE : View.GONE;
+        if (connectionCardView != null) connectionCardView.setVisibility(visibility);
+        if (parameterCardView != null) parameterCardView.setVisibility(visibility);
+        if (outputSelectCardView != null) outputSelectCardView.setVisibility(visibility);
+        if (advancedToggleButton != null) {
+            advancedToggleButton.setText(advancedExpanded
+                    ? "⚙ 收起高级设置（连接 / 参数 / 输出节点）"
+                    : "⚙ 展开高级设置（连接 / 参数 / 输出节点）");
+        }
+    }
+
+    private void applyCustomBackground(ScrollView scroll, LinearLayout root) {
+        String uriText = CustomizationStore.getBackgroundUri(this);
+        if (uriText == null || uriText.isEmpty()) return;
+        try {
+            Bitmap bitmap = decodeScaled(Uri.parse(uriText), 1800, 2400);
+            BitmapDrawable drawable = new BitmapDrawable(getResources(), bitmap);
+            drawable.setGravity(Gravity.FILL);
+            scroll.setBackground(drawable);
+            root.setBackgroundColor(Color.TRANSPARENT);
+        } catch (Exception ignored) {
+            CustomizationStore.setBackgroundUri(this, "");
+        }
+    }
+
+    private void clearPersistedInputs() {
+        if (activeProfile == null) { toast("请先选择工作流"); return; }
+        activeProfile.inputUris = new JSONObject();
+        WorkflowStore.upsert(this, activeProfile);
+        sessionInputUris.remove(activeProfile.id);
+        rebuildInputControls();
+        statusText.setText("状态：已清空当前工作流记住的输入图");
+    }
+
     private void switchWorkflow(String profileId) {
         if (activeProfile != null && activeProfile.id.equals(profileId)) return;
         captureSessionInputs();
@@ -324,6 +411,7 @@ public class MainActivity extends Activity {
     private void chooseWorkflow() {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         i.setType("application/json");
         i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/json", "text/plain", "application/octet-stream"});
         startActivityForResult(i, REQ_WORKFLOW);
@@ -332,17 +420,60 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        if (resultCode != RESULT_OK || data == null) return;
+
+        if (requestCode >= REQ_MULTI_IMAGE_BASE) {
+            int idx = requestCode - REQ_MULTI_IMAGE_BASE;
+            if (idx < 0 || idx >= imageBindings.size()) return;
+            List<Uri> uris = collectUris(data);
+            if (uris.isEmpty()) return;
+            for (Uri uri : uris) takeReadPermission(uri);
+            if (uris.size() == 1) loadInputPreview(imageBindings.get(idx), uris.get(0));
+            else confirmBatchGeneration(imageBindings.get(idx), uris);
+            return;
+        }
+
         Uri uri = data.getData();
-        try { getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) {}
+        if (uri == null) return;
+        takeReadPermission(uri);
         if (requestCode == REQ_WORKFLOW) {
             loadWorkflow(uri);
             return;
         }
-        if (requestCode >= REQ_IMAGE_BASE) {
+        if (requestCode == REQ_BACKGROUND) {
+            CustomizationStore.setBackgroundUri(this, uri.toString());
+            toast("主界面背景已保存");
+            recreate();
+            return;
+        }
+        if (requestCode == REQ_SPLASH) {
+            CustomizationStore.setSplashUri(this, uri.toString());
+            toast("启动页图片已保存，下次启动生效");
+            return;
+        }
+        if (requestCode >= REQ_IMAGE_BASE && requestCode < REQ_MULTI_IMAGE_BASE) {
             int idx = requestCode - REQ_IMAGE_BASE;
             if (idx >= 0 && idx < imageBindings.size()) loadInputPreview(imageBindings.get(idx), uri);
         }
+    }
+
+    private void takeReadPermission(Uri uri) {
+        if (uri == null) return;
+        try { getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) {}
+    }
+
+    private List<Uri> collectUris(Intent data) {
+        List<Uri> out = new ArrayList<>();
+        ClipData clip = data.getClipData();
+        if (clip != null) {
+            for (int i = 0; i < clip.getItemCount(); i++) {
+                Uri uri = clip.getItemAt(i).getUri();
+                if (uri != null && !out.contains(uri)) out.add(uri);
+            }
+        }
+        Uri single = data.getData();
+        if (single != null && !out.contains(single)) out.add(single);
+        return out;
     }
 
     private void loadWorkflow(Uri uri) {
@@ -472,7 +603,11 @@ public class MainActivity extends Activity {
                 WorkflowUtils.NodeChoice n = nodes.get(i);
                 ImageBinding b = new ImageBinding(i, n);
                 String key = inputKey(n);
-                if (remembered != null) b.uri = remembered.get(key);
+                String persisted = activeProfile.savedInputUri(key);
+                if (persisted != null && !persisted.isEmpty()) {
+                    try { b.uri = Uri.parse(persisted); } catch (Exception ignored) {}
+                }
+                if (b.uri == null && remembered != null) b.uri = remembered.get(key);
                 imageBindings.add(b);
 
                 LinearLayout box = miniCard();
@@ -480,22 +615,39 @@ public class MainActivity extends Activity {
                 box.addView(label);
                 b.replaceSwitch = new Switch(this);
                 b.replaceSwitch.setText("替换此输入");
-                b.replaceSwitch.setChecked(true);
+                b.replaceSwitch.setChecked(activeProfile.savedReplaceEnabled(key, true));
                 box.addView(b.replaceSwitch);
                 b.preview = previewImage();
                 box.addView(b.preview, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(178)));
-                b.selectButton = button(b.uri == null ? "选择图片" : "已选择：" + getDisplayName(b.uri));
-                LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
-                blp.setMargins(0, dp(6), 0, 0);
-                box.addView(b.selectButton, blp);
-                b.uploadState = text(b.uri == null ? "等待选择图片" : "准备上传…", 11, false);
+
+                LinearLayout pickRow = new LinearLayout(this);
+                pickRow.setOrientation(LinearLayout.HORIZONTAL);
+                b.selectButton = button(b.uri == null ? "选择单张" : "单张：" + getDisplayName(b.uri));
+                b.batchButton = button("批量选择");
+                pickRow.addView(b.selectButton, weightedButton());
+                LinearLayout.LayoutParams batchLp = weightedButton();
+                batchLp.setMargins(dp(8), 0, 0, 0);
+                pickRow.addView(b.batchButton, batchLp);
+                LinearLayout.LayoutParams pickRowLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                pickRowLp.setMargins(0, dp(6), 0, 0);
+                box.addView(pickRow, pickRowLp);
+
+                b.uploadState = text(b.uri == null ? "等待选择图片" : (b.replaceSwitch.isChecked() ? "准备上传…" : "已记住图片，但当前保留工作流原输入"), 11, false);
                 b.uploadState.setTextColor(ThemeManager.muted(this));
                 b.uploadState.setPadding(0, dp(5), 0, 0);
                 box.addView(b.uploadState);
                 b.selectButton.setOnClickListener(v -> chooseInputImage(b));
+                b.batchButton.setOnClickListener(v -> chooseInputImages(b));
                 b.replaceSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                    if (activeProfile != null) {
+                        activeProfile.setSavedReplaceEnabled(inputKey(b.choice), isChecked);
+                        WorkflowStore.upsert(this, activeProfile);
+                    }
                     if (isChecked && b.uri != null && (b.remoteFilename == null || b.remoteFilename.isEmpty()) && !b.uploading) {
                         startInputUpload(b, b.uri);
+                    } else if (!isChecked && b.uploadState != null) {
+                        b.uploadState.setText(b.uri == null ? "保留工作流原输入" : "已记住图片，但当前保留工作流原输入");
+                        b.uploadState.setTextColor(ThemeManager.muted(this));
                     }
                     refreshSubmitEnabled();
                 });
@@ -504,7 +656,7 @@ public class MainActivity extends Activity {
                 inputList.addView(box, boxLp);
                 if (b.uri != null) {
                     loadPreviewOnly(b, b.uri);
-                    startInputUpload(b, b.uri);
+                    if (b.replaceSwitch.isChecked()) startInputUpload(b, b.uri);
                 }
             }
         } catch (Exception e) {
@@ -516,8 +668,18 @@ public class MainActivity extends Activity {
     private void chooseInputImage(ImageBinding binding) {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         i.setType("image/*");
         startActivityForResult(i, REQ_IMAGE_BASE + binding.index);
+    }
+
+    private void chooseInputImages(ImageBinding binding) {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        i.setType("image/*");
+        i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        startActivityForResult(i, REQ_MULTI_IMAGE_BASE + binding.index);
     }
 
     private void loadInputPreview(ImageBinding binding, Uri uri) {
@@ -525,9 +687,13 @@ public class MainActivity extends Activity {
         binding.remoteFilename = "";
         binding.uploadError = "";
         binding.replaceSwitch.setChecked(true);
-        binding.selectButton.setText("已选择：" + getDisplayName(uri));
+        binding.selectButton.setText("单张：" + getDisplayName(uri));
         if (activeProfile != null) {
-            sessionInputUris.computeIfAbsent(activeProfile.id, x -> new HashMap<>()).put(inputKey(binding.choice), uri);
+            String key = inputKey(binding.choice);
+            sessionInputUris.computeIfAbsent(activeProfile.id, x -> new HashMap<>()).put(key, uri);
+            activeProfile.setSavedInputUri(key, uri.toString());
+            activeProfile.setSavedReplaceEnabled(key, true);
+            WorkflowStore.upsert(this, activeProfile);
         }
         statusText.setText("状态：已选择输入图 " + (binding.index + 1) + "，正在上传到 ComfyUI…");
         loadPreviewOnly(binding, uri);
@@ -610,9 +776,17 @@ public class MainActivity extends Activity {
         if (activeProfile == null || imageBindings.isEmpty()) return;
         Map<String, Uri> map = sessionInputUris.computeIfAbsent(activeProfile.id, x -> new HashMap<>());
         for (ImageBinding b : imageBindings) {
-            if (b.uri == null) map.remove(inputKey(b.choice));
-            else map.put(inputKey(b.choice), b.uri);
+            String key = inputKey(b.choice);
+            if (b.uri == null) {
+                map.remove(key);
+                activeProfile.setSavedInputUri(key, "");
+            } else {
+                map.put(key, b.uri);
+                activeProfile.setSavedInputUri(key, b.uri.toString());
+            }
+            activeProfile.setSavedReplaceEnabled(key, b.replaceSwitch == null || b.replaceSwitch.isChecked());
         }
+        WorkflowStore.upsert(this, activeProfile);
     }
 
     private String inputKey(WorkflowUtils.NodeChoice n) { return n.id + "|" + n.inputName; }
@@ -853,15 +1027,148 @@ public class MainActivity extends Activity {
             GenerationManager.notifySubmitted(this, record.localId);
             GenerationManager.enqueueSubmission(this, record.localId);
 
-            // Important: release the UI immediately. The serial submitter preserves click order in background.
-            if (activeProfile != null && activeProfile.id.equals(profile.id)) clearCurrentInputSelections();
-            statusText.setText("状态：已加入提交队列 · 现在可以立刻选择下一张图片");
+            // V2.1: keep the chosen input image visible and persisted for this workflow.
+            statusText.setText("状态：已加入提交队列 · 当前输入图已保留，可再次生成或更换图片");
             refreshQueueButton();
             refreshSubmitEnabled();
             toast("已加入队列");
         } catch (Exception e) {
             showError("准备任务失败", e);
         }
+    }
+
+    private void confirmBatchGeneration(ImageBinding target, List<Uri> uris) {
+        if (target == null || uris == null || uris.isEmpty()) return;
+        if (activeProfile == null) { toast("请先选择工作流"); return; }
+        new AlertDialog.Builder(this)
+                .setTitle("批量生成 " + uris.size() + " 张？")
+                .setMessage("这些图片将替换“输入图 " + (target.index + 1) + "”，并按安卓文件选择器返回的顺序逐张上传、逐张加入队列。其他输入图沿用当前工作流已选择的图片。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("按顺序加入队列", (d, w) -> startBatchGeneration(target, new ArrayList<>(uris)))
+                .show();
+    }
+
+    private void startBatchGeneration(ImageBinding target, List<Uri> uris) {
+        if (activeProfile == null || target == null || uris == null || uris.isEmpty()) return;
+        target.replaceSwitch.setChecked(true);
+        saveAddress();
+        saveCurrentOverrides();
+        saveOutputSelection();
+        captureSessionInputs();
+
+        final WorkflowProfile profile = activeProfile;
+        final String profileId = profile.id;
+        final String targetKey = inputKey(target.choice);
+        final int targetIndex = target.index;
+        final List<ImageJob> baseJobs = snapshotImageJobs();
+        final List<FieldOverride> overrides = snapshotFieldOverrides();
+        final List<WorkflowUtils.OutputChoice> availableOutputs = new ArrayList<>(profile.outputChoices());
+        final Set<String> selectedOutputs = new LinkedHashSet<>(profile.selectedOutputNodeIds());
+        final String server = currentServer();
+
+        for (ImageJob j : baseJobs) {
+            if (!j.replace || j.index == targetIndex) continue;
+            if (j.uri == null || j.uploading || j.remoteFilename == null || j.remoteFilename.isEmpty()) {
+                showError("批量生成前还有输入图未就绪", new Exception("输入图 " + (j.index + 1) + " 仍未上传完成。请先让其他启用的输入图显示“已上传”，再批量选择。"));
+                return;
+            }
+        }
+        if (!availableOutputs.isEmpty() && selectedOutputs.isEmpty()) {
+            toast("至少选择一个输出节点");
+            return;
+        }
+
+        statusText.setText("状态：准备批量处理 " + uris.size() + " 张图片…");
+        toast("已开始按顺序处理 " + uris.size() + " 张");
+
+        batchPool.submit(() -> {
+            int ok = 0;
+            int failed = 0;
+            Uri lastOkUri = null;
+            String lastOkRemote = "";
+            ComfyApiClient api = new ComfyApiClient(server);
+            for (int i = 0; i < uris.size(); i++) {
+                Uri uri = uris.get(i);
+                int displayIndex = i + 1;
+                runOnUiThread(() -> statusText.setText("状态：批量 " + displayIndex + "/" + uris.size() + " · 正在上传 " + getDisplayName(uri)));
+                try {
+                    ComfyApiClient.UploadResult uploaded = api.uploadImage(this, uri);
+                    List<ImageJob> jobs = new ArrayList<>();
+                    for (ImageJob base : baseJobs) {
+                        if (base.index == targetIndex) {
+                            jobs.add(new ImageJob(base.index, base.choice, uri, true, uploaded.workflowFilename(), false, ""));
+                        } else {
+                            jobs.add(new ImageJob(base.index, base.choice, base.uri, base.replace,
+                                    base.remoteFilename, false, base.uploadError));
+                        }
+                    }
+
+                    JSONObject prompt = new JSONObject(profile.promptJson);
+                    applyFieldOverrides(prompt, overrides);
+                    if (!availableOutputs.isEmpty()) {
+                        prompt = WorkflowUtils.keepSelectedOutputNodes(prompt, availableOutputs, selectedOutputs);
+                    }
+                    for (ImageJob job : jobs) {
+                        if (!job.replace) continue;
+                        WorkflowUtils.setInputValue(prompt, job.choice.id, job.choice.inputName, job.remoteFilename);
+                    }
+
+                    JobRecord record = JobRecord.create(profile.id, profile.name, buildInputSummary(jobs),
+                            firstInputUri(jobs), server, prompt.toString());
+                    record.selectedOutputNodeIdsJson = new JSONArray(selectedOutputs).toString();
+                    record.outputSelectionSummary = WorkflowUtils.outputSummary(availableOutputs, selectedOutputs);
+                    JobStore.add(this, record);
+                    GenerationManager.notifySubmitted(this, record.localId);
+                    GenerationManager.enqueueSubmission(this, record.localId);
+                    ok++;
+                    lastOkUri = uri;
+                    lastOkRemote = uploaded.workflowFilename();
+                    int currentOk = ok;
+                    runOnUiThread(() -> {
+                        refreshQueueButton();
+                        statusText.setText("状态：批量 " + displayIndex + "/" + uris.size() + " 已加入队列 · 已成功 " + currentOk + " 张");
+                    });
+                } catch (Exception e) {
+                    failed++;
+                    int currentFailed = failed;
+                    runOnUiThread(() -> statusText.setText("状态：批量 " + displayIndex + "/" + uris.size() + " 上传/入队失败 · 已失败 " + currentFailed + " 张"));
+                }
+            }
+
+            if (lastOkUri != null) {
+                WorkflowProfile latest = WorkflowStore.find(WorkflowStore.load(this), profileId);
+                if (latest != null) {
+                    latest.setSavedInputUri(targetKey, lastOkUri.toString());
+                    latest.setSavedReplaceEnabled(targetKey, true);
+                    WorkflowStore.upsert(this, latest);
+                }
+            }
+            final int finalOk = ok;
+            final int finalFailed = failed;
+            final Uri finalLastUri = lastOkUri;
+            final String finalLastRemote = lastOkRemote;
+            runOnUiThread(() -> {
+                if (finalLastUri != null && activeProfile != null && profileId.equals(activeProfile.id)
+                        && targetIndex >= 0 && targetIndex < imageBindings.size()) {
+                    ImageBinding current = imageBindings.get(targetIndex);
+                    current.uri = finalLastUri;
+                    current.remoteFilename = finalLastRemote;
+                    current.uploading = false;
+                    current.uploadError = "";
+                    current.replaceSwitch.setChecked(true);
+                    current.selectButton.setText("单张：" + getDisplayName(finalLastUri));
+                    current.uploadState.setText("✓ 批量最后一张已上传，可继续单张生成");
+                    current.uploadState.setTextColor(ThemeManager.success(this));
+                    sessionInputUris.computeIfAbsent(profileId, x -> new HashMap<>()).put(targetKey, finalLastUri);
+                    loadPreviewOnly(current, finalLastUri);
+                    activeProfile = WorkflowStore.find(WorkflowStore.load(this), profileId);
+                }
+                refreshQueueButton();
+                refreshSubmitEnabled();
+                statusText.setText("状态：批量处理完成 · 成功 " + finalOk + " 张" + (finalFailed > 0 ? " · 失败 " + finalFailed + " 张" : ""));
+                toast("批量完成：成功 " + finalOk + " 张" + (finalFailed > 0 ? "，失败 " + finalFailed + " 张" : ""));
+            });
+        });
     }
 
     private List<ImageJob> snapshotImageJobs() {
@@ -884,25 +1191,6 @@ public class MainActivity extends Activity {
         for (ImageJob j : jobs) if (j.replace && j.uri != null) names.add(getDisplayName(j.uri));
         if (names.isEmpty()) return "使用工作流原输入";
         return String.join("、", names);
-    }
-
-    private void clearCurrentInputSelections() {
-        if (activeProfile == null) return;
-        Map<String, Uri> map = sessionInputUris.computeIfAbsent(activeProfile.id, x -> new HashMap<>());
-        for (ImageBinding b : imageBindings) {
-            b.uploadToken++;
-            b.uri = null;
-            b.remoteFilename = "";
-            b.uploading = false;
-            b.uploadError = "";
-            map.remove(inputKey(b.choice));
-            if (b.preview != null) b.preview.setImageDrawable(null);
-            if (b.selectButton != null) b.selectButton.setText("选择下一张图片");
-            if (b.uploadState != null) {
-                b.uploadState.setText("等待选择图片");
-                b.uploadState.setTextColor(ThemeManager.muted(this));
-            }
-        }
     }
 
     private void applyFieldOverrides(JSONObject prompt, List<FieldOverride> overrides) throws Exception {
@@ -1043,6 +1331,34 @@ public class MainActivity extends Activity {
     }
 
     private void showAppearanceMenu() {
+        String[] items = new String[]{
+                "外观模式（跟随系统 / 浅色 / 深色）",
+                "选择主界面背景图片",
+                "清除主界面背景",
+                "选择启动页图片",
+                "清除启动页图片",
+                "App 图标样式"
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("外观与个性化")
+                .setItems(items, (dialog, which) -> {
+                    if (which == 0) showThemeModeDialog();
+                    else if (which == 1) chooseCustomizationImage(REQ_BACKGROUND);
+                    else if (which == 2) {
+                        CustomizationStore.setBackgroundUri(this, "");
+                        toast("已恢复默认背景");
+                        recreate();
+                    } else if (which == 3) chooseCustomizationImage(REQ_SPLASH);
+                    else if (which == 4) {
+                        CustomizationStore.setSplashUri(this, "");
+                        toast("已恢复默认启动页");
+                    } else showIconMenu();
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void showThemeModeDialog() {
         String current = ThemeManager.getMode(this);
         int checked = ThemeManager.MODE_LIGHT.equals(current) ? 1 : ThemeManager.MODE_DARK.equals(current) ? 2 : 0;
         String[] items = new String[]{"跟随系统", "浅色模式", "深色模式"};
@@ -1053,6 +1369,32 @@ public class MainActivity extends Activity {
                     ThemeManager.setMode(this, mode);
                     dialog.dismiss();
                     recreate();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void chooseCustomizationImage(int requestCode) {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        i.setType("image/*");
+        startActivityForResult(i, requestCode);
+    }
+
+    private void showIconMenu() {
+        String current = IconSwitcher.getChoice(this);
+        String[] values = new String[]{IconSwitcher.DEFAULT, IconSwitcher.MINIMAL, IconSwitcher.BLUE};
+        String[] labels = new String[]{"霓虹节点沙发（默认）", "极简节点", "蓝色节点"};
+        int checked = 0;
+        for (int i = 0; i < values.length; i++) if (values[i].equals(current)) checked = i;
+        new AlertDialog.Builder(this)
+                .setTitle("App 图标样式")
+                .setMessage("Android 不允许已安装 App 把任意相册图片直接变成桌面 Launcher 图标，因此 V2.1 提供 3 个预置图标即时切换。主界面背景和启动页仍可使用任意图片。")
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                    IconSwitcher.apply(this, values[which]);
+                    dialog.dismiss();
+                    toast("图标已切换；部分桌面可能需要几秒刷新");
                 })
                 .setNegativeButton("取消", null)
                 .show();
@@ -1223,6 +1565,7 @@ public class MainActivity extends Activity {
         Switch replaceSwitch;
         ImageView preview;
         Button selectButton;
+        Button batchButton;
         TextView uploadState;
         String remoteFilename = "";
         String uploadError = "";

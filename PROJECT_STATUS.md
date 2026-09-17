@@ -1,6 +1,6 @@
 # 项目状态
 
-**版本：V2.0.0 源码版**
+**版本：V2.1.0 源码版**
 
 已完成：
 - 中文原生 Android UI
@@ -19,7 +19,16 @@
 - 图库长按多选、全选、批量下载与进度显示
 - GitHub Actions APK 自动构建脚本
 
+V2.1 新增：
+- 工作流完整列表 + 横向快捷切换并存
+- 输入图片/替换开关按工作流持久保存，提交后不再自动清空
+- 多选图片二次确认、单线程顺序上传并批量入队
+- 首页高级设置默认折叠
+- 自定义主界面背景与启动页
+- 3 种 Launcher 图标通过 Activity Alias 即时切换
+
 验证：
 - 当前会话环境没有 Android SDK/Gradle，因此未生成本地 APK。
-- 已使用 Java 21 + Android/JSON 编译接口桩对全部 Java 源码做静态编译检查，结果通过，无 Java 语法/类型错误。
-- 最终 Android Gradle/SDK 构建仍建议通过仓库自带 GitHub Actions 完成。
+- 已使用 Java 17 `javac` 对 V2.1 Java 变更做语法解析检查；未发现 Java 语法级错误。
+- AndroidManifest 与资源 XML 已完成 XML 解析检查。
+- 当前会话环境没有 Android SDK/Gradle，无法在本地完成 Android 类型解析、资源链接和 APK 构建；最终构建请通过仓库自带 GitHub Actions 验证。

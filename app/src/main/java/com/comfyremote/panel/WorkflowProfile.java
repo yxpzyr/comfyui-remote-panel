@@ -22,6 +22,9 @@ public final class WorkflowProfile {
     public String outputNodesJson = "[]";
     public String selectedOutputNodeIdsJson = "[]";
     public boolean outputNodesVerified = false;
+    // V2.1: persist each workflow's chosen local input URIs and replace switches.
+    public JSONObject inputUris = new JSONObject();
+    public JSONObject inputReplace = new JSONObject();
 
     public WorkflowProfile(String id, String name, String promptJson, String uiJson,
                            boolean favorite, long createdAt, long updatedAt, JSONObject overrides) {
@@ -92,6 +95,32 @@ public final class WorkflowProfile {
         selectedOutputNodeIdsJson = a.toString();
     }
 
+
+    public String savedInputUri(String key) {
+        if (key == null || key.isEmpty()) return "";
+        return inputUris == null ? "" : inputUris.optString(key, "");
+    }
+
+    public void setSavedInputUri(String key, String uri) {
+        if (key == null || key.isEmpty()) return;
+        if (inputUris == null) inputUris = new JSONObject();
+        try {
+            if (uri == null || uri.isEmpty()) inputUris.remove(key);
+            else inputUris.put(key, uri);
+        } catch (Exception ignored) {}
+    }
+
+    public boolean savedReplaceEnabled(String key, boolean fallback) {
+        if (key == null || key.isEmpty() || inputReplace == null || !inputReplace.has(key)) return fallback;
+        return inputReplace.optBoolean(key, fallback);
+    }
+
+    public void setSavedReplaceEnabled(String key, boolean enabled) {
+        if (key == null || key.isEmpty()) return;
+        if (inputReplace == null) inputReplace = new JSONObject();
+        try { inputReplace.put(key, enabled); } catch (Exception ignored) {}
+    }
+
     public JSONObject promptObject() throws Exception {
         return new JSONObject(promptJson);
     }
@@ -114,6 +143,8 @@ public final class WorkflowProfile {
             o.put("output_nodes", new JSONArray(outputNodesJson == null || outputNodesJson.isEmpty() ? "[]" : outputNodesJson));
             o.put("selected_output_node_ids", new JSONArray(selectedOutputNodeIdsJson == null || selectedOutputNodeIdsJson.isEmpty() ? "[]" : selectedOutputNodeIdsJson));
             o.put("output_nodes_verified", outputNodesVerified);
+            o.put("input_uris", inputUris == null ? new JSONObject() : inputUris);
+            o.put("input_replace", inputReplace == null ? new JSONObject() : inputReplace);
         } catch (Exception ignored) {}
         return o;
     }
@@ -135,6 +166,10 @@ public final class WorkflowProfile {
         p.outputNodesJson = outputNodes == null ? o.optString("output_nodes_json", "[]") : outputNodes.toString();
         p.selectedOutputNodeIdsJson = selected == null ? o.optString("selected_output_node_ids_json", "[]") : selected.toString();
         p.outputNodesVerified = o.optBoolean("output_nodes_verified", false);
+        JSONObject inputUris = o.optJSONObject("input_uris");
+        JSONObject inputReplace = o.optJSONObject("input_replace");
+        p.inputUris = inputUris == null ? new JSONObject() : inputUris;
+        p.inputReplace = inputReplace == null ? new JSONObject() : inputReplace;
         return p;
     }
 
