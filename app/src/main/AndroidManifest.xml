@@ -12,6 +12,10 @@
         <activity android:name=".GalleryActivity" />
         <activity android:name=".QueueActivity" />
         <activity
+            android:name=".MaskEditorActivity"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+        <activity
             android:name=".MainActivity"
             android:screenOrientation="portrait"
             android:exported="false" />
@@ -20,7 +24,7 @@
             android:screenOrientation="portrait"
             android:exported="true" />
 
-        <!-- V2.1 launcher aliases: Android can switch bundled launcher icons without rebuilding the APK. -->
+        <!-- V2.2 launcher aliases: Android can switch bundled launcher icons without rebuilding the APK. -->
         <activity-alias
             android:name=".LauncherDefault"
             android:targetActivity=".SplashActivity"

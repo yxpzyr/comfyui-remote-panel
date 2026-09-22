@@ -25,6 +25,8 @@ public final class WorkflowProfile {
     // V2.1: persist each workflow's chosen local input URIs and replace switches.
     public JSONObject inputUris = new JSONObject();
     public JSONObject inputReplace = new JSONObject();
+    // V2.2: optional per-input RGBA file containing a painted alpha mask.
+    public JSONObject inputMaskPaths = new JSONObject();
 
     public WorkflowProfile(String id, String name, String promptJson, String uiJson,
                            boolean favorite, long createdAt, long updatedAt, JSONObject overrides) {
@@ -121,6 +123,21 @@ public final class WorkflowProfile {
         try { inputReplace.put(key, enabled); } catch (Exception ignored) {}
     }
 
+
+    public String savedMaskPath(String key) {
+        if (key == null || key.isEmpty()) return "";
+        return inputMaskPaths == null ? "" : inputMaskPaths.optString(key, "");
+    }
+
+    public void setSavedMaskPath(String key, String path) {
+        if (key == null || key.isEmpty()) return;
+        if (inputMaskPaths == null) inputMaskPaths = new JSONObject();
+        try {
+            if (path == null || path.isEmpty()) inputMaskPaths.remove(key);
+            else inputMaskPaths.put(key, path);
+        } catch (Exception ignored) {}
+    }
+
     public JSONObject promptObject() throws Exception {
         return new JSONObject(promptJson);
     }
@@ -145,6 +162,7 @@ public final class WorkflowProfile {
             o.put("output_nodes_verified", outputNodesVerified);
             o.put("input_uris", inputUris == null ? new JSONObject() : inputUris);
             o.put("input_replace", inputReplace == null ? new JSONObject() : inputReplace);
+            o.put("input_mask_paths", inputMaskPaths == null ? new JSONObject() : inputMaskPaths);
         } catch (Exception ignored) {}
         return o;
     }
@@ -168,8 +186,10 @@ public final class WorkflowProfile {
         p.outputNodesVerified = o.optBoolean("output_nodes_verified", false);
         JSONObject inputUris = o.optJSONObject("input_uris");
         JSONObject inputReplace = o.optJSONObject("input_replace");
+        JSONObject inputMaskPaths = o.optJSONObject("input_mask_paths");
         p.inputUris = inputUris == null ? new JSONObject() : inputUris;
         p.inputReplace = inputReplace == null ? new JSONObject() : inputReplace;
+        p.inputMaskPaths = inputMaskPaths == null ? new JSONObject() : inputMaskPaths;
         return p;
     }
 

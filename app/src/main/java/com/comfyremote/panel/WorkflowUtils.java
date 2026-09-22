@@ -38,6 +38,15 @@ public final class WorkflowUtils {
 
     /** Finds file-backed image loader inputs. Supports standard LoadImage and many custom loaders. */
     public static List<NodeChoice> findLoadImageNodes(JSONObject prompt) {
+        return findLoadImageNodes(prompt, null);
+    }
+
+    /**
+     * V2.2 also marks image loader nodes that can emit a MASK. When /object_info is
+     * available it is authoritative; otherwise common core/custom loader names are
+     * recognized conservatively so the mask editor is immediately available offline.
+     */
+    public static List<NodeChoice> findLoadImageNodes(JSONObject prompt, JSONObject objectInfo) {
         List<NodeChoice> result = new ArrayList<>();
         Iterator<String> keys = prompt.keys();
         while (keys.hasNext()) {
@@ -50,9 +59,56 @@ public final class WorkflowUtils {
 
             String inputName = findImageFilenameInput(classType, inputs);
             if (inputName == null) continue;
-            result.add(new NodeChoice(id, nodeTitle(node, classType), inputName));
+            boolean maskCapable = loaderCanProvideMask(classType, inputName, inputs, objectInfo);
+            result.add(new NodeChoice(id, nodeTitle(node, classType), inputName, classType, maskCapable));
         }
         return result;
+    }
+
+    private static boolean loaderCanProvideMask(String classType, String inputName, JSONObject inputs, JSONObject objectInfo) {
+        String compact = (classType == null ? "" : classType).toLowerCase(Locale.ROOT)
+                .replace("_", "").replace("-", "").replace(" ", "");
+        Object channel = inputs == null ? null : inputs.opt("channel");
+        // Core LoadImageMask can read R/G/B too. Our painter is intentionally Alpha based,
+        // so only expose it when that node is configured for alpha.
+        if (compact.contains("loadimagemask") && channel instanceof String &&
+                !"alpha".equalsIgnoreCase(String.valueOf(channel))) return false;
+
+        if (objectInfo != null) {
+            JSONObject def = objectInfo.optJSONObject(classType);
+            if (def != null) {
+                boolean uploadWidget = false;
+                JSONObject inputDef = def.optJSONObject("input");
+                JSONObject required = inputDef == null ? null : inputDef.optJSONObject("required");
+                JSONObject optional = inputDef == null ? null : inputDef.optJSONObject("optional");
+                Object specObj = required != null ? required.opt(inputName) : null;
+                if (specObj == null && optional != null) specObj = optional.opt(inputName);
+                if (specObj instanceof JSONArray) {
+                    JSONArray spec = (JSONArray) specObj;
+                    JSONObject meta = spec.length() > 1 ? spec.optJSONObject(1) : null;
+                    uploadWidget = meta != null && meta.optBoolean("image_upload", false);
+                }
+
+                JSONArray outputs = def.optJSONArray("output");
+                if (uploadWidget && outputs != null) {
+                    for (int i = 0; i < outputs.length(); i++) {
+                        if ("MASK".equalsIgnoreCase(outputs.optString(i, ""))) return true;
+                    }
+                }
+                // If object_info explicitly described this as a non-upload field, do not turn a
+                // generic STRING/URL/image-processing node into a fake mask editor.
+                if (!uploadWidget) {
+                    if (compact.equals("loadimage") || compact.equals("loadimageoutput")) return true;
+                    if (compact.contains("loadimagemask") || compact.contains("loadimagewithmask") ||
+                            compact.contains("loadimagewithalpha") || compact.contains("loadimagewithfilename")) return true;
+                    return false;
+                }
+            }
+        }
+        if (compact.equals("loadimage") || compact.equals("loadimageoutput")) return true;
+        if (compact.contains("loadimagemask") || compact.contains("loadimagewithmask") ||
+                compact.contains("loadimagewithalpha") || compact.contains("loadimagewithfilename")) return true;
+        return channel instanceof String && "alpha".equalsIgnoreCase(String.valueOf(channel)) && compact.contains("image");
     }
 
     private static String findImageFilenameInput(String classType, JSONObject inputs) {
@@ -228,10 +284,17 @@ public final class WorkflowUtils {
         public final String id;
         public final String title;
         public final String inputName;
+        public final String classType;
+        public final boolean maskCapable;
         public NodeChoice(String id, String title, String inputName) {
+            this(id, title, inputName, "", false);
+        }
+        public NodeChoice(String id, String title, String inputName, String classType, boolean maskCapable) {
             this.id = id;
             this.title = title;
             this.inputName = inputName;
+            this.classType = classType == null ? "" : classType;
+            this.maskCapable = maskCapable;
         }
         @Override public String toString() { return title + " · 节点 " + id; }
     }

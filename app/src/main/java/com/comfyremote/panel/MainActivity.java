@@ -29,6 +29,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -47,6 +48,7 @@ public class MainActivity extends Activity {
     private static final int REQ_SPLASH = 103;
     private static final int REQ_IMAGE_BASE = 1000;
     private static final int REQ_MULTI_IMAGE_BASE = 2000;
+    private static final int REQ_MASK_EDITOR_BASE = 3000;
 
     private final ExecutorService pool = Executors.newFixedThreadPool(6);
     // Keep batch uploads/submissions strictly ordered.
@@ -67,6 +69,10 @@ public class MainActivity extends Activity {
     private final List<OutputBinding> outputBindings = new ArrayList<>();
     private final Map<String, Map<String, Uri>> sessionInputUris = new HashMap<>();
     private final Set<String> outputRefreshInFlight = new HashSet<>();
+    private final Object objectInfoLock = new Object();
+    private JSONObject cachedObjectInfo;
+    private String cachedObjectInfoServer = "";
+    private long cachedObjectInfoAt = 0L;
 
     private List<WorkflowProfile> profiles = new ArrayList<>();
     private WorkflowProfile activeProfile;
@@ -141,7 +147,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.1 · 输入常驻 / 批量顺序生成 / 精简主页 / 个性化", 13, false);
+        TextView subtitle = text("V2.2 · 输入常驻 / 批量顺序生成 / 蒙版遮罩 / 个性化", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -210,7 +216,7 @@ public class MainActivity extends Activity {
 
         LinearLayout inputCard = cardWithTopMargin(root);
         inputCard.addView(sectionTitle("输入图片"));
-        TextView inputTip = text("V2.1 会按工作流记住输入图，生成后不会自动清空。单张可直接生成；批量选择会按系统返回顺序逐张上传并加入队列。", 12, false);
+        TextView inputTip = text("V2.2 会自动识别支持 MASK 的图片输入节点并显示“编辑蒙版遮罩”。蒙版写入 PNG Alpha 后与原图一起提交；普通图片节点不会显示该功能。", 12, false);
         inputTip.setTextColor(ThemeManager.muted(this));
         inputTip.setPadding(0, 0, 0, dp(8));
         inputCard.addView(inputTip);
@@ -387,11 +393,18 @@ public class MainActivity extends Activity {
 
     private void clearPersistedInputs() {
         if (activeProfile == null) { toast("请先选择工作流"); return; }
+        File dir = new File(getFilesDir(), "masks_v22");
+        File[] files = dir.listFiles();
+        if (files != null) {
+            String prefix = activeProfile.id.replaceAll("[^A-Za-z0-9._-]", "_") + "_";
+            for (File f : files) if (f.getName().startsWith(prefix)) f.delete();
+        }
         activeProfile.inputUris = new JSONObject();
+        activeProfile.inputMaskPaths = new JSONObject();
         WorkflowStore.upsert(this, activeProfile);
         sessionInputUris.remove(activeProfile.id);
         rebuildInputControls();
-        statusText.setText("状态：已清空当前工作流记住的输入图");
+        statusText.setText("状态：已清空当前工作流记住的输入图和蒙版");
     }
 
     private void switchWorkflow(String profileId) {
@@ -422,7 +435,15 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode != RESULT_OK || data == null) return;
 
-        if (requestCode >= REQ_MULTI_IMAGE_BASE) {
+        if (requestCode >= REQ_MASK_EDITOR_BASE && requestCode < REQ_MASK_EDITOR_BASE + 1000) {
+            int idx = requestCode - REQ_MASK_EDITOR_BASE;
+            if (idx < 0 || idx >= imageBindings.size()) return;
+            String path = data.getStringExtra(MaskEditorActivity.EXTRA_OUTPUT_PATH);
+            if (path != null && !path.isEmpty()) onMaskEdited(imageBindings.get(idx), path);
+            return;
+        }
+
+        if (requestCode >= REQ_MULTI_IMAGE_BASE && requestCode < REQ_MASK_EDITOR_BASE) {
             int idx = requestCode - REQ_MULTI_IMAGE_BASE;
             if (idx < 0 || idx >= imageBindings.size()) return;
             List<Uri> uris = collectUris(data);
@@ -493,7 +514,7 @@ public class MainActivity extends Activity {
                 JSONObject uiCopy = uiFormat ? new JSONObject(json.toString()) : null;
                 WorkflowProfile profile = WorkflowProfile.create(name, prompt, uiCopy);
                 try {
-                    JSONObject objectInfo = new ComfyApiClient(server).getObjectInfo();
+                    JSONObject objectInfo = getObjectInfoCached(server);
                     profile.setOutputChoices(WorkflowUtils.findOutputNodes(prompt, objectInfo), true, false);
                 } catch (Exception detectionError) {
                     profile.setOutputChoices(WorkflowUtils.findOutputNodes(prompt), false, false);
@@ -567,6 +588,12 @@ public class MainActivity extends Activity {
                 .setNegativeButton("取消", null)
                 .setPositiveButton("删除", (d, w) -> {
                     sessionInputUris.remove(deleting.id);
+                    File maskDir = new File(getFilesDir(), "masks_v22");
+                    File[] maskFiles = maskDir.listFiles();
+                    if (maskFiles != null) {
+                        String prefix = deleting.id.replaceAll("[^A-Za-z0-9._-]", "_") + "_";
+                        for (File f : maskFiles) if (f.getName().startsWith(prefix)) f.delete();
+                    }
                     WorkflowStore.delete(this, deleting.id);
                     profiles = WorkflowStore.load(this);
                     resolveActiveProfile();
@@ -608,6 +635,12 @@ public class MainActivity extends Activity {
                     try { b.uri = Uri.parse(persisted); } catch (Exception ignored) {}
                 }
                 if (b.uri == null && remembered != null) b.uri = remembered.get(key);
+                b.maskSupported = n.maskCapable;
+                b.maskPath = activeProfile.savedMaskPath(key);
+                if (!b.maskPath.isEmpty() && !new File(b.maskPath).isFile()) {
+                    b.maskPath = "";
+                    activeProfile.setSavedMaskPath(key, "");
+                }
                 imageBindings.add(b);
 
                 LinearLayout box = miniCard();
@@ -631,6 +664,24 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams pickRowLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
                 pickRowLp.setMargins(0, dp(6), 0, 0);
                 box.addView(pickRow, pickRowLp);
+
+                b.maskRow = new LinearLayout(this);
+                b.maskRow.setOrientation(LinearLayout.HORIZONTAL);
+                b.maskButton = button("🎨 编辑蒙版遮罩");
+                b.clearMaskButton = button("清除蒙版");
+                b.maskRow.addView(b.maskButton, weightedButton());
+                LinearLayout.LayoutParams maskClearLp = weightedButton();
+                maskClearLp.setMargins(dp(8), 0, 0, 0);
+                b.maskRow.addView(b.clearMaskButton, maskClearLp);
+                LinearLayout.LayoutParams maskRowLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                maskRowLp.setMargins(0, dp(6), 0, 0);
+                box.addView(b.maskRow, maskRowLp);
+                b.maskState = text("", 11, false);
+                b.maskState.setPadding(0, dp(4), 0, 0);
+                box.addView(b.maskState);
+                b.maskButton.setOnClickListener(v -> openMaskEditor(b));
+                b.clearMaskButton.setOnClickListener(v -> clearMaskForBinding(b, true));
+                updateMaskUi(b);
 
                 b.uploadState = text(b.uri == null ? "等待选择图片" : (b.replaceSwitch.isChecked() ? "准备上传…" : "已记住图片，但当前保留工作流原输入"), 11, false);
                 b.uploadState.setTextColor(ThemeManager.muted(this));
@@ -659,6 +710,7 @@ public class MainActivity extends Activity {
                     if (b.replaceSwitch.isChecked()) startInputUpload(b, b.uri);
                 }
             }
+            refreshMaskCapabilitiesAsync(activeProfile.id);
         } catch (Exception e) {
             inputList.addView(text("读取工作流输入失败：" + e.getMessage(), 13, false));
         }
@@ -683,6 +735,8 @@ public class MainActivity extends Activity {
     }
 
     private void loadInputPreview(ImageBinding binding, Uri uri) {
+        // A mask is spatially tied to its source image; never reuse it after image replacement.
+        clearMaskForBinding(binding, false);
         binding.uri = uri;
         binding.remoteFilename = "";
         binding.uploadError = "";
@@ -714,13 +768,16 @@ public class MainActivity extends Activity {
         final String server = currentServer();
         pool.submit(() -> {
             try {
-                ComfyApiClient.UploadResult uploaded = new ComfyApiClient(server).uploadImage(this, uri);
+                ComfyApiClient api = new ComfyApiClient(server);
+                File masked = binding.maskPath == null || binding.maskPath.isEmpty() ? null : new File(binding.maskPath);
+                ComfyApiClient.UploadResult uploaded = masked != null && masked.isFile()
+                        ? api.uploadImageFile(masked) : api.uploadImage(this, uri);
                 runOnUiThread(() -> {
                     if (token != binding.uploadToken || binding.uri == null || !binding.uri.equals(uri)) return;
                     binding.uploading = false;
                     binding.remoteFilename = uploaded.workflowFilename();
                     if (binding.uploadState != null) {
-                        binding.uploadState.setText("✓ 已上传，可开始生成");
+                        binding.uploadState.setText(binding.maskPath == null || binding.maskPath.isEmpty() ? "✓ 已上传，可开始生成" : "✓ 原图 + 蒙版已上传，可开始生成");
                         binding.uploadState.setTextColor(ThemeManager.success(this));
                     }
                     statusText.setText("状态：输入图 " + (binding.index + 1) + " 已上传，可直接开始生成");
@@ -785,11 +842,113 @@ public class MainActivity extends Activity {
                 activeProfile.setSavedInputUri(key, b.uri.toString());
             }
             activeProfile.setSavedReplaceEnabled(key, b.replaceSwitch == null || b.replaceSwitch.isChecked());
+            activeProfile.setSavedMaskPath(key, b.maskPath == null ? "" : b.maskPath);
         }
         WorkflowStore.upsert(this, activeProfile);
     }
 
     private String inputKey(WorkflowUtils.NodeChoice n) { return n.id + "|" + n.inputName; }
+
+    /** Refresh mask capability from ComfyUI /object_info so custom image loaders are supported too. */
+    private void refreshMaskCapabilitiesAsync(String profileId) {
+        if (profileId == null || profileId.isEmpty() || activeProfile == null) return;
+        final JSONObject prompt;
+        try { prompt = activeProfile.promptObject(); } catch (Exception e) { return; }
+        final String server = currentServer();
+        pool.submit(() -> {
+            try {
+                JSONObject objectInfo = getObjectInfoCached(server);
+                List<WorkflowUtils.NodeChoice> detected = WorkflowUtils.findLoadImageNodes(prompt, objectInfo);
+                Map<String, Boolean> support = new HashMap<>();
+                for (WorkflowUtils.NodeChoice n : detected) support.put(inputKey(n), n.maskCapable);
+                runOnUiThread(() -> {
+                    if (activeProfile == null || !profileId.equals(activeProfile.id)) return;
+                    for (ImageBinding b : imageBindings) {
+                        Boolean v = support.get(inputKey(b.choice));
+                        if (v != null) b.maskSupported = v;
+                        updateMaskUi(b);
+                    }
+                });
+            } catch (Exception ignored) {
+                // Offline: keep the conservative class-name detection already shown in the UI.
+            }
+        });
+    }
+
+    private void updateMaskUi(ImageBinding b) {
+        if (b == null || b.maskRow == null) return;
+        b.maskRow.setVisibility(b.maskSupported ? View.VISIBLE : View.GONE);
+        if (b.maskState != null) {
+            b.maskState.setVisibility(b.maskSupported ? View.VISIBLE : View.GONE);
+            if (b.maskSupported) {
+                boolean hasMask = b.maskPath != null && !b.maskPath.isEmpty() && new File(b.maskPath).isFile();
+                b.maskState.setText(hasMask ? "✓ 已绘制蒙版：红色涂抹区域会作为 MASK" : "支持蒙版：当前未绘制遮罩");
+                b.maskState.setTextColor(hasMask ? ThemeManager.success(this) : ThemeManager.muted(this));
+                if (b.maskButton != null) b.maskButton.setText(hasMask ? "🎨 编辑蒙版（已绘制）" : "🎨 编辑蒙版遮罩");
+                if (b.clearMaskButton != null) b.clearMaskButton.setEnabled(hasMask);
+            }
+        }
+        if (b.maskButton != null) b.maskButton.setEnabled(b.uri != null);
+    }
+
+    private void openMaskEditor(ImageBinding b) {
+        if (b == null || !b.maskSupported) return;
+        if (b.uri == null) { toast("请先选择输入图片，再编辑蒙版"); return; }
+        if (activeProfile == null) return;
+        File out = maskFileFor(activeProfile.id, inputKey(b.choice));
+        Intent i = new Intent(this, MaskEditorActivity.class);
+        i.putExtra(MaskEditorActivity.EXTRA_SOURCE_URI, b.uri.toString());
+        i.putExtra(MaskEditorActivity.EXTRA_EXISTING_MASK_PATH, b.maskPath == null ? "" : b.maskPath);
+        i.putExtra(MaskEditorActivity.EXTRA_OUTPUT_PATH, out.getAbsolutePath());
+        startActivityForResult(i, REQ_MASK_EDITOR_BASE + b.index);
+    }
+
+    private File maskFileFor(String profileId, String key) {
+        File dir = new File(getFilesDir(), "masks_v22");
+        if (!dir.exists()) dir.mkdirs();
+        String safeId = profileId == null ? "workflow" : profileId.replaceAll("[^A-Za-z0-9._-]", "_");
+        String hash = Integer.toHexString((key == null ? "" : key).hashCode());
+        return new File(dir, safeId + "_" + hash + ".png");
+    }
+
+    private void onMaskEdited(ImageBinding b, String path) {
+        if (b == null || path == null || path.isEmpty() || !new File(path).isFile()) {
+            toast("蒙版文件保存失败");
+            return;
+        }
+        b.maskPath = path;
+        b.remoteFilename = "";
+        b.uploadError = "";
+        if (b.replaceSwitch != null) b.replaceSwitch.setChecked(true);
+        if (activeProfile != null) {
+            activeProfile.setSavedMaskPath(inputKey(b.choice), path);
+            WorkflowStore.upsert(this, activeProfile);
+        }
+        updateMaskUi(b);
+        statusText.setText("状态：蒙版已保存，正在把原图 + 蒙版上传到 ComfyUI…");
+        if (b.uri != null) startInputUpload(b, b.uri);
+    }
+
+    private void clearMaskForBinding(ImageBinding b, boolean reuploadOriginal) {
+        if (b == null) return;
+        String old = b.maskPath == null ? "" : b.maskPath;
+        b.maskPath = "";
+        if (!old.isEmpty()) {
+            try { new File(old).delete(); } catch (Exception ignored) {}
+        }
+        if (activeProfile != null) {
+            activeProfile.setSavedMaskPath(inputKey(b.choice), "");
+            WorkflowStore.upsert(this, activeProfile);
+        }
+        updateMaskUi(b);
+        if (reuploadOriginal && b.uri != null && b.replaceSwitch != null && b.replaceSwitch.isChecked()) {
+            b.remoteFilename = "";
+            statusText.setText("状态：蒙版已清除，正在重新上传原图…");
+            startInputUpload(b, b.uri);
+        } else if (reuploadOriginal) {
+            statusText.setText("状态：蒙版已清除");
+        }
+    }
 
     private void rebuildParameterControls() {
         parameterList.removeAllViews();
@@ -924,7 +1083,7 @@ public class MainActivity extends Activity {
             try {
                 WorkflowProfile profile = WorkflowStore.find(WorkflowStore.load(this), profileId);
                 if (profile == null) return;
-                JSONObject objectInfo = new ComfyApiClient(server).getObjectInfo();
+                JSONObject objectInfo = getObjectInfoCached(server);
                 List<WorkflowUtils.OutputChoice> detectedTmp = WorkflowUtils.findOutputNodes(profile.promptObject(), objectInfo);
                 if (detectedTmp.isEmpty()) detectedTmp = WorkflowUtils.findOutputNodes(profile.promptObject());
                 final List<WorkflowUtils.OutputChoice> detected = detectedTmp;
@@ -1042,7 +1201,7 @@ public class MainActivity extends Activity {
         if (activeProfile == null) { toast("请先选择工作流"); return; }
         new AlertDialog.Builder(this)
                 .setTitle("批量生成 " + uris.size() + " 张？")
-                .setMessage("这些图片将替换“输入图 " + (target.index + 1) + "”，并按安卓文件选择器返回的顺序逐张上传、逐张加入队列。其他输入图沿用当前工作流已选择的图片。")
+                .setMessage("这些图片将替换“输入图 " + (target.index + 1) + "”，并按安卓文件选择器返回的顺序逐张上传、逐张加入队列。批量目标图不会复用当前蒙版（避免蒙版与不同图片错位）；其他输入图沿用当前设置。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("按顺序加入队列", (d, w) -> startBatchGeneration(target, new ArrayList<>(uris)))
                 .show();
@@ -1051,6 +1210,7 @@ public class MainActivity extends Activity {
     private void startBatchGeneration(ImageBinding target, List<Uri> uris) {
         if (activeProfile == null || target == null || uris == null || uris.isEmpty()) return;
         target.replaceSwitch.setChecked(true);
+        clearMaskForBinding(target, false);
         saveAddress();
         saveCurrentOverrides();
         saveOutputSelection();
@@ -1308,6 +1468,22 @@ public class MainActivity extends Activity {
         queueButton.setText(active > 0 ? "队列 (" + active + ")" : "队列");
     }
 
+    private JSONObject getObjectInfoCached(String server) throws Exception {
+        String normalized = ComfyApiClient.normalizeBase(server);
+        synchronized (objectInfoLock) {
+            long now = System.currentTimeMillis();
+            if (cachedObjectInfo != null && normalized.equals(cachedObjectInfoServer) &&
+                    now - cachedObjectInfoAt < 5 * 60 * 1000L) {
+                return cachedObjectInfo;
+            }
+            JSONObject fetched = new ComfyApiClient(server).getObjectInfo();
+            cachedObjectInfo = fetched;
+            cachedObjectInfoServer = normalized;
+            cachedObjectInfoAt = now;
+            return fetched;
+        }
+    }
+
     private void testConnection() {
         saveAddress();
         connectionState.setText("● 正在检测…");
@@ -1390,7 +1566,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < values.length; i++) if (values[i].equals(current)) checked = i;
         new AlertDialog.Builder(this)
                 .setTitle("App 图标样式")
-                .setMessage("Android 不允许已安装 App 把任意相册图片直接变成桌面 Launcher 图标，因此 V2.1 提供 3 个预置图标即时切换。主界面背景和启动页仍可使用任意图片。")
+                .setMessage("Android 不允许已安装 App 把任意相册图片直接变成桌面 Launcher 图标，因此 V2.2 继续提供 3 个预置图标即时切换。主界面背景和启动页仍可使用任意图片。")
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     IconSwitcher.apply(this, values[which]);
                     dialog.dismiss();
@@ -1566,7 +1742,13 @@ public class MainActivity extends Activity {
         ImageView preview;
         Button selectButton;
         Button batchButton;
+        LinearLayout maskRow;
+        Button maskButton;
+        Button clearMaskButton;
+        TextView maskState;
         TextView uploadState;
+        boolean maskSupported = false;
+        String maskPath = "";
         String remoteFilename = "";
         String uploadError = "";
         boolean uploading = false;

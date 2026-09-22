@@ -53,7 +53,7 @@ public class SplashActivity extends Activity {
         }
 
         TextView label = new TextView(this);
-        label.setText("ComfyUI 远程面板 · V2.1");
+        label.setText("ComfyUI 远程面板 · V2.2");
         label.setTextColor(customLoaded ? Color.WHITE : ThemeManager.text(this));
         label.setTextSize(16);
         label.setGravity(Gravity.CENTER);

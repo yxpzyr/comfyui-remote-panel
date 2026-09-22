@@ -10,6 +10,8 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -98,6 +100,46 @@ public class ComfyApiClient {
             finally { if (con != null) con.disconnect(); }
         }
         throw last == null ? new Exception("上传图片失败") : last;
+    }
+
+    /** Upload an app-private PNG/JPEG file. Used by V2.2 masked RGBA inputs. */
+    public UploadResult uploadImageFile(File file) throws Exception {
+        if (file == null || !file.isFile()) throw new Exception("蒙版图片文件不存在");
+        String display = "mobile_" + System.currentTimeMillis() + "_" + sanitize(file.getName());
+        String boundary = "----ComfyRemote" + UUID.randomUUID();
+        String lower = file.getName().toLowerCase();
+        String mime = lower.endsWith(".png") ? "image/png" : lower.endsWith(".webp") ? "image/webp" : "image/jpeg";
+
+        Exception last = null;
+        for (String path : new String[]{"/upload/image", "/api/upload/image"}) {
+            HttpURLConnection con = null;
+            try {
+                URL u = new URL(base + path);
+                con = (HttpURLConnection) u.openConnection();
+                con.setRequestMethod("POST");
+                con.setConnectTimeout(10000);
+                con.setReadTimeout(60000);
+                con.setDoOutput(true);
+                con.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+                try (OutputStream out = con.getOutputStream()) {
+                    writePartHeader(out, boundary, "image", display, mime);
+                    try (InputStream in = new FileInputStream(file)) { copy(in, out); }
+                    out.write("\r\n".getBytes(StandardCharsets.UTF_8));
+                    writeField(out, boundary, "type", "input");
+                    writeField(out, boundary, "overwrite", "true");
+                    out.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+                }
+                int code = con.getResponseCode();
+                byte[] bytes = readAll(code >= 400 ? con.getErrorStream() : con.getInputStream());
+                if (code >= 200 && code < 300) {
+                    JSONObject obj = new JSONObject(new String(bytes, StandardCharsets.UTF_8));
+                    return new UploadResult(obj.optString("name", display), obj.optString("subfolder", ""), obj.optString("type", "input"));
+                }
+                last = new Exception("蒙版图片上传失败 HTTP " + code + ": " + new String(bytes, StandardCharsets.UTF_8));
+            } catch (Exception e) { last = e; }
+            finally { if (con != null) con.disconnect(); }
+        }
+        throw last == null ? new Exception("上传蒙版图片失败") : last;
     }
 
     public String queuePrompt(JSONObject workflow) throws Exception {
