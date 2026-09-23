@@ -127,6 +127,22 @@ public final class JobStore {
         });
     }
 
+    /** Persist V2.3 first-seen output order while a task is still running. */
+    public static void observeOutputs(Context context, String localId, List<ImageRef> refs) {
+        update(context, localId, j -> {
+            JSONArray a = new JSONArray();
+            if (refs != null) for (ImageRef ref : refs) a.put(ref.toJson());
+            j.outputRefsJson = a.toString();
+            j.outputCount = refs == null ? 0 : refs.size();
+        });
+    }
+
+    public static List<JobRecord> completed(Context context) {
+        List<JobRecord> out = new ArrayList<>();
+        for (JobRecord j : list(context)) if (JobRecord.COMPLETED.equals(j.status) && !j.outputRefs().isEmpty()) out.add(j);
+        return out;
+    }
+
     public static void clearFinished(Context context) {
         synchronized (LOCK) {
             List<JobRecord> list = list(context);

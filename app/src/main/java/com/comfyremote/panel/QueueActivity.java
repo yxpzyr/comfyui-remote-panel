@@ -218,11 +218,12 @@ public class QueueActivity extends Activity {
         loadJobThumbnail(job, thumb);
 
         List<ImageRef> outputs = job.outputRefs();
-        if (JobRecord.COMPLETED.equals(job.status) && !outputs.isEmpty()) {
-            card.setOnClickListener(v -> showOutput(job, outputs.get(0)));
-            thumb.setOnClickListener(v -> showOutput(job, outputs.get(0)));
+        ImageRef finalOutput = ImageRef.chooseFinal(outputs);
+        if (JobRecord.COMPLETED.equals(job.status) && finalOutput != null) {
+            card.setOnClickListener(v -> showOutput(job, finalOutput));
+            thumb.setOnClickListener(v -> showOutput(job, finalOutput));
             thumb.setOnLongClickListener(v -> {
-                saveRef(job, outputs.get(0));
+                saveRef(job, finalOutput);
                 return true;
             });
             TextView hint = text("点任务/缩略图查看原图 · 长按缩略图保存", 11, false);
@@ -282,8 +283,9 @@ public class QueueActivity extends Activity {
 
     private void loadJobThumbnail(JobRecord job, ImageView target) {
         List<ImageRef> refs = job.outputRefs();
-        if (JobRecord.COMPLETED.equals(job.status) && !refs.isEmpty()) {
-            ImageRef ref = refs.get(0);
+        ImageRef finalRef = ImageRef.chooseFinal(refs);
+        if (JobRecord.COMPLETED.equals(job.status) && finalRef != null) {
+            ImageRef ref = finalRef;
             String key = "out|" + ref.key();
             Bitmap cached = thumbCache.get(key);
             if (cached != null) { target.setImageBitmap(cached); return; }

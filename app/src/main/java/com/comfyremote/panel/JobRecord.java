@@ -97,6 +97,10 @@ public final class JobRecord {
         return out;
     }
 
+    public ImageRef finalOutputRef() {
+        return ImageRef.chooseFinal(outputRefs());
+    }
+
     public long totalDurationMs() {
         long end = completedAt > 0 ? completedAt : System.currentTimeMillis();
         return submittedAt > 0 ? Math.max(0, end - submittedAt) : 0;

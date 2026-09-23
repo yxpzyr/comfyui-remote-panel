@@ -193,17 +193,19 @@ public class ComfyApiClient {
         JSONObject entry = findPromptEntry(history, promptId);
         if (entry == null) return new ArrayList<>();
         long ts = historyTimestamp(entry, System.currentTimeMillis());
-        List<ImageRef> out = new ArrayList<>();
-        java.util.HashSet<String> seen = new java.util.HashSet<>();
-        JSONObject outputs = entry.optJSONObject("outputs");
-        if (outputs == null) return out;
-        Iterator<String> nodes = outputs.keys();
-        while (nodes.hasNext()) {
-            String nodeId = nodes.next();
-            if (allowedOutputNodes != null && !allowedOutputNodes.isEmpty() && !allowedOutputNodes.contains(nodeId)) continue;
-            collectImagesDeep(outputs.opt(nodeId), out, seen, ts, promptId, 0);
-        }
-        return out;
+        return parseImagesDeepFromEntry(entry, promptId, ts, allowedOutputNodes);
+    }
+
+    /** Merge standard `images` arrays and non-standard nested image records for one prompt. */
+    public List<ImageRef> parseAllImagesForPrompt(JSONObject history, String promptId, java.util.Set<String> allowedOutputNodes) {
+        LinkedHashMap<String, ImageRef> merged = new LinkedHashMap<>();
+        for (ImageRef ref : parseImagesFromPromptHistory(history, promptId, allowedOutputNodes)) merged.put(ref.key(), ref);
+        for (ImageRef ref : parseImagesDeepForPrompt(history, promptId, allowedOutputNodes)) merged.putIfAbsent(ref.key(), ref);
+        return new ArrayList<>(merged.values());
+    }
+
+    public List<ImageRef> parseAllImagesForPrompt(JSONObject history, String promptId) {
+        return parseAllImagesForPrompt(history, promptId, null);
     }
 
     public List<ImageRef> parseImagesFromAllHistory(JSONObject history, int limit) {
@@ -219,9 +221,7 @@ public class ComfyApiClient {
                 String promptId = promptIdFromEntry(entry, "");
                 long ts = historyTimestamp(entry, fallback - i);
                 List<ImageRef> refs = parseImagesFromEntry(entry, promptId, ts);
-                List<ImageRef> deep = new ArrayList<>();
-                java.util.HashSet<String> seen = new java.util.HashSet<>();
-                collectImagesDeep(entry.opt("outputs"), deep, seen, ts, promptId, 0);
+                List<ImageRef> deep = parseImagesDeepFromEntry(entry, promptId, ts, null);
                 refs.addAll(deep);
                 for (ImageRef ref : refs) putNewest(dedupe, ref);
             }
@@ -236,9 +236,7 @@ public class ComfyApiClient {
                 String promptId = promptIdFromEntry(entry, key);
                 long ts = historyTimestamp(entry, fallback - order++);
                 List<ImageRef> refs = parseImagesFromEntry(entry, promptId, ts);
-                List<ImageRef> deep = new ArrayList<>();
-                java.util.HashSet<String> seen = new java.util.HashSet<>();
-                collectImagesDeep(entry.opt("outputs"), deep, seen, ts, promptId, 0);
+                List<ImageRef> deep = parseImagesDeepFromEntry(entry, promptId, ts, null);
                 refs.addAll(deep);
                 for (ImageRef ref : refs) putNewest(dedupe, ref);
             }
@@ -251,8 +249,10 @@ public class ComfyApiClient {
     }
 
     private void putNewest(LinkedHashMap<String, ImageRef> map, ImageRef ref) {
-        ImageRef old = map.get(ref.key());
-        if (old == null || ref.timestamp >= old.timestamp) map.put(ref.key(), ref);
+        String prompt = ref.promptId == null ? "" : ref.promptId;
+        String key = prompt + "|" + ref.key();
+        ImageRef old = map.get(key);
+        if (old == null || ref.timestamp >= old.timestamp) map.put(key, ref);
     }
 
     private JSONObject findPromptEntry(JSONObject history, String promptId) {
@@ -299,6 +299,7 @@ public class ComfyApiClient {
         List<ImageRef> refs = new ArrayList<>();
         JSONObject outputs = entry.optJSONObject("outputs");
         if (outputs == null) return refs;
+        int fallbackOrder = 0;
         Iterator<String> nodes = outputs.keys();
         while (nodes.hasNext()) {
             String nodeId = nodes.next();
@@ -310,28 +311,55 @@ public class ComfyApiClient {
             for (int i = 0; i < images.length(); i++) {
                 JSONObject img = images.optJSONObject(i);
                 if (img != null && !img.optString("filename", "").isEmpty()) {
-                    refs.add(ImageRef.fromJson(img, timestamp, promptId));
+                    ImageRef ref = ImageRef.fromJson(img, timestamp, promptId, nodeId);
+                    // V2.3 only uses this parser order as a legacy/fallback order. Live tasks are
+                    // overwritten with first-seen generatedAt/outputOrder by GenerationManager.
+                    refs.add(new ImageRef(ref.filename, ref.subfolder, ref.type, ref.timestamp, ref.promptId,
+                            ref.sourceNodeId, ref.generatedAt, ref.outputOrder > 0 ? ref.outputOrder : ++fallbackOrder));
                 }
             }
         }
         return refs;
     }
 
+    private List<ImageRef> parseImagesDeepFromEntry(JSONObject entry, String promptId, long timestamp,
+                                                     java.util.Set<String> allowedOutputNodes) {
+        List<ImageRef> out = new ArrayList<>();
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        JSONObject outputs = entry == null ? null : entry.optJSONObject("outputs");
+        if (outputs == null) return out;
+        Iterator<String> nodes = outputs.keys();
+        while (nodes.hasNext()) {
+            String nodeId = nodes.next();
+            if (allowedOutputNodes != null && !allowedOutputNodes.isEmpty() && !allowedOutputNodes.contains(nodeId)) continue;
+            collectImagesDeep(outputs.opt(nodeId), out, seen, timestamp, promptId, nodeId, 0);
+        }
+        // Deep parsing can discover non-standard nested image records. Give them deterministic
+        // fallback order for old history; live V2.3 monitoring replaces this with real first-seen order.
+        List<ImageRef> ordered = new ArrayList<>();
+        int order = 0;
+        for (ImageRef ref : out) {
+            ordered.add(new ImageRef(ref.filename, ref.subfolder, ref.type, ref.timestamp, ref.promptId,
+                    ref.sourceNodeId, ref.generatedAt, ref.outputOrder > 0 ? ref.outputOrder : ++order));
+        }
+        return ordered;
+    }
+
     private void collectImagesDeep(Object value, List<ImageRef> out, java.util.Set<String> seen,
-                                   long timestamp, String promptId, int depth) {
+                                   long timestamp, String promptId, String sourceNodeId, int depth) {
         if (value == null || value == JSONObject.NULL || depth > 12) return;
         if (value instanceof JSONObject) {
             JSONObject o = (JSONObject) value;
             String filename = o.optString("filename", "");
             if (!filename.isEmpty()) {
-                ImageRef ref = ImageRef.fromJson(o, timestamp, promptId);
+                ImageRef ref = ImageRef.fromJson(o, timestamp, promptId, sourceNodeId);
                 if (seen.add(ref.key())) out.add(ref);
             }
             Iterator<String> it = o.keys();
-            while (it.hasNext()) collectImagesDeep(o.opt(it.next()), out, seen, timestamp, promptId, depth + 1);
+            while (it.hasNext()) collectImagesDeep(o.opt(it.next()), out, seen, timestamp, promptId, sourceNodeId, depth + 1);
         } else if (value instanceof JSONArray) {
             JSONArray a = (JSONArray) value;
-            for (int i = 0; i < a.length(); i++) collectImagesDeep(a.opt(i), out, seen, timestamp, promptId, depth + 1);
+            for (int i = 0; i < a.length(); i++) collectImagesDeep(a.opt(i), out, seen, timestamp, promptId, sourceNodeId, depth + 1);
         }
     }
 

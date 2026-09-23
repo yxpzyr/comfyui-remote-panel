@@ -1,35 +1,29 @@
 # 项目状态
 
-**版本：V2.2.0 源码版**
+**版本：V2.3.0 源码版**
 
-已完成基础能力：
-- 中文原生 Android UI
-- ComfyUI 地址/端口记忆与连通检测
-- 普通 UI JSON / API JSON 工作流读取
-- 多工作流持久化、切换、重命名、收藏置顶、删除
-- 每个工作流独立保存可编辑参数
-- 多输入图片识别、安卓图片选择、预览和 multipart 上传
-- 连续提交 / 跨工作流排队
-- 独立任务队列、取消/中断
-- history 输出恢复、最近输出预览、100 张图库
-- 多输出节点选择
-- 输入图片按工作流长期保留
-- 多图顺序批量入队
-- 高级设置折叠与个性化背景/启动页/Launcher 图标
+基础能力继续保留：
+- 中文原生 Android UI、ComfyUI 地址/端口记忆与连通检测
+- UI JSON / API JSON 工作流读取与多工作流持久化
+- 每工作流独立输入图、参数、替换开关与蒙版
+- 单张/批量顺序生成、跨工作流排队、队列取消/中断
+- V2.2 手机端 MASK 蒙版编辑器
+- 高级设置折叠、背景/启动页/Launcher 图标个性化
 
-V2.2 新增：
-- 自动识别支持 MASK 的图片加载节点
-- `/object_info` 动态识别自定义 MASK 图片加载节点
-- 手机端蒙版遮罩编辑器
-- 涂抹 / 橡皮擦 / 画笔大小 / 撤销 / 重做 / 反转 / 清空
-- 蒙版以 PNG Alpha 写入，兼容 ComfyUI LoadImage 的 `MASK = 1 - alpha`
-- 蒙版按工作流 + 输入节点持久保存
-- 换图自动清除旧蒙版
-- 清除蒙版后重新上传原图
-- 批量目标图不复用当前蒙版，避免位置错位
+V2.3 新增/调整：
+- 图库由“图片列表”改为“任务列表”
+- 上一页 / 下一页 / 页码回车跳转
+- 每页 5 / 10 / 20 个任务可选并记忆
+- 删除 5 秒图库全量自动刷新；只在进入/恢复页面和手动刷新时同步元数据
+- 仅请求当前页任务的最终图缩略图，减少移动数据和卡顿
+- 主页最近输出只加载最终图，多图任务显示 `📁 N`
+- 新增任务全部图片二级页面，可查看并多选下载过程图
+- 图库直接长按仅多选各任务最终图
+- GenerationManager 不再见到第一张输出就结束任务，而是等待整个 prompt completed
+- 运行中持久记录输出首次出现顺序；ImageRef 新增 sourceNodeId / generatedAt / outputOrder
+- 最终图按 generatedAt 最新、outputOrder 最大判定；旧 V2.2 数据回退到列表最后一张
 
 验证状态：
-- V2.1 已由用户仓库 GitHub Actions 成功完成 Android APK 构建。
-- 当前运行环境没有 Android SDK/Gradle，因此 V2.2 无法在本地执行完整 `assembleDebug`。
-- V2.2 已执行 Java 源码解析/结构检查、Manifest/XML 解析检查、文件引用检查和 ZIP 完整性检查。
-- 上传到 GitHub 后应由仓库现有 `Build Android APK` Action 做最终 Android 类型解析、资源链接和 APK 构建验证。
+- V2.1、V2.2 均已由用户仓库 GitHub Actions 成功完成 Android APK 构建并实机测试。
+- 当前环境没有完整 Android SDK，因此 V2.3 需上传 GitHub 后由现有 `Build Android APK` Action 做最终 Android 类型解析、资源链接和 APK 构建验证。
+- 本地会执行源码结构、XML/Manifest、版本号、ZIP 完整性和关键行为静态检查。

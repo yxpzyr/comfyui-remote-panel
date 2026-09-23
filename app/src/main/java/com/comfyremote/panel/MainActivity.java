@@ -17,6 +17,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -67,6 +68,9 @@ public class MainActivity extends Activity {
     private final List<FieldBinding> fieldBindings = new ArrayList<>();
     private final List<OutputNodeBinding> outputNodeBindings = new ArrayList<>();
     private final List<OutputBinding> outputBindings = new ArrayList<>();
+    // V2.3 keeps full task output metadata but downloads only the final image on the home screen.
+    private final List<ImageRef> currentOutputRefs = new ArrayList<>();
+    private JobRecord currentOutputJob;
     private final Map<String, Map<String, Uri>> sessionInputUris = new HashMap<>();
     private final Set<String> outputRefreshInFlight = new HashSet<>();
     private final Object objectInfoLock = new Object();
@@ -83,7 +87,7 @@ public class MainActivity extends Activity {
         if (job == null) return;
         if (JobRecord.COMPLETED.equals(job.status)) {
             statusText.setText("状态：" + job.workflowName + " 已完成 · " + job.message);
-            if (!job.outputRefs().isEmpty() && (!safe(job.promptId).equals(lastPreviewedPromptId) || outputBindings.isEmpty())) {
+            if (!job.outputRefs().isEmpty() && (!safe(job.promptId).equals(lastPreviewedPromptId) || currentOutputRefs.isEmpty())) {
                 loadJobOutputs(job);
             }
         } else if (JobRecord.FAILED.equals(job.status)) {
@@ -147,7 +151,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.2 · 输入常驻 / 批量顺序生成 / 蒙版遮罩 / 个性化", 13, false);
+        TextView subtitle = text("V2.3 · 任务级图库 / 最终图优先 / 分页省流量 / 蒙版遮罩", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -216,7 +220,7 @@ public class MainActivity extends Activity {
 
         LinearLayout inputCard = cardWithTopMargin(root);
         inputCard.addView(sectionTitle("输入图片"));
-        TextView inputTip = text("V2.2 会自动识别支持 MASK 的图片输入节点并显示“编辑蒙版遮罩”。蒙版写入 PNG Alpha 后与原图一起提交；普通图片节点不会显示该功能。", 12, false);
+        TextView inputTip = text("V2.3 继续自动识别支持 MASK 的图片输入节点并显示“编辑蒙版遮罩”。蒙版写入 PNG Alpha 后与原图一起提交；普通图片节点不会显示该功能。", 12, false);
         inputTip.setTextColor(ThemeManager.muted(this));
         inputTip.setPadding(0, 0, 0, dp(8));
         inputCard.addView(inputTip);
@@ -255,11 +259,11 @@ public class MainActivity extends Activity {
         refreshOutputBtn.setOnClickListener(v -> refreshOutputMetadataAsync(true));
 
         LinearLayout outputCard = cardWithTopMargin(root);
-        outputCard.addView(sectionTitle("最近完成输出"));
+        outputCard.addView(sectionTitle("最近完成输出 · 最终图"));
         outputList = new LinearLayout(this);
         outputList.setOrientation(LinearLayout.VERTICAL);
         outputCard.addView(outputList);
-        outputList.addView(text("任务完成后会自动恢复最新输出；完整历史请打开图库。", 13, false));
+        outputList.addView(text("V2.3 主页只加载最后生成的最终图；多图任务点 📁 可查看全部过程图。", 13, false));
         saveAllButton = button("全部保存当前输出");
         saveAllButton.setEnabled(false);
         LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46));
@@ -1366,7 +1370,7 @@ public class MainActivity extends Activity {
     private void syncLatestCompletedOutput() {
         JobRecord latest = JobStore.latestCompleted(this);
         if (latest == null) return;
-        if (!safe(latest.promptId).equals(lastPreviewedPromptId) || outputBindings.isEmpty()) loadJobOutputs(latest);
+        if (!safe(latest.promptId).equals(lastPreviewedPromptId) || currentOutputRefs.isEmpty()) loadJobOutputs(latest);
     }
 
     private void loadJobOutputs(JobRecord job) {
@@ -1376,65 +1380,113 @@ public class MainActivity extends Activity {
             try {
                 ComfyApiClient api = new ComfyApiClient(serverForJob);
                 List<ImageRef> refs = new ArrayList<>(job.outputRefs());
-                if (refs.isEmpty() && job.promptId != null && !job.promptId.isEmpty()) {
+                boolean legacyOrder = refs.isEmpty() || lacksV23OutputOrder(refs);
+                if (legacyOrder && job.promptId != null && !job.promptId.isEmpty()) {
+                    List<ImageRef> remote = new ArrayList<>();
                     try {
                         JSONObject history = api.getHistoryForPrompt(job.promptId);
-                        refs = api.parseImagesFromPromptHistory(history, job.promptId);
-                        if (refs.isEmpty()) refs = api.parseImagesDeepForPrompt(history, job.promptId);
+                        remote = api.parseAllImagesForPrompt(history, job.promptId);
                     } catch (Exception ignored) {}
-                    if (refs.isEmpty()) {
+                    if (remote.isEmpty()) {
                         try {
                             JSONObject all = api.getAllHistory(300);
-                            refs = api.parseImagesFromPromptHistory(all, job.promptId);
-                            if (refs.isEmpty()) refs = api.parseImagesDeepForPrompt(all, job.promptId);
+                            remote = api.parseAllImagesForPrompt(all, job.promptId);
                         } catch (Exception ignored) {}
                     }
+                    refs = mergeOutputRefs(refs, remote);
                 }
                 if (refs.isEmpty()) {
                     runOnUiThread(() -> {
+                        currentOutputRefs.clear();
+                        currentOutputJob = null;
                         outputList.removeAllViews();
                         outputList.addView(text("任务已完成，但没有可读取的图片记录。", 13, false));
                         saveAllButton.setEnabled(false);
+                        saveAllButton.setText("全部保存当前输出");
                     });
                     return;
                 }
-                List<OutputBinding> loaded = new ArrayList<>();
-                int limit = Math.min(refs.size(), 12);
-                for (int i = 0; i < limit; i++) {
-                    ImageRef ref = refs.get(i);
-                    try {
-                        ComfyApiClient.ImageDownload dl = api.fetchImage(ref);
-                        Bitmap bmp = decodeScaled(dl.bytes, 1400, 1400);
-                        if (bmp != null) loaded.add(new OutputBinding(ref, dl, bmp));
-                    } catch (Exception ignored) {}
-                }
-                if (!loaded.isEmpty()) runOnUiThread(() -> {
+
+                ImageRef finalRef = ImageRef.chooseFinal(refs);
+                if (finalRef == null) return;
+                ComfyApiClient.ImageDownload dl = api.fetchImage(finalRef);
+                Bitmap bmp = decodeScaled(dl.bytes, 1400, 1400);
+                if (bmp == null) return;
+                OutputBinding finalOutput = new OutputBinding(finalRef, dl, bmp);
+                List<ImageRef> fullRefs = new ArrayList<>(refs);
+                runOnUiThread(() -> {
                     lastPreviewedPromptId = safe(job.promptId);
-                    renderOutputs(loaded);
+                    renderFinalOutput(job, fullRefs, finalOutput);
                 });
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                runOnUiThread(() -> statusText.setText("状态：最终输出加载失败 · " + safe(e.getMessage())));
+            }
         });
     }
 
-    private void renderOutputs(List<OutputBinding> loaded) {
-        outputBindings.clear();
-        outputBindings.addAll(loaded);
-        outputList.removeAllViews();
-        for (int i = 0; i < loaded.size(); i++) {
-            OutputBinding o = loaded.get(i);
-            LinearLayout box = miniCard();
-            box.addView(text("输出 " + (i + 1) + " · " + o.ref.filename, 12, true));
-            ImageView image = previewImage();
-            image.setImageBitmap(o.bitmap);
-            box.addView(image, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(235)));
-            Button save = button("保存这张");
-            box.addView(save, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)));
-            save.setOnClickListener(v -> saveOneOutput(o));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.setMargins(0, 0, 0, dp(10));
-            outputList.addView(box, lp);
+    private boolean lacksV23OutputOrder(List<ImageRef> refs) {
+        if (refs == null || refs.isEmpty()) return true;
+        for (ImageRef ref : refs) if (ref != null && (ref.generatedAt > 0 || ref.outputOrder > 0)) return false;
+        return true;
+    }
+
+    private List<ImageRef> mergeOutputRefs(List<ImageRef> local, List<ImageRef> remote) {
+        java.util.LinkedHashMap<String, ImageRef> map = new java.util.LinkedHashMap<>();
+        if (local != null) for (ImageRef ref : local) if (ref != null && !ref.filename.isEmpty()) map.put(ref.key(), ref);
+        if (remote != null) for (ImageRef ref : remote) {
+            if (ref == null || ref.filename.isEmpty()) continue;
+            ImageRef old = map.get(ref.key());
+            if (old == null || (old.generatedAt <= 0 && old.outputOrder <= 0)) map.put(ref.key(), ref);
         }
-        saveAllButton.setEnabled(!loaded.isEmpty());
+        return new ArrayList<>(map.values());
+    }
+
+    private void renderFinalOutput(JobRecord job, List<ImageRef> fullRefs, OutputBinding finalOutput) {
+        outputBindings.clear();
+        outputBindings.add(finalOutput);
+        currentOutputRefs.clear();
+        currentOutputRefs.addAll(fullRefs);
+        currentOutputJob = job;
+        outputList.removeAllViews();
+
+        LinearLayout box = miniCard();
+        String title = "最终输出 · " + finalOutput.ref.filename;
+        if (fullRefs.size() > 1) title += " · 共 " + fullRefs.size() + " 张";
+        box.addView(text(title, 12, true));
+        FrameLayout imageFrame = new FrameLayout(this);
+        ImageView image = previewImage();
+        image.setImageBitmap(finalOutput.bitmap);
+        imageFrame.addView(image, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, dp(235)));
+        if (fullRefs.size() > 1) {
+            Button folder = button("📁 " + fullRefs.size());
+            FrameLayout.LayoutParams folderLp = new FrameLayout.LayoutParams(dp(92), dp(46));
+            folderLp.gravity = Gravity.END | Gravity.BOTTOM;
+            folderLp.setMargins(0, 0, dp(8), dp(8));
+            imageFrame.addView(folder, folderLp);
+            folder.setOnClickListener(v -> openTaskOutputs(job));
+        }
+        box.addView(imageFrame, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(235)));
+
+        Button save = button("保存这张");
+        LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
+        saveLp.setMargins(0, dp(6), 0, 0);
+        box.addView(save, saveLp);
+        save.setOnClickListener(v -> saveOneOutput(finalOutput));
+        outputList.addView(box, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        saveAllButton.setEnabled(!fullRefs.isEmpty());
+        saveAllButton.setText(fullRefs.size() > 1 ? "全部保存当前输出 (" + fullRefs.size() + ")" : "全部保存当前输出");
+    }
+
+    private void openTaskOutputs(JobRecord job) {
+        if (job == null) return;
+        Intent i = new Intent(this, TaskOutputActivity.class);
+        i.putExtra(TaskOutputActivity.EXTRA_LOCAL_ID, safe(job.localId));
+        i.putExtra(TaskOutputActivity.EXTRA_PROMPT_ID, safe(job.promptId));
+        i.putExtra(TaskOutputActivity.EXTRA_SERVER, safe(job.server));
+        i.putExtra(TaskOutputActivity.EXTRA_TITLE, job.workflowName == null ? "任务全部图片" : job.workflowName);
+        startActivity(i);
     }
 
     private void saveOneOutput(OutputBinding o) {
@@ -1447,17 +1499,32 @@ public class MainActivity extends Activity {
     }
 
     private void saveAllOutputs() {
-        if (outputBindings.isEmpty()) { toast("当前没有输出图"); return; }
+        if (currentOutputRefs.isEmpty()) { toast("当前没有输出图"); return; }
+        final List<ImageRef> refs = new ArrayList<>(currentOutputRefs);
+        final String serverForJob = currentOutputJob != null && currentOutputJob.server != null && !currentOutputJob.server.isEmpty()
+                ? currentOutputJob.server : currentServer();
+        saveAllButton.setEnabled(false);
+        statusText.setText("状态：正在保存当前任务全部 " + refs.size() + " 张输出…");
         pool.submit(() -> {
+            ComfyApiClient api = new ComfyApiClient(serverForJob);
             int ok = 0;
-            for (OutputBinding o : outputBindings) {
+            for (int i = 0; i < refs.size(); i++) {
+                ImageRef ref = refs.get(i);
                 try {
-                    MediaSaver.saveImage(this, o.download.bytes, o.ref.filename, o.download.mime);
+                    ComfyApiClient.ImageDownload dl = api.fetchImage(ref);
+                    MediaSaver.saveImage(this, dl.bytes, ref.filename, dl.mime);
                     ok++;
                 } catch (Exception ignored) {}
+                int done = i + 1;
+                int good = ok;
+                runOnUiThread(() -> statusText.setText("状态：全部保存中 " + done + " / " + refs.size() + " · 成功 " + good));
             }
             int finalOk = ok;
-            runOnUiThread(() -> toast("已保存 " + finalOk + " 张到 Pictures/ComfyRemote"));
+            runOnUiThread(() -> {
+                saveAllButton.setEnabled(true);
+                statusText.setText("状态：全部保存完成 · " + finalOk + " / " + refs.size());
+                toast("已保存 " + finalOk + " 张到 Pictures/ComfyRemote");
+            });
         });
     }
 
@@ -1566,7 +1633,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < values.length; i++) if (values[i].equals(current)) checked = i;
         new AlertDialog.Builder(this)
                 .setTitle("App 图标样式")
-                .setMessage("Android 不允许已安装 App 把任意相册图片直接变成桌面 Launcher 图标，因此 V2.2 继续提供 3 个预置图标即时切换。主界面背景和启动页仍可使用任意图片。")
+                .setMessage("Android 不允许已安装 App 把任意相册图片直接变成桌面 Launcher 图标，因此 V2.3 继续提供 3 个预置图标即时切换。主界面背景和启动页仍可使用任意图片。")
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     IconSwitcher.apply(this, values[which]);
                     dialog.dismiss();

@@ -8,6 +8,7 @@ import java.io.FileNotFoundException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -28,6 +29,8 @@ public final class GenerationManager {
     private static final Set<String> MONITORING = ConcurrentHashMap.newKeySet();
     private static final Set<JobListener> LISTENERS = new CopyOnWriteArraySet<>();
     private static final Map<String, ComfyProgressSocket.Handle> SOCKETS = new ConcurrentHashMap<>();
+    // V2.3: best-effort execution timestamps for output nodes, used to identify the last generated image.
+    private static final Map<String, Map<String, Long>> NODE_EXECUTED_AT = new ConcurrentHashMap<>();
 
     private GenerationManager() {}
 
@@ -103,6 +106,8 @@ public final class GenerationManager {
                 @Override public void onExecuting(String p, String node) {
                     if (!matches(p)) return;
                     if (node != null && !node.isEmpty()) {
+                        NODE_EXECUTED_AT.computeIfAbsent(promptId, x -> new ConcurrentHashMap<>())
+                                .put(node, System.currentTimeMillis());
                         JobStore.markStarted(context, localId, "正在执行节点 " + node);
                         notifyListeners(JobStore.find(context, localId));
                     }
@@ -126,6 +131,7 @@ public final class GenerationManager {
             try { monitorLoop(app, server, localId, promptId); }
             finally {
                 MONITORING.remove(promptId);
+                NODE_EXECUTED_AT.remove(promptId);
                 JobRecord j = JobStore.find(app, localId);
                 if (j == null || j.isTerminal()) closeSocket(promptId);
             }
@@ -136,6 +142,18 @@ public final class GenerationManager {
         ComfyApiClient api = new ComfyApiClient(server);
         int completedWithoutImages = 0;
         int consecutiveNetworkErrors = 0;
+        int stableOutputTicks = 0;
+
+        LinkedHashMap<String, ImageRef> observed = new LinkedHashMap<>();
+        JobRecord initial = JobStore.find(context, localId);
+        int nextOrder = 0;
+        if (initial != null) {
+            for (ImageRef ref : initial.outputRefs()) {
+                if (ref == null || ref.filename.isEmpty()) continue;
+                observed.put(ref.key(), ref);
+                nextOrder = Math.max(nextOrder, ref.outputOrder);
+            }
+        }
 
         for (int tick = 0; tick < 1800; tick++) {
             try { Thread.sleep(2000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
@@ -155,22 +173,34 @@ public final class GenerationManager {
                     }
 
                     java.util.Set<String> allowedOutputs = current.selectedOutputNodeIds();
-                    List<ImageRef> refs = api.parseImagesFromPromptHistory(history, promptId, allowedOutputs);
-                    if (refs.isEmpty()) refs = api.parseImagesDeepForPrompt(history, promptId, allowedOutputs);
-                    if (!refs.isEmpty()) {
-                        complete(context, localId, refs);
-                        return;
+                    List<ImageRef> refs = api.parseAllImagesForPrompt(history, promptId, allowedOutputs);
+
+                    int before = observed.size();
+                    int orderBefore = nextOrder;
+                    nextOrder = mergeObserved(promptId, observed, refs, nextOrder);
+                    boolean outputsChanged = observed.size() != before || nextOrder != orderBefore;
+                    if (outputsChanged) {
+                        stableOutputTicks = 0;
+                        JobStore.observeOutputs(context, localId, new ArrayList<>(observed.values()));
+                        notifyListeners(JobStore.find(context, localId));
+                    } else if (!observed.isEmpty()) {
+                        stableOutputTicks++;
                     }
 
                     if (api.isHistoryCompleted(history, promptId)) {
-                        List<ImageRef> fallbackRefs = new ArrayList<>();
-                        try {
-                            JSONObject all = api.getAllHistory(300);
-                            fallbackRefs = api.parseImagesFromPromptHistory(all, promptId, allowedOutputs);
-                            if (fallbackRefs.isEmpty()) fallbackRefs = api.parseImagesDeepForPrompt(all, promptId, allowedOutputs);
-                        } catch (Exception ignored) {}
-                        if (!fallbackRefs.isEmpty()) {
-                            complete(context, localId, fallbackRefs);
+                        // Do not finish on the first image. V2.3 waits for ComfyUI to mark the
+                        // whole prompt complete, then the newest observed output becomes final.
+                        if (observed.isEmpty()) {
+                            List<ImageRef> fallbackRefs = new ArrayList<>();
+                            try {
+                                JSONObject all = api.getAllHistory(300);
+                                fallbackRefs = api.parseAllImagesForPrompt(all, promptId, allowedOutputs);
+                            } catch (Exception ignored) {}
+                            nextOrder = mergeObserved(promptId, observed, fallbackRefs, nextOrder);
+                        }
+
+                        if (!observed.isEmpty()) {
+                            complete(context, localId, new ArrayList<>(observed.values()));
                             return;
                         }
 
@@ -181,6 +211,28 @@ public final class GenerationManager {
                             JobStore.complete(context, localId, new ArrayList<>(),
                                     "ComfyUI 已完成任务，但 history 未提供可下载图片记录");
                             notifyListeners(JobStore.find(context, localId));
+                            return;
+                        }
+                        consecutiveNetworkErrors = 0;
+                        continue;
+                    }
+
+                    if (!observed.isEmpty()) {
+                        if (outputsChanged) {
+                            JobStore.markStarted(context, localId,
+                                    "已产生 " + observed.size() + " 张输出，等待任务最终完成");
+                            notifyListeners(JobStore.find(context, localId));
+                        }
+                        // Compatibility fallback: some custom ComfyUI history implementations do not
+                        // expose status.completed. Never finish while the prompt is still queued/running;
+                        // after it disappears from the queue and outputs stay unchanged for ~20 seconds,
+                        // accept the observed list as complete.
+                        String outputQueueState = api.getQueueState(promptId);
+                        if (ComfyApiClient.QUEUE_RUNNING.equals(outputQueueState) ||
+                                ComfyApiClient.QUEUE_PENDING.equals(outputQueueState)) {
+                            stableOutputTicks = 0;
+                        } else if (stableOutputTicks >= 10) {
+                            complete(context, localId, new ArrayList<>(observed.values()));
                             return;
                         }
                         consecutiveNetworkErrors = 0;
@@ -209,6 +261,51 @@ public final class GenerationManager {
             }
         }
         update(context, localId, JobRecord.FAILED, "等待 ComfyUI 任务结果超时", -1);
+    }
+
+    /**
+     * Adds newly appearing outputs in first-seen order. generatedAt prefers the WebSocket node
+     * execution timestamp; when unavailable, the first observation time is used. This makes the
+     * final-image rule independent from filenames and node IDs while remaining backward compatible.
+     */
+    private static int mergeObserved(String promptId, LinkedHashMap<String, ImageRef> observed,
+                                     List<ImageRef> refs, int nextOrder) {
+        if (refs == null || refs.isEmpty()) return nextOrder;
+        long now = System.currentTimeMillis();
+        Map<String, Long> nodeTimes = NODE_EXECUTED_AT.get(promptId);
+        for (ImageRef ref : refs) {
+            if (ref == null || ref.filename == null || ref.filename.isEmpty()) continue;
+            ImageRef existing = observed.get(ref.key());
+            if (existing != null) {
+                String node = existing.sourceNodeId == null || existing.sourceNodeId.isEmpty()
+                        ? ref.sourceNodeId : existing.sourceNodeId;
+                long generatedAt = existing.generatedAt;
+                int order = existing.outputOrder;
+                if (generatedAt <= 0) {
+                    if (nodeTimes != null && node != null && !node.isEmpty()) {
+                        Long t = nodeTimes.get(node);
+                        if (t != null) generatedAt = t;
+                    }
+                    if (generatedAt <= 0) generatedAt = now;
+                }
+                if (order <= 0) order = ++nextOrder;
+                if (!safe(node).equals(safe(existing.sourceNodeId)) || generatedAt != existing.generatedAt || order != existing.outputOrder) {
+                    observed.put(ref.key(), new ImageRef(existing.filename, existing.subfolder, existing.type,
+                            existing.timestamp, existing.promptId, node, generatedAt, order));
+                }
+                continue;
+            }
+            long generatedAt = 0L;
+            if (nodeTimes != null && ref.sourceNodeId != null && !ref.sourceNodeId.isEmpty()) {
+                Long t = nodeTimes.get(ref.sourceNodeId);
+                if (t != null) generatedAt = t;
+            }
+            if (generatedAt <= 0) generatedAt = now;
+            int order = ++nextOrder;
+            observed.put(ref.key(), new ImageRef(ref.filename, ref.subfolder, ref.type,
+                    ref.timestamp, ref.promptId, ref.sourceNodeId, generatedAt, order));
+        }
+        return nextOrder;
     }
 
     private static void complete(Context context, String localId, List<ImageRef> refs) {

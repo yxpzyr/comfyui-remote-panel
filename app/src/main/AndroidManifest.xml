@@ -10,6 +10,7 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/AppTheme">
         <activity android:name=".GalleryActivity" />
+        <activity android:name=".TaskOutputActivity" />
         <activity android:name=".QueueActivity" />
         <activity
             android:name=".MaskEditorActivity"
@@ -24,7 +25,7 @@
             android:screenOrientation="portrait"
             android:exported="true" />
 
-        <!-- V2.2 launcher aliases: Android can switch bundled launcher icons without rebuilding the APK. -->
+        <!-- V2.3 launcher aliases: Android can switch bundled launcher icons without rebuilding the APK. -->
         <activity-alias
             android:name=".LauncherDefault"
             android:targetActivity=".SplashActivity"
