@@ -50,6 +50,9 @@ public class MainActivity extends Activity {
     private static final int REQ_IMAGE_BASE = 1000;
     private static final int REQ_MULTI_IMAGE_BASE = 2000;
     private static final int REQ_MASK_EDITOR_BASE = 3000;
+    private static final String FOLDER_ALL = "__all__";
+    private static final String FOLDER_FAVORITES = "__favorites__";
+    private static final String PREF_FOLDER_FILTER = "workflow_folder_filter_v24";
 
     private final ExecutorService pool = Executors.newFixedThreadPool(6);
     // Keep batch uploads/submissions strictly ordered.
@@ -58,11 +61,12 @@ public class MainActivity extends Activity {
 
     private EditText addressEdit;
     private TextView connectionState, workflowState, statusText;
-    private Button submitButton, queueButton, saveAllButton, advancedToggleButton;
+    private Button submitButton, queueButton, saveAllButton, advancedToggleButton, folderFilterButton;
     private LinearLayout workflowStrip, inputList, parameterList, outputSelectorList, outputList;
     private LinearLayout connectionCardView, parameterCardView, outputSelectCardView;
     private ScrollView mainScroll;
     private boolean advancedExpanded = false;
+    private volatile boolean workflowImporting = false;
 
     private final List<ImageBinding> imageBindings = new ArrayList<>();
     private final List<FieldBinding> fieldBindings = new ArrayList<>();
@@ -79,6 +83,8 @@ public class MainActivity extends Activity {
     private long cachedObjectInfoAt = 0L;
 
     private List<WorkflowProfile> profiles = new ArrayList<>();
+    private List<WorkflowFolder> workflowFolders = new ArrayList<>();
+    private String workflowFolderFilter = FOLDER_ALL;
     private WorkflowProfile activeProfile;
     private String lastPreviewedPromptId = "";
 
@@ -101,6 +107,9 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         ThemeManager.applyWindow(this);
         prefs = getSharedPreferences("comfy_remote", MODE_PRIVATE);
+        workflowFolders = WorkflowFolderStore.load(this);
+        workflowFolderFilter = prefs.getString(PREF_FOLDER_FILTER, FOLDER_ALL);
+        normalizeFolderFilter();
         profiles = WorkflowStore.load(this);
         resolveActiveProfile();
         buildUi();
@@ -151,7 +160,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.3 · 任务级图库 / 最终图优先 / 分页省流量 / 蒙版遮罩", 13, false);
+        TextView subtitle = text("V2.4 · 批量导入 / 工作流文件夹 / 蒙版双指缩放", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -161,7 +170,7 @@ public class MainActivity extends Activity {
         LinearLayout workflowButtons = new LinearLayout(this);
         workflowButtons.setOrientation(LinearLayout.HORIZONTAL);
         Button importBtn = button("＋ 导入");
-        Button listBtn = button("工作流列表");
+        Button listBtn = button("工作流库");
         Button manageBtn = button("管理当前");
         workflowButtons.addView(importBtn, weightedButton());
         LinearLayout.LayoutParams listLp = weightedButton(); listLp.setMargins(dp(8), 0, dp(8), 0);
@@ -173,13 +182,25 @@ public class MainActivity extends Activity {
         workflowState.setPadding(0, dp(8), 0, dp(6));
         workflowCard.addView(workflowState);
 
+        LinearLayout folderRow = new LinearLayout(this);
+        folderRow.setOrientation(LinearLayout.HORIZONTAL);
+        folderFilterButton = button("📁 全部工作流");
+        Button folderManageBtn = button("管理文件夹");
+        folderRow.addView(folderFilterButton, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        LinearLayout.LayoutParams folderManageLp = new LinearLayout.LayoutParams(dp(112), dp(44));
+        folderManageLp.setMargins(dp(8), 0, 0, 0);
+        folderRow.addView(folderManageBtn, folderManageLp);
+        workflowCard.addView(folderRow);
+        folderFilterButton.setOnClickListener(v -> showFolderFilterMenu());
+        folderManageBtn.setOnClickListener(v -> showFolderManager());
+
         HorizontalScrollView workflowScroll = new HorizontalScrollView(this);
         workflowScroll.setHorizontalScrollBarEnabled(false);
         workflowStrip = new LinearLayout(this);
         workflowStrip.setOrientation(LinearLayout.HORIZONTAL);
         workflowScroll.addView(workflowStrip);
         workflowCard.addView(workflowScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-        TextView workflowTip = text("横向按钮用于快速切换；“工作流列表”适合保存较多工作流时使用。", 12, false);
+        TextView workflowTip = text("横向按钮只显示当前分类；导入支持一次选择多个 JSON，文件夹只做逻辑分类，不改变工作流 ID。", 12, false);
         workflowTip.setTextColor(ThemeManager.muted(this));
         workflowTip.setPadding(0, dp(6), 0, 0);
         workflowCard.addView(workflowTip);
@@ -220,7 +241,7 @@ public class MainActivity extends Activity {
 
         LinearLayout inputCard = cardWithTopMargin(root);
         inputCard.addView(sectionTitle("输入图片"));
-        TextView inputTip = text("V2.3 继续自动识别支持 MASK 的图片输入节点并显示“编辑蒙版遮罩”。蒙版写入 PNG Alpha 后与原图一起提交；普通图片节点不会显示该功能。", 12, false);
+        TextView inputTip = text("V2.4 继续自动识别支持 MASK 的图片输入节点并显示“编辑蒙版遮罩”。蒙版写入 PNG Alpha 后与原图一起提交；普通图片节点不会显示该功能。", 12, false);
         inputTip.setTextColor(ThemeManager.muted(this));
         inputTip.setPadding(0, 0, 0, dp(8));
         inputCard.addView(inputTip);
@@ -263,7 +284,7 @@ public class MainActivity extends Activity {
         outputList = new LinearLayout(this);
         outputList.setOrientation(LinearLayout.VERTICAL);
         outputCard.addView(outputList);
-        outputList.addView(text("V2.3 主页只加载最后生成的最终图；多图任务点 📁 可查看全部过程图。", 13, false));
+        outputList.addView(text("V2.4 主页只加载最后生成的最终图；多图任务点 📁 可查看全部过程图。", 13, false));
         saveAllButton = button("全部保存当前输出");
         saveAllButton.setEnabled(false);
         LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46));
@@ -313,6 +334,8 @@ public class MainActivity extends Activity {
     }
 
     private void refreshProfiles() {
+        workflowFolders = WorkflowFolderStore.load(this);
+        normalizeFolderFilter();
         profiles = WorkflowStore.load(this);
         resolveActiveProfile();
         rebuildWorkflowStrip();
@@ -321,52 +344,210 @@ public class MainActivity extends Activity {
     private void rebuildWorkflowStrip() {
         if (workflowStrip == null) return;
         workflowStrip.removeAllViews();
-        if (profiles.isEmpty()) {
-            TextView empty = text("还没有保存的工作流", 13, false);
+        List<WorkflowProfile> visible = profilesForCurrentFilter();
+        if (visible.isEmpty()) {
+            TextView empty = text(profiles.isEmpty() ? "还没有保存的工作流" : "当前分类没有工作流", 13, false);
             empty.setTextColor(ThemeManager.muted(this));
             workflowStrip.addView(empty);
-            workflowState.setText("当前：未选择");
-            return;
+        } else {
+            WorkflowStore.sort(visible);
+            for (WorkflowProfile profile : visible) {
+                boolean active = activeProfile != null && activeProfile.id.equals(profile.id);
+                Button b = button((profile.favorite ? "★ " : "") + profile.name);
+                GradientDrawable bg = new GradientDrawable();
+                bg.setColor(active ? ThemeManager.selected(this) : ThemeManager.imagePlaceholder(this));
+                bg.setCornerRadius(dp(12));
+                if (active) bg.setStroke(dp(2), ThemeManager.accent(this));
+                b.setBackground(bg);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(44));
+                lp.setMargins(0, 0, dp(8), 0);
+                workflowStrip.addView(b, lp);
+                b.setOnClickListener(v -> switchWorkflow(profile.id));
+            }
         }
-        WorkflowStore.sort(profiles);
-        for (WorkflowProfile profile : profiles) {
-            boolean active = activeProfile != null && activeProfile.id.equals(profile.id);
-            Button b = button((profile.favorite ? "★ " : "") + profile.name);
-            GradientDrawable bg = new GradientDrawable();
-            bg.setColor(active ? ThemeManager.selected(this) : ThemeManager.imagePlaceholder(this));
-            bg.setCornerRadius(dp(12));
-            if (active) bg.setStroke(dp(2), ThemeManager.accent(this));
-            b.setBackground(bg);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(44));
-            lp.setMargins(0, 0, dp(8), 0);
-            workflowStrip.addView(b, lp);
-            b.setOnClickListener(v -> switchWorkflow(profile.id));
+        if (folderFilterButton != null) folderFilterButton.setText("📁 " + folderFilterLabel());
+        if (profiles.isEmpty()) workflowState.setText("当前：未选择");
+        else {
+            String current = activeProfile == null ? "未选择" : activeProfile.name;
+            workflowState.setText("当前：" + current + " · " + folderFilterLabel() + " " + visible.size() + " / " + profiles.size());
         }
-        workflowState.setText("当前：" + (activeProfile == null ? "未选择" : activeProfile.name) + " · 已保存 " + profiles.size() + " 个");
     }
 
     private void showWorkflowList() {
         if (profiles == null || profiles.isEmpty()) { toast("还没有保存的工作流"); return; }
-        WorkflowStore.sort(profiles);
-        String[] names = new String[profiles.size()];
+        List<WorkflowProfile> visible = profilesForCurrentFilter();
+        if (visible.isEmpty()) { toast("当前分类没有工作流"); return; }
+        WorkflowStore.sort(visible);
+        String[] names = new String[visible.size()];
         int checked = -1;
-        for (int i = 0; i < profiles.size(); i++) {
-            WorkflowProfile p = profiles.get(i);
-            names[i] = (p.favorite ? "★ " : "") + p.name;
+        for (int i = 0; i < visible.size(); i++) {
+            WorkflowProfile p = visible.get(i);
+            String folderPrefix = FOLDER_ALL.equals(workflowFolderFilter) ? "〔" + folderNameForProfile(p) + "〕 " : "";
+            names[i] = folderPrefix + (p.favorite ? "★ " : "") + p.name;
             if (activeProfile != null && activeProfile.id.equals(p.id)) checked = i;
         }
         final int initial = checked;
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("工作流列表")
+                .setTitle("工作流库 · " + folderFilterLabel())
                 .setSingleChoiceItems(names, checked, null)
                 .setNegativeButton("关闭", null)
                 .create();
         dialog.setOnShowListener(x -> dialog.getListView().setOnItemClickListener((parent, view, position, id) -> {
-            String profileId = profiles.get(position).id;
+            String profileId = visible.get(position).id;
             dialog.dismiss();
             if (position != initial || activeProfile == null || !profileId.equals(activeProfile.id)) switchWorkflow(profileId);
         }));
         dialog.show();
+    }
+
+    private List<WorkflowProfile> profilesForCurrentFilter() {
+        List<WorkflowProfile> out = new ArrayList<>();
+        for (WorkflowProfile p : profiles) {
+            String folderId = effectiveFolderId(p);
+            if (FOLDER_ALL.equals(workflowFolderFilter)) out.add(p);
+            else if (FOLDER_FAVORITES.equals(workflowFolderFilter)) { if (p.favorite) out.add(p); }
+            else if (safe(workflowFolderFilter).equals(folderId)) out.add(p);
+        }
+        return out;
+    }
+
+    private String effectiveFolderId(WorkflowProfile p) {
+        if (p == null || p.folderId == null || p.folderId.isEmpty()) return "";
+        return WorkflowFolderStore.find(workflowFolders, p.folderId) == null ? "" : p.folderId;
+    }
+
+    private String folderNameForProfile(WorkflowProfile p) {
+        String id = effectiveFolderId(p);
+        if (id.isEmpty()) return "未分类";
+        WorkflowFolder f = WorkflowFolderStore.find(workflowFolders, id);
+        return f == null ? "未分类" : f.name;
+    }
+
+    private String folderFilterLabel() {
+        if (FOLDER_ALL.equals(workflowFolderFilter)) return "全部工作流";
+        if (FOLDER_FAVORITES.equals(workflowFolderFilter)) return "★ 常用";
+        if (workflowFolderFilter == null || workflowFolderFilter.isEmpty()) return "未分类";
+        WorkflowFolder f = WorkflowFolderStore.find(workflowFolders, workflowFolderFilter);
+        return f == null ? "未分类" : f.name;
+    }
+
+    private void normalizeFolderFilter() {
+        if (workflowFolderFilter == null || workflowFolderFilter.isEmpty() ||
+                FOLDER_ALL.equals(workflowFolderFilter) || FOLDER_FAVORITES.equals(workflowFolderFilter)) return;
+        if (WorkflowFolderStore.find(workflowFolders, workflowFolderFilter) == null) workflowFolderFilter = FOLDER_ALL;
+    }
+
+    private void setFolderFilter(String id) {
+        workflowFolderFilter = id == null ? FOLDER_ALL : id;
+        normalizeFolderFilter();
+        prefs.edit().putString(PREF_FOLDER_FILTER, workflowFolderFilter).apply();
+        rebuildWorkflowStrip();
+    }
+
+    private void showFolderFilterMenu() {
+        List<String> labels = new ArrayList<>();
+        List<String> ids = new ArrayList<>();
+        labels.add("全部工作流"); ids.add(FOLDER_ALL);
+        labels.add("★ 常用"); ids.add(FOLDER_FAVORITES);
+        labels.add("未分类"); ids.add("");
+        for (WorkflowFolder f : workflowFolders) { labels.add(f.name); ids.add(f.id); }
+        new AlertDialog.Builder(this)
+                .setTitle("选择工作流分类")
+                .setItems(labels.toArray(new String[0]), (d, which) -> setFolderFilter(ids.get(which)))
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void showFolderManager() {
+        if (workflowImporting) { toast("工作流正在导入，请等待完成后再管理文件夹"); return; }
+        List<String> labels = new ArrayList<>();
+        labels.add("＋ 新建文件夹");
+        for (WorkflowFolder f : workflowFolders) labels.add("📁 " + f.name);
+        new AlertDialog.Builder(this)
+                .setTitle("管理工作流文件夹")
+                .setMessage("文件夹是逻辑分类。删除文件夹不会删除里面的工作流，工作流会自动移回“未分类”。")
+                .setItems(labels.toArray(new String[0]), (d, which) -> {
+                    if (which == 0) createFolderDialog();
+                    else manageFolder(workflowFolders.get(which - 1));
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void createFolderDialog() {
+        EditText edit = new EditText(this);
+        edit.setSingleLine(true);
+        edit.setHint("例如：动漫转真人");
+        new AlertDialog.Builder(this)
+                .setTitle("新建文件夹")
+                .setView(edit)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("创建", (d, w) -> {
+                    String name = edit.getText().toString().trim();
+                    if (name.isEmpty()) { toast("文件夹名称不能为空"); return; }
+                    WorkflowFolder f = WorkflowFolderStore.create(this, name);
+                    workflowFolders = WorkflowFolderStore.load(this);
+                    setFolderFilter(f.id);
+                    toast("已创建文件夹：" + f.name);
+                }).show();
+    }
+
+    private void manageFolder(WorkflowFolder folder) {
+        if (folder == null) return;
+        new AlertDialog.Builder(this)
+                .setTitle(folder.name)
+                .setItems(new String[]{"进入这个文件夹", "重命名", "删除文件夹"}, (d, which) -> {
+                    if (which == 0) setFolderFilter(folder.id);
+                    else if (which == 1) renameFolderDialog(folder);
+                    else deleteFolderConfirm(folder);
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void renameFolderDialog(WorkflowFolder folder) {
+        EditText edit = new EditText(this);
+        edit.setSingleLine(true);
+        edit.setText(folder.name);
+        edit.setSelectAllOnFocus(true);
+        new AlertDialog.Builder(this)
+                .setTitle("重命名文件夹")
+                .setView(edit)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", (d, w) -> {
+                    String name = edit.getText().toString().trim();
+                    if (name.isEmpty()) { toast("文件夹名称不能为空"); return; }
+                    WorkflowFolderStore.rename(this, folder.id, name);
+                    workflowFolders = WorkflowFolderStore.load(this);
+                    rebuildWorkflowStrip();
+                }).show();
+    }
+
+    private void deleteFolderConfirm(WorkflowFolder folder) {
+        int count = 0;
+        for (WorkflowProfile p : profiles) if (folder.id.equals(effectiveFolderId(p))) count++;
+        new AlertDialog.Builder(this)
+                .setTitle("删除文件夹？")
+                .setMessage("不会删除工作流。这个文件夹里的 " + count + " 个工作流会移回“未分类”。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("删除", (d, w) -> {
+                    List<WorkflowProfile> latest = WorkflowStore.load(this);
+                    for (WorkflowProfile p : latest) {
+                        if (!folder.id.equals(safe(p.folderId))) continue;
+                        p.folderId = "";
+                        p.name = WorkflowStore.uniqueName(latest, p.name, "", p.id);
+                        WorkflowStore.upsert(this, p);
+                    }
+                    WorkflowFolderStore.delete(this, folder.id);
+                    workflowFolders = WorkflowFolderStore.load(this);
+                    profiles = WorkflowStore.load(this);
+                    if (folder.id.equals(workflowFolderFilter)) workflowFolderFilter = "";
+                    prefs.edit().putString(PREF_FOLDER_FILTER, workflowFolderFilter).apply();
+                    resolveActiveProfile();
+                    rebuildWorkflowStrip();
+                    rebuildDynamicControls();
+                    toast("文件夹已删除，工作流已移到未分类");
+                }).show();
     }
 
     private void applyAdvancedVisibility() {
@@ -426,11 +607,13 @@ public class MainActivity extends Activity {
     }
 
     private void chooseWorkflow() {
+        if (workflowImporting) { toast("工作流正在导入，请稍候"); return; }
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         i.setType("application/json");
         i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/json", "text/plain", "application/octet-stream"});
+        i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         startActivityForResult(i, REQ_WORKFLOW);
     }
 
@@ -458,13 +641,17 @@ public class MainActivity extends Activity {
             return;
         }
 
+        if (requestCode == REQ_WORKFLOW) {
+            List<Uri> uris = collectUris(data);
+            if (uris.isEmpty()) return;
+            for (Uri workflowUri : uris) takeReadPermission(workflowUri);
+            showImportFolderChooser(uris);
+            return;
+        }
+
         Uri uri = data.getData();
         if (uri == null) return;
         takeReadPermission(uri);
-        if (requestCode == REQ_WORKFLOW) {
-            loadWorkflow(uri);
-            return;
-        }
         if (requestCode == REQ_BACKGROUND) {
             CustomizationStore.setBackgroundUri(this, uri.toString());
             toast("主界面背景已保存");
@@ -501,46 +688,103 @@ public class MainActivity extends Activity {
         return out;
     }
 
-    private void loadWorkflow(Uri uri) {
-        workflowState.setText("当前：正在读取并解析工作流…");
-        final String server = currentServer();
+    private void showImportFolderChooser(List<Uri> uris) {
+        if (uris == null || uris.isEmpty()) return;
+        List<String> labels = new ArrayList<>();
+        List<String> ids = new ArrayList<>();
+        labels.add("未分类"); ids.add("");
+        for (WorkflowFolder f : workflowFolders) { labels.add(f.name); ids.add(f.id); }
+        int checked = 0;
+        if (!FOLDER_ALL.equals(workflowFolderFilter) && !FOLDER_FAVORITES.equals(workflowFolderFilter)) {
+            for (int i = 0; i < ids.size(); i++) if (safe(workflowFolderFilter).equals(ids.get(i))) checked = i;
+        }
+        final int[] chosen = new int[]{checked};
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle((uris.size() > 1 ? "批量导入 " + uris.size() + " 个工作流" : "导入工作流") + "到…")
+                .setSingleChoiceItems(labels.toArray(new String[0]), checked, (d, which) -> chosen[0] = which)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("开始导入", null)
+                .create();
+        dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String folderId = ids.get(Math.max(0, Math.min(chosen[0], ids.size() - 1)));
+            dialog.dismiss();
+            startWorkflowImport(uris, folderId);
+        }));
+        dialog.show();
+    }
+
+    private void startWorkflowImport(List<Uri> uris, String folderId) {
+        if (workflowImporting) { toast("已经有一批工作流正在导入"); return; }
+        workflowImporting = true;
+        final List<Uri> batch = new ArrayList<>(uris);
+        final String destination = folderId == null ? "" : folderId;
+        final String previousActiveId = activeProfile == null ? "" : activeProfile.id;
+        final String serverForImport = currentServer();
+        workflowState.setText("当前：准备导入 " + batch.size() + " 个工作流…");
         pool.submit(() -> {
-            try {
-                String raw = readText(uri, 32 * 1024 * 1024);
-                JSONObject json = new JSONObject(raw);
-                boolean uiFormat = json.optJSONArray("nodes") != null ||
-                        (json.optJSONObject("workflow") != null && json.optJSONObject("workflow").optJSONArray("nodes") != null);
-                if (uiFormat) setStatus("正在读取远程节点信息并转换普通工作流…");
-                JSONObject prompt = uiFormat ? WorkflowUiConverter.toApiPrompt(json, server) : WorkflowUtils.extractPromptObject(json);
-                String desired = getDisplayName(uri);
-                List<WorkflowProfile> latest = WorkflowStore.load(this);
-                String name = WorkflowStore.uniqueName(latest, desired);
-                JSONObject uiCopy = uiFormat ? new JSONObject(json.toString()) : null;
-                WorkflowProfile profile = WorkflowProfile.create(name, prompt, uiCopy);
+            List<WorkflowProfile> latest = WorkflowStore.load(this);
+            List<String> failures = new ArrayList<>();
+            List<WorkflowProfile> imported = new ArrayList<>();
+            JSONObject objectInfo = null;
+            try { objectInfo = getObjectInfoCached(serverForImport); } catch (Exception ignored) {}
+            final JSONObject detectedObjectInfo = objectInfo;
+            for (int i = 0; i < batch.size(); i++) {
+                Uri uri = batch.get(i);
+                int current = i + 1;
+                runOnUiThread(() -> workflowState.setText("当前：正在导入 " + current + " / " + batch.size() + " · " + getDisplayName(uri)));
                 try {
-                    JSONObject objectInfo = getObjectInfoCached(server);
-                    profile.setOutputChoices(WorkflowUtils.findOutputNodes(prompt, objectInfo), true, false);
-                } catch (Exception detectionError) {
-                    profile.setOutputChoices(WorkflowUtils.findOutputNodes(prompt), false, false);
+                    WorkflowProfile profile = importWorkflowProfile(uri, destination, latest, detectedObjectInfo, serverForImport);
+                    imported.add(profile);
+                    latest.add(profile);
+                } catch (Exception e) {
+                    failures.add(getDisplayName(uri) + "：" + safe(e.getMessage()));
                 }
-                WorkflowStore.upsert(this, profile);
-                WorkflowStore.setActiveId(this, profile.id);
-                runOnUiThread(() -> {
-                    captureSessionInputs();
-                    profiles = WorkflowStore.load(this);
-                    activeProfile = WorkflowStore.find(profiles, profile.id);
-                    rebuildWorkflowStrip();
-                    rebuildDynamicControls();
-                    statusText.setText("状态：工作流已保存，以后无需重复加载");
-                    toast("已保存工作流：" + profile.name);
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> {
-                    refreshProfiles();
-                    showError("工作流读取失败", e);
-                });
             }
+
+            if (previousActiveId.isEmpty() && !imported.isEmpty()) WorkflowStore.setActiveId(this, imported.get(0).id);
+            else if (!previousActiveId.isEmpty()) WorkflowStore.setActiveId(this, previousActiveId);
+
+            runOnUiThread(() -> {
+                workflowFolders = WorkflowFolderStore.load(this);
+                profiles = WorkflowStore.load(this);
+                resolveActiveProfile();
+                rebuildWorkflowStrip();
+                rebuildDynamicControls();
+                workflowImporting = false;
+                int ok = imported.size();
+                int failed = failures.size();
+                statusText.setText("状态：工作流导入完成 · 成功 " + ok + " · 失败 " + failed);
+                if (failed == 0) {
+                    toast((batch.size() > 1 ? "批量" : "") + "导入完成：" + ok + " 个");
+                } else {
+                    StringBuilder msg = new StringBuilder("成功 ").append(ok).append("，失败 ").append(failed).append("。\n\n");
+                    int show = Math.min(12, failures.size());
+                    for (int i = 0; i < show; i++) msg.append("• ").append(failures.get(i)).append("\n");
+                    if (failures.size() > show) msg.append("…另有 ").append(failures.size() - show).append(" 个失败项");
+                    new AlertDialog.Builder(this)
+                            .setTitle("导入完成")
+                            .setMessage(msg.toString())
+                            .setPositiveButton("知道了", null)
+                            .show();
+                }
+            });
         });
+    }
+
+    private WorkflowProfile importWorkflowProfile(Uri uri, String folderId, List<WorkflowProfile> latest, JSONObject objectInfo, String server) throws Exception {
+        String raw = readText(uri, 32 * 1024 * 1024);
+        JSONObject json = new JSONObject(raw);
+        boolean uiFormat = json.optJSONArray("nodes") != null ||
+                (json.optJSONObject("workflow") != null && json.optJSONObject("workflow").optJSONArray("nodes") != null);
+        JSONObject prompt = uiFormat ? WorkflowUiConverter.toApiPrompt(json, server) : WorkflowUtils.extractPromptObject(json);
+        String name = WorkflowStore.uniqueName(latest, getDisplayName(uri), folderId);
+        JSONObject uiCopy = uiFormat ? new JSONObject(json.toString()) : null;
+        WorkflowProfile profile = WorkflowProfile.create(name, prompt, uiCopy);
+        profile.folderId = folderId == null ? "" : folderId;
+        if (objectInfo != null) profile.setOutputChoices(WorkflowUtils.findOutputNodes(prompt, objectInfo), true, false);
+        else profile.setOutputChoices(WorkflowUtils.findOutputNodes(prompt), false, false);
+        WorkflowStore.upsert(this, profile);
+        return profile;
     }
 
     private void manageCurrentWorkflow() {
@@ -548,13 +792,45 @@ public class MainActivity extends Activity {
         saveCurrentOverrides();
         String starAction = activeProfile.favorite ? "取消常用置顶" : "★ 设为常用置顶";
         new AlertDialog.Builder(this)
-                .setTitle(activeProfile.name)
-                .setItems(new String[]{"重命名", starAction, "删除这个工作流"}, (dialog, which) -> {
+                .setTitle(activeProfile.name + " · " + folderNameForProfile(activeProfile))
+                .setItems(new String[]{"重命名", "移动到文件夹", starAction, "删除这个工作流"}, (dialog, which) -> {
                     if (which == 0) renameCurrentWorkflow();
-                    else if (which == 1) toggleFavorite();
+                    else if (which == 1) showMoveCurrentWorkflowDialog();
+                    else if (which == 2) toggleFavorite();
                     else deleteCurrentWorkflow();
                 })
                 .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void showMoveCurrentWorkflowDialog() {
+        if (activeProfile == null) return;
+        List<String> labels = new ArrayList<>();
+        List<String> ids = new ArrayList<>();
+        labels.add("未分类"); ids.add("");
+        for (WorkflowFolder f : workflowFolders) { labels.add(f.name); ids.add(f.id); }
+        String currentFolder = effectiveFolderId(activeProfile);
+        int checked = 0;
+        for (int i = 0; i < ids.size(); i++) if (currentFolder.equals(ids.get(i))) checked = i;
+        new AlertDialog.Builder(this)
+                .setTitle("移动工作流到…")
+                .setSingleChoiceItems(labels.toArray(new String[0]), checked, (dialog, which) -> {
+                    String target = ids.get(which);
+                    dialog.dismiss();
+                    if (target.equals(effectiveFolderId(activeProfile))) return;
+                    List<WorkflowProfile> latest = WorkflowStore.load(this);
+                    String renamed = WorkflowStore.uniqueName(latest, activeProfile.name, target, activeProfile.id);
+                    boolean changedName = !renamed.equals(activeProfile.name);
+                    activeProfile.name = renamed;
+                    activeProfile.folderId = target;
+                    WorkflowStore.upsert(this, activeProfile);
+                    workflowFolderFilter = target;
+                    prefs.edit().putString(PREF_FOLDER_FILTER, workflowFolderFilter).apply();
+                    refreshProfiles();
+                    if (changedName) toast("已移动；目标文件夹存在同名工作流，自动重命名为 " + renamed);
+                    else toast("已移动到 " + folderNameForProfile(activeProfile));
+                })
+                .setNegativeButton("取消", null)
                 .show();
     }
 
@@ -570,9 +846,11 @@ public class MainActivity extends Activity {
                 .setPositiveButton("保存", (d, w) -> {
                     String name = edit.getText().toString().trim();
                     if (name.isEmpty()) { toast("名称不能为空"); return; }
-                    activeProfile.name = name;
+                    String unique = WorkflowStore.uniqueName(WorkflowStore.load(this), name, effectiveFolderId(activeProfile), activeProfile.id);
+                    activeProfile.name = unique;
                     WorkflowStore.upsert(this, activeProfile);
                     refreshProfiles();
+                    if (!unique.equals(name)) toast("同一文件夹已有同名工作流，已改为 " + unique);
                 })
                 .show();
     }
@@ -1633,7 +1911,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < values.length; i++) if (values[i].equals(current)) checked = i;
         new AlertDialog.Builder(this)
                 .setTitle("App 图标样式")
-                .setMessage("Android 不允许已安装 App 把任意相册图片直接变成桌面 Launcher 图标，因此 V2.3 继续提供 3 个预置图标即时切换。主界面背景和启动页仍可使用任意图片。")
+                .setMessage("Android 不允许已安装 App 把任意相册图片直接变成桌面 Launcher 图标，因此 V2.4 继续提供 3 个预置图标即时切换。主界面背景和启动页仍可使用任意图片。")
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     IconSwitcher.apply(this, values[which]);
                     dialog.dismiss();

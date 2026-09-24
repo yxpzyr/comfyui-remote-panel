@@ -16,6 +16,8 @@ public final class WorkflowProfile {
     public String promptJson;
     public String uiJson;
     public boolean favorite;
+    // V2.4: logical workflow-folder UUID; empty means system "未分类".
+    public String folderId = "";
     public long createdAt;
     public long updatedAt;
     public JSONObject overrides;
@@ -154,6 +156,7 @@ public final class WorkflowProfile {
             o.put("prompt_json", promptJson);
             if (uiJson != null) o.put("ui_json", uiJson);
             o.put("favorite", favorite);
+            o.put("folder_id", folderId == null ? "" : folderId);
             o.put("created_at", createdAt);
             o.put("updated_at", updatedAt);
             o.put("overrides", overrides == null ? new JSONObject() : overrides);
@@ -179,6 +182,7 @@ public final class WorkflowProfile {
                 o.optLong("updated_at", System.currentTimeMillis()),
                 overrides == null ? new JSONObject() : overrides
         );
+        p.folderId = o.optString("folder_id", "");
         JSONArray outputNodes = o.optJSONArray("output_nodes");
         JSONArray selected = o.optJSONArray("selected_output_node_ids");
         p.outputNodesJson = outputNodes == null ? o.optString("output_nodes_json", "[]") : outputNodes.toString();

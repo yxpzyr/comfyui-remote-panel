@@ -34,7 +34,7 @@ import java.util.zip.CRC32;
 import java.util.zip.DeflaterOutputStream;
 
 /**
- * V2.2 mobile mask painter for ComfyUI image-loader nodes.
+ * V2.4 mobile mask painter for ComfyUI image-loader nodes with two-finger zoom/pan.
  *
  * ComfyUI core LoadImage defines MASK as (1 - alpha). Therefore painted mask
  * pixels are saved with alpha=0 while unpainted pixels are alpha=255. RGB is
@@ -79,7 +79,7 @@ public class MaskEditorActivity extends Activity {
 
         TextView title = text("蒙版遮罩编辑器", 21, true);
         root.addView(title);
-        TextView tip = text("红色区域 = ComfyUI MASK 白色区域。涂抹后会把蒙版写入 PNG Alpha，不改变原图 RGB 内容。", 12, false);
+        TextView tip = text("红色区域 = ComfyUI MASK 白色区域。单指涂抹/擦除；双指可缩放并拖动画布（最高约 10×），方便精确处理很小的区域。", 12, false);
         tip.setTextColor(ThemeManager.secondary(this));
         tip.setPadding(0, dp(4), 0, dp(8));
         root.addView(tip);
@@ -407,9 +407,13 @@ public class MaskEditorActivity extends Activity {
         private final Deque<Bitmap> redo = new ArrayDeque<>();
         private boolean erase = false;
         private float brushDp = 65f;
-        private float scale = 1f, offsetX = 0f, offsetY = 0f;
+
+        // V2.4 view transform: fitScale is the 1x fit-to-screen scale; zoom is user pinch zoom.
+        private float fitScale = 1f, zoom = 1f, scale = 1f, offsetX = 0f, offsetY = 0f;
         private float lastX, lastY;
         private boolean drawing = false;
+        private boolean gestureActive = false;
+        private float lastGestureFocusX, lastGestureFocusY, lastPinchDistance;
 
         MaskCanvasView(Activity context) {
             super(context);
@@ -458,7 +462,9 @@ public class MaskEditorActivity extends Activity {
             mask = initialMask;
             maskCanvas = new Canvas(mask);
             undo.clear(); redo.clear();
-            updateTransform();
+            resetViewTransform();
+            // If the image arrived before the first layout pass, recompute once the View has size.
+            post(() -> { resetViewTransform(); invalidate(); });
             invalidate();
         }
 
@@ -517,19 +523,33 @@ public class MaskEditorActivity extends Activity {
             }
         }
 
-        @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) { updateTransform(); }
+        @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) { resetViewTransform(); }
 
-        private void updateTransform() {
+        private void resetViewTransform() {
             if (source == null || getWidth() <= 0 || getHeight() <= 0) return;
-            scale = Math.min((float) getWidth() / source.getWidth(), (float) getHeight() / source.getHeight());
+            fitScale = Math.min((float) getWidth() / source.getWidth(), (float) getHeight() / source.getHeight());
+            if (!Float.isFinite(fitScale) || fitScale <= 0f) fitScale = 1f;
+            zoom = 1f;
+            scale = fitScale;
             offsetX = (getWidth() - source.getWidth() * scale) * 0.5f;
             offsetY = (getHeight() - source.getHeight() * scale) * 0.5f;
+            gestureActive = false;
+            drawing = false;
+        }
+
+        private void clampOffsets() {
+            if (source == null) return;
+            float contentW = source.getWidth() * scale;
+            float contentH = source.getHeight() * scale;
+            if (contentW <= getWidth()) offsetX = (getWidth() - contentW) * 0.5f;
+            else offsetX = Math.max(getWidth() - contentW, Math.min(0f, offsetX));
+            if (contentH <= getHeight()) offsetY = (getHeight() - contentH) * 0.5f;
+            else offsetY = Math.max(getHeight() - contentH, Math.min(0f, offsetY));
         }
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             if (source == null || mask == null) return;
-            updateTransform();
             RectF dst = new RectF(offsetX, offsetY, offsetX + source.getWidth() * scale, offsetY + source.getHeight() * scale);
             canvas.drawBitmap(source, null, dst, imagePaint);
             canvas.drawBitmap(mask, null, dst, maskPreviewPaint);
@@ -537,13 +557,43 @@ public class MaskEditorActivity extends Activity {
 
         @Override public boolean onTouchEvent(MotionEvent event) {
             if (source == null || mask == null || maskCanvas == null) return true;
-            float x = (event.getX() - offsetX) / Math.max(0.0001f, scale);
-            float y = (event.getY() - offsetY) / Math.max(0.0001f, scale);
-            if (x < 0 || y < 0 || x > source.getWidth() || y > source.getHeight()) {
-                if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) drawing = false;
+            int action = event.getActionMasked();
+
+            if (action == MotionEvent.ACTION_POINTER_DOWN && event.getPointerCount() >= 2) {
+                cancelCurrentStrokeForGesture();
+                beginTwoFingerGesture(event);
                 return true;
             }
-            switch (event.getActionMasked()) {
+
+            if (gestureActive) {
+                if (action == MotionEvent.ACTION_MOVE && event.getPointerCount() >= 2) {
+                    updateTwoFingerGesture(event);
+                    return true;
+                }
+                if (action == MotionEvent.ACTION_POINTER_UP) {
+                    if (event.getPointerCount() <= 2) {
+                        gestureActive = false;
+                        drawing = false;
+                    }
+                    return true;
+                }
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    gestureActive = false;
+                    drawing = false;
+                    return true;
+                }
+                return true;
+            }
+
+            float x = (event.getX() - offsetX) / Math.max(0.0001f, scale);
+            float y = (event.getY() - offsetY) / Math.max(0.0001f, scale);
+            boolean inside = x >= 0 && y >= 0 && x <= source.getWidth() && y <= source.getHeight();
+            if (!inside) {
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) drawing = false;
+                return true;
+            }
+
+            switch (action) {
                 case MotionEvent.ACTION_DOWN:
                     pushUndo(); redo.clear(); drawing = true; lastX = x; lastY = y; drawLine(x, y, x, y); return true;
                 case MotionEvent.ACTION_MOVE:
@@ -557,7 +607,73 @@ public class MaskEditorActivity extends Activity {
             }
         }
 
+        private void cancelCurrentStrokeForGesture() {
+            if (!drawing) return;
+            drawing = false;
+            // A second finger usually lands a moment after the first. Roll back that in-progress
+            // stroke so a pinch gesture never leaves an accidental mask dot/line.
+            if (!undo.isEmpty()) replaceMask(undo.pop());
+            redo.clear();
+        }
+
+        private void beginTwoFingerGesture(MotionEvent event) {
+            gestureActive = true;
+            lastGestureFocusX = focusX(event);
+            lastGestureFocusY = focusY(event);
+            lastPinchDistance = pinchDistance(event);
+        }
+
+        private void updateTwoFingerGesture(MotionEvent event) {
+            float focusX = focusX(event);
+            float focusY = focusY(event);
+            float distance = pinchDistance(event);
+
+            // Two-finger translation pans the enlarged canvas.
+            offsetX += focusX - lastGestureFocusX;
+            offsetY += focusY - lastGestureFocusY;
+            clampOffsets();
+
+            if (lastPinchDistance > 1f && distance > 1f) {
+                float oldScale = scale;
+                float anchorImageX = (focusX - offsetX) / Math.max(0.0001f, oldScale);
+                float anchorImageY = (focusY - offsetY) / Math.max(0.0001f, oldScale);
+                float factor = distance / lastPinchDistance;
+                float newZoom = Math.max(1f, Math.min(10f, zoom * factor));
+                if (Math.abs(newZoom - zoom) > 0.0001f) {
+                    zoom = newZoom;
+                    scale = fitScale * zoom;
+                    offsetX = focusX - anchorImageX * scale;
+                    offsetY = focusY - anchorImageY * scale;
+                    clampOffsets();
+                }
+            }
+
+            lastGestureFocusX = focusX;
+            lastGestureFocusY = focusY;
+            lastPinchDistance = distance;
+            invalidate();
+        }
+
+        private float focusX(MotionEvent e) {
+            if (e.getPointerCount() < 2) return e.getX();
+            return (e.getX(0) + e.getX(1)) * 0.5f;
+        }
+
+        private float focusY(MotionEvent e) {
+            if (e.getPointerCount() < 2) return e.getY();
+            return (e.getY(0) + e.getY(1)) * 0.5f;
+        }
+
+        private float pinchDistance(MotionEvent e) {
+            if (e.getPointerCount() < 2) return 0f;
+            float dx = e.getX(0) - e.getX(1);
+            float dy = e.getY(0) - e.getY(1);
+            return (float) Math.sqrt(dx * dx + dy * dy);
+        }
+
         private void drawLine(float x1, float y1, float x2, float y2) {
+            // Keep the brush visually the same size on screen. When zoomed in, its footprint on
+            // original-image pixels becomes smaller, which gives the user more precision.
             brushPaint.setStrokeWidth(Math.max(1f, brushDp / Math.max(0.05f, scale)));
             brushPaint.setXfermode(erase ? new android.graphics.PorterDuffXfermode(PorterDuff.Mode.CLEAR) : null);
             maskCanvas.drawLine(x1, y1, x2, y2, brushPaint);
@@ -573,4 +689,5 @@ public class MaskEditorActivity extends Activity {
             while (!redo.isEmpty()) { Bitmap b = redo.pop(); if (!b.isRecycled()) b.recycle(); }
         }
     }
+
 }

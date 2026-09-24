@@ -103,11 +103,20 @@ public final class WorkflowStore {
     }
 
     public static String uniqueName(List<WorkflowProfile> profiles, String desired) {
+        return uniqueName(profiles, desired, "", null);
+    }
+
+    /** V2.4 names only need to be unique inside the destination logical folder. */
+    public static String uniqueName(List<WorkflowProfile> profiles, String desired, String folderId) {
+        return uniqueName(profiles, desired, folderId, null);
+    }
+
+    public static String uniqueName(List<WorkflowProfile> profiles, String desired, String folderId, String excludeProfileId) {
         String base = desired == null || desired.trim().isEmpty() ? "工作流" : desired.trim();
         base = base.replaceAll("(?i)\\.json$", "");
         String candidate = base;
         int suffix = 2;
-        while (containsName(profiles, candidate)) candidate = base + " (" + suffix++ + ")";
+        while (containsName(profiles, candidate, folderId, excludeProfileId)) candidate = base + " (" + suffix++ + ")";
         return candidate;
     }
 
@@ -154,8 +163,14 @@ public final class WorkflowStore {
         }
     }
 
-    private static boolean containsName(List<WorkflowProfile> profiles, String name) {
-        for (WorkflowProfile p : profiles) if (p.name.equalsIgnoreCase(name)) return true;
+    private static boolean containsName(List<WorkflowProfile> profiles, String name, String folderId, String excludeProfileId) {
+        String targetFolder = folderId == null ? "" : folderId;
+        for (WorkflowProfile p : profiles) {
+            if (excludeProfileId != null && excludeProfileId.equals(p.id)) continue;
+            String pFolder = p.folderId == null ? "" : p.folderId;
+            if (!targetFolder.equals(pFolder)) continue;
+            if (p.name.equalsIgnoreCase(name)) return true;
+        }
         return false;
     }
 
