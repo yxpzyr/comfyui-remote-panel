@@ -67,6 +67,7 @@ public class MainActivity extends Activity {
     private ScrollView mainScroll;
     private boolean advancedExpanded = false;
     private volatile boolean workflowImporting = false;
+    private boolean refreshWorkflowsOnResume = false;
 
     private final List<ImageBinding> imageBindings = new ArrayList<>();
     private final List<FieldBinding> fieldBindings = new ArrayList<>();
@@ -128,6 +129,14 @@ public class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        if (refreshWorkflowsOnResume) {
+            refreshWorkflowsOnResume = false;
+            workflowFolders = WorkflowFolderStore.load(this);
+            profiles = WorkflowStore.load(this);
+            resolveActiveProfile();
+            rebuildWorkflowStrip();
+            rebuildDynamicControls();
+        }
         GenerationManager.resumePending(this, currentServer());
         refreshQueueButton();
         syncLatestCompletedOutput();
@@ -160,7 +169,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.4 · 批量导入 / 工作流文件夹 / 蒙版双指缩放", 13, false);
+        TextView subtitle = text("V2.4.1 · 文件夹式工作流库 / 整个文件夹导入 / 蒙版双指缩放", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -182,30 +191,18 @@ public class MainActivity extends Activity {
         workflowState.setPadding(0, dp(8), 0, dp(6));
         workflowCard.addView(workflowState);
 
-        LinearLayout folderRow = new LinearLayout(this);
-        folderRow.setOrientation(LinearLayout.HORIZONTAL);
-        folderFilterButton = button("📁 全部工作流");
-        Button folderManageBtn = button("管理文件夹");
-        folderRow.addView(folderFilterButton, new LinearLayout.LayoutParams(0, dp(44), 1f));
-        LinearLayout.LayoutParams folderManageLp = new LinearLayout.LayoutParams(dp(112), dp(44));
-        folderManageLp.setMargins(dp(8), 0, 0, 0);
-        folderRow.addView(folderManageBtn, folderManageLp);
-        workflowCard.addView(folderRow);
-        folderFilterButton.setOnClickListener(v -> showFolderFilterMenu());
-        folderManageBtn.setOnClickListener(v -> showFolderManager());
-
         HorizontalScrollView workflowScroll = new HorizontalScrollView(this);
         workflowScroll.setHorizontalScrollBarEnabled(false);
         workflowStrip = new LinearLayout(this);
         workflowStrip.setOrientation(LinearLayout.HORIZONTAL);
         workflowScroll.addView(workflowStrip);
         workflowCard.addView(workflowScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-        TextView workflowTip = text("横向按钮只显示当前分类；导入支持一次选择多个 JSON，文件夹只做逻辑分类，不改变工作流 ID。", 12, false);
+        TextView workflowTip = text("横向按钮显示当前工作流所在文件夹；点“工作流库”进入真正的文件夹视图，可新建文件夹、移动工作流或导入整个手机文件夹。", 12, false);
         workflowTip.setTextColor(ThemeManager.muted(this));
         workflowTip.setPadding(0, dp(6), 0, 0);
         workflowCard.addView(workflowTip);
-        importBtn.setOnClickListener(v -> chooseWorkflow());
-        listBtn.setOnClickListener(v -> showWorkflowList());
+        importBtn.setOnClickListener(v -> showWorkflowImportMenu());
+        listBtn.setOnClickListener(v -> openWorkflowLibrary(null));
         manageBtn.setOnClickListener(v -> manageCurrentWorkflow());
 
         advancedToggleButton = button("⚙ 展开高级设置（连接 / 参数 / 输出节点）");
@@ -344,7 +341,7 @@ public class MainActivity extends Activity {
     private void rebuildWorkflowStrip() {
         if (workflowStrip == null) return;
         workflowStrip.removeAllViews();
-        List<WorkflowProfile> visible = profilesForCurrentFilter();
+        List<WorkflowProfile> visible = profilesForHomeStrip();
         if (visible.isEmpty()) {
             TextView empty = text(profiles.isEmpty() ? "还没有保存的工作流" : "当前分类没有工作流", 13, false);
             empty.setTextColor(ThemeManager.muted(this));
@@ -365,12 +362,43 @@ public class MainActivity extends Activity {
                 b.setOnClickListener(v -> switchWorkflow(profile.id));
             }
         }
-        if (folderFilterButton != null) folderFilterButton.setText("📁 " + folderFilterLabel());
         if (profiles.isEmpty()) workflowState.setText("当前：未选择");
         else {
             String current = activeProfile == null ? "未选择" : activeProfile.name;
-            workflowState.setText("当前：" + current + " · " + folderFilterLabel() + " " + visible.size() + " / " + profiles.size());
+            String folder = activeProfile == null ? "未分类" : folderNameForProfile(activeProfile);
+            workflowState.setText("当前：" + current + " · 📁 " + folder + " · 本文件夹 " + visible.size() + " / 总计 " + profiles.size());
         }
+    }
+
+    private List<WorkflowProfile> profilesForHomeStrip() {
+        List<WorkflowProfile> out = new ArrayList<>();
+        if (activeProfile == null) {
+            out.addAll(profiles);
+            return out;
+        }
+        String activeFolder = effectiveFolderId(activeProfile);
+        for (WorkflowProfile p : profiles) if (activeFolder.equals(effectiveFolderId(p))) out.add(p);
+        return out;
+    }
+
+    private void showWorkflowImportMenu() {
+        if (workflowImporting) { toast("工作流正在导入，请稍候"); return; }
+        new AlertDialog.Builder(this)
+                .setTitle("导入工作流")
+                .setItems(new String[]{"导入工作流文件（可多选）", "📂 导入整个文件夹", "打开工作流库"}, (d, which) -> {
+                    if (which == 0) chooseWorkflow();
+                    else if (which == 1) openWorkflowLibrary(WorkflowLibraryActivity.ACTION_IMPORT_FOLDER);
+                    else openWorkflowLibrary(null);
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void openWorkflowLibrary(String autoAction) {
+        Intent i = new Intent(this, WorkflowLibraryActivity.class);
+        if (autoAction != null && !autoAction.isEmpty()) i.putExtra(WorkflowLibraryActivity.EXTRA_AUTO_ACTION, autoAction);
+        refreshWorkflowsOnResume = true;
+        startActivity(i);
     }
 
     private void showWorkflowList() {
@@ -1911,7 +1939,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < values.length; i++) if (values[i].equals(current)) checked = i;
         new AlertDialog.Builder(this)
                 .setTitle("App 图标样式")
-                .setMessage("Android 不允许已安装 App 把任意相册图片直接变成桌面 Launcher 图标，因此 V2.4 继续提供 3 个预置图标即时切换。主界面背景和启动页仍可使用任意图片。")
+                .setMessage("Android 不允许已安装 App 把任意相册图片直接变成桌面 Launcher 图标，因此 V2.4.1 继续提供 3 个预置图标即时切换。主界面背景和启动页仍可使用任意图片。")
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     IconSwitcher.apply(this, values[which]);
                     dialog.dismiss();
