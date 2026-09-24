@@ -2,6 +2,11 @@ plugins {
     id 'com.android.application'
 }
 
+def signingFile = System.getenv("ANDROID_KEYSTORE_FILE")
+def signingStorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+def signingKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
+def signingKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+
 android {
     namespace 'com.comfyremote.panel'
     compileSdk 35
@@ -14,8 +19,23 @@ android {
         versionName '2.3.0'
     }
 
+    signingConfigs {
+        release {
+            if (signingFile != null && !signingFile.isEmpty()) {
+                storeFile file(signingFile)
+                storePassword signingStorePassword
+                keyAlias signingKeyAlias
+                keyPassword signingKeyPassword
+                storeType "PKCS12"
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (signingFile != null && !signingFile.isEmpty()) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
@@ -26,7 +46,6 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 }
-
 
 dependencies {
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
