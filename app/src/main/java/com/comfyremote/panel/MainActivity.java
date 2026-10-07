@@ -12,9 +12,13 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.InputType;
+import android.text.TextWatcher;
 import android.provider.OpenableColumns;
 import android.view.Gravity;
 import android.view.View;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -22,6 +26,7 @@ import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -36,6 +41,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -61,7 +67,7 @@ public class MainActivity extends Activity {
 
     private EditText addressEdit;
     private TextView connectionState, workflowState, statusText;
-    private Button submitButton, queueButton, saveAllButton, advancedToggleButton, folderFilterButton;
+    private Button submitButton, queueButton, saveAllButton, advancedToggleButton, folderFilterButton, refreshParametersButton, saveParameterChangesButton;
     private LinearLayout workflowStrip, inputList, parameterList, outputSelectorList, outputList;
     private LinearLayout connectionCardView, parameterCardView, outputSelectCardView;
     private ScrollView mainScroll;
@@ -78,6 +84,11 @@ public class MainActivity extends Activity {
     private JobRecord currentOutputJob;
     private final Map<String, Map<String, Uri>> sessionInputUris = new HashMap<>();
     private final Set<String> outputRefreshInFlight = new HashSet<>();
+    private final Set<String> expandedParameterNodes = new HashSet<>();
+    private final Map<String, Object> transientParameterValues = new HashMap<>();
+    private volatile boolean parameterRefreshInFlight = false;
+    private JSONObject parameterObjectInfo = null;
+    private String parameterMetadataProfileId = "";
     private final Object objectInfoLock = new Object();
     private JSONObject cachedObjectInfo;
     private String cachedObjectInfoServer = "";
@@ -131,9 +142,17 @@ public class MainActivity extends Activity {
         super.onResume();
         if (refreshWorkflowsOnResume) {
             refreshWorkflowsOnResume = false;
+            String previousProfileId = activeProfile == null ? "" : activeProfile.id;
             workflowFolders = WorkflowFolderStore.load(this);
             profiles = WorkflowStore.load(this);
             resolveActiveProfile();
+            String resumedProfileId = activeProfile == null ? "" : activeProfile.id;
+            if (!previousProfileId.equals(resumedProfileId)) {
+                transientParameterValues.clear();
+                expandedParameterNodes.clear();
+                parameterObjectInfo = null;
+                parameterMetadataProfileId = "";
+            }
             rebuildWorkflowStrip();
             rebuildDynamicControls();
         }
@@ -144,7 +163,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onStop() {
         captureSessionInputs();
-        saveCurrentOverrides();
+        // V2.5: temporary parameter edits are intentionally NOT persisted on background/exit.
         saveOutputSelection();
         GenerationManager.removeListener(jobListener);
         super.onStop();
@@ -169,7 +188,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.4.1 · 文件夹式工作流库 / 整个文件夹导入 / 蒙版双指缩放", 13, false);
+        TextView subtitle = text("V2.5 · 工作流搜索 / 完整节点参数调节 / 参数改动显式保存", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -212,6 +231,9 @@ public class MainActivity extends Activity {
         advancedToggleButton.setOnClickListener(v -> {
             advancedExpanded = !advancedExpanded;
             applyAdvancedVisibility();
+            if (advancedExpanded && activeProfile != null && !activeProfile.id.equals(parameterMetadataProfileId)) {
+                refreshParameterMetadataAsync(false);
+            }
         });
 
         connectionCardView = cardWithTopMargin(root);
@@ -252,14 +274,30 @@ public class MainActivity extends Activity {
         clearInputsBtn.setOnClickListener(v -> clearPersistedInputs());
 
         parameterCardView = cardWithTopMargin(root);
-        parameterCardView.addView(sectionTitle("提示词 / 开关"));
-        TextView paramTip = text("每个工作流分别记住自己的可编辑参数；切换工作流不会互相覆盖。", 12, false);
+        parameterCardView.addView(sectionTitle("节点参数"));
+        TextView paramTip = text("支持 INT / FLOAT / BOOLEAN / COMBO / STRING。数值范围优先读取 ComfyUI /object_info；修改后仅临时用于生成，点“保存参数改动”才会永久记住。", 12, false);
         paramTip.setTextColor(ThemeManager.muted(this));
         paramTip.setPadding(0, 0, 0, dp(8));
         parameterCardView.addView(paramTip);
         parameterList = new LinearLayout(this);
         parameterList.setOrientation(LinearLayout.VERTICAL);
-        parameterCardView.addView(parameterList);
+
+        LinearLayout parameterActions = new LinearLayout(this);
+        parameterActions.setOrientation(LinearLayout.HORIZONTAL);
+        refreshParametersButton = button("重新检测参数节点");
+        saveParameterChangesButton = button("保存参数改动");
+        saveParameterChangesButton.setVisibility(View.GONE);
+        parameterActions.addView(refreshParametersButton, weightedButton());
+        LinearLayout.LayoutParams saveParamLp = weightedButton(); saveParamLp.setMargins(dp(8), 0, 0, 0);
+        parameterActions.addView(saveParameterChangesButton, saveParamLp);
+        LinearLayout.LayoutParams paramActionsLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        paramActionsLp.setMargins(0, dp(6), 0, 0);
+        parameterCardView.addView(parameterActions, paramActionsLp);
+        refreshParametersButton.setOnClickListener(v -> refreshParameterMetadataAsync(true));
+        saveParameterChangesButton.setOnClickListener(v -> commitCurrentParameterOverrides());
+        LinearLayout.LayoutParams parameterListLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        parameterListLp.setMargins(0, dp(8), 0, 0);
+        parameterCardView.addView(parameterList, parameterListLp);
 
         outputSelectCardView = cardWithTopMargin(root);
         outputSelectCardView.addView(sectionTitle("输出节点"));
@@ -395,10 +433,12 @@ public class MainActivity extends Activity {
     }
 
     private void openWorkflowLibrary(String autoAction) {
-        Intent i = new Intent(this, WorkflowLibraryActivity.class);
-        if (autoAction != null && !autoAction.isEmpty()) i.putExtra(WorkflowLibraryActivity.EXTRA_AUTO_ACTION, autoAction);
-        refreshWorkflowsOnResume = true;
-        startActivity(i);
+        runAfterParameterChangesHandled(() -> {
+            Intent i = new Intent(this, WorkflowLibraryActivity.class);
+            if (autoAction != null && !autoAction.isEmpty()) i.putExtra(WorkflowLibraryActivity.EXTRA_AUTO_ACTION, autoAction);
+            refreshWorkflowsOnResume = true;
+            startActivity(i);
+        });
     }
 
     private void showWorkflowList() {
@@ -622,11 +662,18 @@ public class MainActivity extends Activity {
 
     private void switchWorkflow(String profileId) {
         if (activeProfile != null && activeProfile.id.equals(profileId)) return;
+        runAfterParameterChangesHandled(() -> switchWorkflowNow(profileId));
+    }
+
+    private void switchWorkflowNow(String profileId) {
         captureSessionInputs();
-        saveCurrentOverrides();
         saveOutputSelection();
         WorkflowProfile next = WorkflowStore.find(profiles, profileId);
         if (next == null) return;
+        transientParameterValues.clear();
+        expandedParameterNodes.clear();
+        parameterObjectInfo = null;
+        parameterMetadataProfileId = "";
         activeProfile = next;
         WorkflowStore.setActiveId(this, next.id);
         rebuildWorkflowStrip();
@@ -817,7 +864,6 @@ public class MainActivity extends Activity {
 
     private void manageCurrentWorkflow() {
         if (activeProfile == null) { toast("请先导入一个工作流"); return; }
-        saveCurrentOverrides();
         String starAction = activeProfile.favorite ? "取消常用置顶" : "★ 设为常用置顶";
         new AlertDialog.Builder(this)
                 .setTitle(activeProfile.name + " · " + folderNameForProfile(activeProfile))
@@ -825,7 +871,7 @@ public class MainActivity extends Activity {
                     if (which == 0) renameCurrentWorkflow();
                     else if (which == 1) showMoveCurrentWorkflowDialog();
                     else if (which == 2) toggleFavorite();
-                    else deleteCurrentWorkflow();
+                    else runAfterParameterChangesHandled(this::deleteCurrentWorkflow);
                 })
                 .setNegativeButton("关闭", null)
                 .show();
@@ -1265,46 +1311,193 @@ public class MainActivity extends Activity {
         fieldBindings.clear();
         if (activeProfile == null) {
             parameterList.addView(text("当前没有工作流", 13, false));
+            updateSaveParameterButton();
             return;
         }
         try {
-            List<WorkflowUtils.FieldChoice> fields = WorkflowUtils.findEditableFields(activeProfile.promptObject());
+            JSONObject schema = activeProfile.id.equals(parameterMetadataProfileId) ? parameterObjectInfo : null;
+            List<WorkflowUtils.FieldChoice> fields = WorkflowUtils.findEditableFields(activeProfile.promptObject(), schema);
             if (fields.isEmpty()) {
-                parameterList.addView(text("当前没有检测到提示词或开关参数。", 13, false));
+                parameterList.addView(text("当前没有检测到可编辑参数。可连接 ComfyUI 后点“重新检测参数节点”读取完整节点定义。", 13, false));
+                updateSaveParameterButton();
                 return;
             }
+
+            Map<String, List<WorkflowUtils.FieldChoice>> groups = new LinkedHashMap<>();
             for (WorkflowUtils.FieldChoice f : fields) {
-                Object shown = activeProfile.overrides.has(WorkflowProfile.overrideKey(f.nodeId, f.inputName))
-                        ? activeProfile.overrides.opt(WorkflowProfile.overrideKey(f.nodeId, f.inputName)) : f.value;
-                FieldBinding b = new FieldBinding(f);
-                fieldBindings.add(b);
-                LinearLayout box = miniCard();
-                box.addView(text(f.label(), 12, true));
-                if (f.kind == WorkflowUtils.FieldChoice.BOOL) {
-                    Switch sw = new Switch(this);
-                    sw.setText("启用");
-                    sw.setChecked(shown instanceof Boolean ? (Boolean) shown : Boolean.parseBoolean(String.valueOf(shown)));
-                    b.switchView = sw;
-                    box.addView(sw);
-                } else {
-                    EditText ed = new EditText(this);
-                    ed.setText(String.valueOf(shown == null ? "" : shown));
-                    ed.setTextSize(14);
-                    if (f.kind == WorkflowUtils.FieldChoice.TEXT) {
-                        ed.setSingleLine(false);
-                        ed.setMinLines(3);
-                        ed.setGravity(Gravity.TOP | Gravity.START);
-                    } else ed.setSingleLine(true);
-                    b.editView = ed;
-                    box.addView(ed, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-                }
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                lp.setMargins(0, 0, 0, dp(8));
-                parameterList.addView(box, lp);
+                if (!groups.containsKey(f.nodeId)) groups.put(f.nodeId, new ArrayList<>());
+                groups.get(f.nodeId).add(f);
             }
+
+            for (Map.Entry<String, List<WorkflowUtils.FieldChoice>> entry : groups.entrySet()) {
+                List<WorkflowUtils.FieldChoice> nodeFields = entry.getValue();
+                if (nodeFields.isEmpty()) continue;
+                WorkflowUtils.FieldChoice first = nodeFields.get(0);
+                LinearLayout nodeBox = miniCard();
+                Button header = button("");
+                LinearLayout content = new LinearLayout(this);
+                content.setOrientation(LinearLayout.VERTICAL);
+                boolean expanded = expandedParameterNodes.contains(first.nodeId);
+                content.setVisibility(expanded ? View.VISIBLE : View.GONE);
+                header.setText((expanded ? "▾ " : "▸ ") + first.nodeLabel() + " · 可调参数 " + nodeFields.size());
+                nodeBox.addView(header, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)));
+                nodeBox.addView(content);
+                header.setOnClickListener(v -> {
+                    boolean nowExpanded = content.getVisibility() != View.VISIBLE;
+                    content.setVisibility(nowExpanded ? View.VISIBLE : View.GONE);
+                    if (nowExpanded) expandedParameterNodes.add(first.nodeId); else expandedParameterNodes.remove(first.nodeId);
+                    header.setText((nowExpanded ? "▾ " : "▸ ") + first.nodeLabel() + " · 可调参数 " + nodeFields.size());
+                });
+
+                for (WorkflowUtils.FieldChoice f : nodeFields) addParameterField(content, f);
+                LinearLayout.LayoutParams nodeLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                nodeLp.setMargins(0, 0, 0, dp(8));
+                parameterList.addView(nodeBox, nodeLp);
+            }
+
+            TextView source = text(schema == null
+                    ? "当前为本地参数识别；数值参数可直接调节。连接电脑后点“重新检测参数节点”可读取 COMBO 选项和 min/max/step。"
+                    : "✓ 已读取当前 ComfyUI /object_info：下拉选项和数值范围已按电脑端节点定义校验。", 11, false);
+            source.setTextColor(schema == null ? ThemeManager.warning(this) : ThemeManager.success(this));
+            parameterList.addView(source);
+            updateSaveParameterButton();
         } catch (Exception e) {
             parameterList.addView(text("读取可编辑参数失败：" + e.getMessage(), 13, false));
+            updateSaveParameterButton();
         }
+    }
+
+    private void addParameterField(LinearLayout parent, WorkflowUtils.FieldChoice f) {
+        String key = WorkflowProfile.overrideKey(f.nodeId, f.inputName);
+        Object committed = activeProfile.overrides.has(key) ? activeProfile.overrides.opt(key) : f.value;
+        Object shown = transientParameterValues.containsKey(key) ? transientParameterValues.get(key) : committed;
+        FieldBinding b = new FieldBinding(f);
+        b.baselineValue = committed;
+        b.initializing = true;
+        fieldBindings.add(b);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(8), dp(7), dp(8), dp(7));
+        TextView label = text(f.label(), 12, true);
+        box.addView(label);
+        String range = f.rangeSummary();
+        if (!range.isEmpty()) {
+            TextView rangeView = text(range, 10, false);
+            rangeView.setTextColor(ThemeManager.muted(this));
+            box.addView(rangeView);
+        }
+
+        if (f.kind == WorkflowUtils.FieldChoice.BOOL) {
+            Switch sw = new Switch(this);
+            sw.setText("启用");
+            sw.setChecked(shown instanceof Boolean ? (Boolean) shown : Boolean.parseBoolean(String.valueOf(shown)));
+            b.switchView = sw;
+            box.addView(sw);
+            sw.setOnCheckedChangeListener((buttonView, isChecked) -> onParameterWidgetChanged(b));
+        } else if (f.kind == WorkflowUtils.FieldChoice.COMBO && !f.options.isEmpty()) {
+            Spinner spinner = new Spinner(this);
+            ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, f.options);
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+            spinner.setAdapter(adapter);
+            int selected = 0;
+            String wanted = String.valueOf(shown == null ? "" : shown);
+            for (int i = 0; i < f.options.size(); i++) if (wanted.equals(f.options.get(i))) { selected = i; break; }
+            spinner.setSelection(selected, false);
+            b.spinnerView = spinner;
+            box.addView(spinner, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+            spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+                @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) { onParameterWidgetChanged(b); }
+                @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+            });
+        } else {
+            EditText ed = new EditText(this);
+            ed.setText(String.valueOf(shown == null ? "" : shown));
+            ed.setTextSize(14);
+            if (f.kind == WorkflowUtils.FieldChoice.TEXT) {
+                ed.setSingleLine(false);
+                ed.setMinLines(3);
+                ed.setGravity(Gravity.TOP | Gravity.START);
+            } else {
+                ed.setSingleLine(true);
+                if (f.kind == WorkflowUtils.FieldChoice.INT) ed.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED);
+                else if (f.kind == WorkflowUtils.FieldChoice.FLOAT) ed.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
+            }
+            b.editView = ed;
+            box.addView(ed, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+            ed.addTextChangedListener(new TextWatcher() {
+                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+                @Override public void onTextChanged(CharSequence s, int start, int before, int count) { onParameterWidgetChanged(b); }
+                @Override public void afterTextChanged(Editable s) {}
+            });
+        }
+        b.initializing = false;
+        parent.addView(box);
+    }
+
+    private void onParameterWidgetChanged(FieldBinding b) {
+        if (b == null || b.initializing || activeProfile == null) return;
+        String key = WorkflowProfile.overrideKey(b.choice.nodeId, b.choice.inputName);
+        Object value = readFieldValueLenient(b);
+        if (valuesEquivalent(value, b.baselineValue)) transientParameterValues.remove(key);
+        else transientParameterValues.put(key, value);
+        updateSaveParameterButton();
+    }
+
+    private void updateSaveParameterButton() {
+        if (saveParameterChangesButton == null) return;
+        boolean dirty = hasUnsavedParameterChanges();
+        saveParameterChangesButton.setVisibility(dirty ? View.VISIBLE : View.GONE);
+        saveParameterChangesButton.setEnabled(dirty);
+    }
+
+    private boolean hasUnsavedParameterChanges() {
+        if (activeProfile == null || fieldBindings.isEmpty()) return false;
+        for (FieldBinding b : fieldBindings) {
+            if (!valuesEquivalent(readFieldValueLenient(b), b.baselineValue)) return true;
+        }
+        return false;
+    }
+
+    private void refreshParameterMetadataAsync(boolean userInitiated) {
+        if (activeProfile == null) { if (userInitiated) toast("请先选择工作流"); return; }
+        if (parameterRefreshInFlight) { if (userInitiated) toast("正在检测参数节点…"); return; }
+        final String profileId = activeProfile.id;
+        final String server = currentServer();
+        if (userInitiated) {
+            synchronized (objectInfoLock) {
+                cachedObjectInfo = null;
+                cachedObjectInfoServer = "";
+                cachedObjectInfoAt = 0L;
+            }
+        }
+        parameterRefreshInFlight = true;
+        if (refreshParametersButton != null) refreshParametersButton.setEnabled(false);
+        if (userInitiated) statusText.setText("状态：正在读取 ComfyUI 参数节点定义…");
+        pool.submit(() -> {
+            try {
+                JSONObject objectInfo = getObjectInfoCached(server);
+                WorkflowProfile p = WorkflowStore.find(WorkflowStore.load(this), profileId);
+                if (p == null) return;
+                final int count = WorkflowUtils.findEditableFields(p.promptObject(), objectInfo).size();
+                runOnUiThread(() -> {
+                    if (activeProfile != null && profileId.equals(activeProfile.id)) {
+                        parameterObjectInfo = objectInfo;
+                        parameterMetadataProfileId = profileId;
+                        rebuildParameterControls();
+                    }
+                    if (userInitiated) {
+                        statusText.setText("状态：参数节点检测完成 · " + count + " 个可调参数");
+                        toast("检测到 " + count + " 个可调参数");
+                    }
+                });
+            } catch (Exception e) {
+                if (userInitiated) runOnUiThread(() -> showError("参数节点检测失败", e));
+            } finally {
+                parameterRefreshInFlight = false;
+                runOnUiThread(() -> { if (refreshParametersButton != null) refreshParametersButton.setEnabled(true); });
+            }
+        });
     }
 
     private void rebuildOutputNodeControls() {
@@ -1419,31 +1612,98 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void saveCurrentOverrides() {
+    private void commitCurrentParameterOverrides() {
         if (activeProfile == null || fieldBindings.isEmpty()) return;
         try {
-            for (FieldBinding b : fieldBindings) {
-                Object value = readFieldValue(b);
-                activeProfile.overrides.put(WorkflowProfile.overrideKey(b.choice.nodeId, b.choice.inputName), value);
+            List<FieldOverride> values = snapshotFieldOverrides();
+            for (FieldOverride item : values) {
+                String key = WorkflowProfile.overrideKey(item.choice.nodeId, item.choice.inputName);
+                activeProfile.overrides.put(key, item.value);
             }
             WorkflowStore.upsert(this, activeProfile);
-        } catch (Exception ignored) {}
+            transientParameterValues.clear();
+            for (FieldBinding b : fieldBindings) b.baselineValue = readFieldValue(b);
+            updateSaveParameterButton();
+            statusText.setText("状态：已保存当前工作流参数改动");
+            toast("参数改动已保存");
+        } catch (Exception e) {
+            showError("参数无法保存", e);
+        }
     }
 
-    private Object readFieldValue(FieldBinding b) {
+    private void discardTransientParameterChanges() {
+        transientParameterValues.clear();
+        rebuildParameterControls();
+    }
+
+    private void runAfterParameterChangesHandled(Runnable action) {
+        if (!hasUnsavedParameterChanges()) { action.run(); return; }
+        new AlertDialog.Builder(this)
+                .setTitle("参数有未保存改动")
+                .setMessage("这些改动目前只会临时用于生成。离开当前工作流前要保存吗？")
+                .setPositiveButton("保存并继续", (d, w) -> {
+                    commitCurrentParameterOverrides();
+                    if (!hasUnsavedParameterChanges()) action.run();
+                })
+                .setNeutralButton("放弃改动", (d, w) -> {
+                    discardTransientParameterChanges();
+                    action.run();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private Object readFieldValue(FieldBinding b) throws Exception {
         WorkflowUtils.FieldChoice f = b.choice;
-        if (f.kind == WorkflowUtils.FieldChoice.BOOL) return b.switchView.isChecked();
-        String raw = b.editView.getText().toString();
-        if (f.value instanceof Integer || f.value instanceof Long) {
-            try { return Long.parseLong(raw.trim()); } catch (Exception ignored) { return f.value; }
+        Object value;
+        if (f.kind == WorkflowUtils.FieldChoice.BOOL) {
+            value = b.switchView != null && b.switchView.isChecked();
+        } else if (f.kind == WorkflowUtils.FieldChoice.COMBO && b.spinnerView != null) {
+            value = b.spinnerView.getSelectedItem() == null ? "" : String.valueOf(b.spinnerView.getSelectedItem());
+        } else {
+            String raw = b.editView == null ? "" : b.editView.getText().toString().trim();
+            if (f.kind == WorkflowUtils.FieldChoice.INT) {
+                try { value = Long.parseLong(raw); }
+                catch (Exception e) { throw new Exception(f.nodeLabel() + " · " + f.inputName + " 需要整数，当前为：" + raw); }
+            } else if (f.kind == WorkflowUtils.FieldChoice.FLOAT) {
+                try { value = Double.parseDouble(raw); }
+                catch (Exception e) { throw new Exception(f.nodeLabel() + " · " + f.inputName + " 需要数字，当前为：" + raw); }
+            } else if (f.kind == WorkflowUtils.FieldChoice.CONTROL && f.value instanceof Number) {
+                try { value = f.value instanceof Integer || f.value instanceof Long ? Long.parseLong(raw) : Double.parseDouble(raw); }
+                catch (Exception e) { throw new Exception(f.nodeLabel() + " · " + f.inputName + " 数值格式不正确：" + raw); }
+            } else value = b.editView == null ? "" : b.editView.getText().toString();
         }
-        if (f.value instanceof Number) {
-            try { return Double.parseDouble(raw.trim()); } catch (Exception ignored) { return f.value; }
+
+        if (value instanceof Number) {
+            double n = ((Number) value).doubleValue();
+            if (f.hasMin() && n < f.min) throw new Exception(f.nodeLabel() + " · " + f.inputName + " 不能小于 " + f.min);
+            if (f.hasMax() && n > f.max) throw new Exception(f.nodeLabel() + " · " + f.inputName + " 不能大于 " + f.max);
         }
-        return raw;
+        if (f.kind == WorkflowUtils.FieldChoice.COMBO && !f.options.isEmpty() && !f.options.contains(String.valueOf(value))) {
+            throw new Exception(f.nodeLabel() + " · " + f.inputName + " 不是当前 ComfyUI 支持的选项");
+        }
+        return value;
     }
 
-    private List<FieldOverride> snapshotFieldOverrides() {
+    private Object readFieldValueLenient(FieldBinding b) {
+        try { return readFieldValue(b); }
+        catch (Exception ignored) {
+            if (b.editView != null) return b.editView.getText().toString();
+            if (b.spinnerView != null && b.spinnerView.getSelectedItem() != null) return String.valueOf(b.spinnerView.getSelectedItem());
+            return b.switchView != null && b.switchView.isChecked();
+        }
+    }
+
+    private static boolean valuesEquivalent(Object a, Object b) {
+        if (a == b) return true;
+        if (a == null || b == null || a == JSONObject.NULL || b == JSONObject.NULL) return false;
+        if (a instanceof Number && b instanceof Number) {
+            return Math.abs(((Number) a).doubleValue() - ((Number) b).doubleValue()) < 1e-9;
+        }
+        return String.valueOf(a).equals(String.valueOf(b));
+    }
+
+    private List<FieldOverride> snapshotFieldOverrides() throws Exception {
         List<FieldOverride> out = new ArrayList<>();
         for (FieldBinding b : fieldBindings) out.add(new FieldOverride(b.choice, readFieldValue(b)));
         return out;
@@ -1452,13 +1712,14 @@ public class MainActivity extends Activity {
     private void submitGeneration() {
         if (activeProfile == null) { toast("请先导入或选择工作流"); return; }
         saveAddress();
-        saveCurrentOverrides();
         saveOutputSelection();
         captureSessionInputs();
 
         final WorkflowProfile profile = activeProfile;
         final List<ImageJob> imageJobs = snapshotImageJobs();
-        final List<FieldOverride> overrides = snapshotFieldOverrides();
+        final List<FieldOverride> overrides;
+        try { overrides = snapshotFieldOverrides(); }
+        catch (Exception e) { showError("参数不合法", e); return; }
 
         for (ImageJob j : imageJobs) {
             if (!j.replace) continue;
@@ -1522,7 +1783,6 @@ public class MainActivity extends Activity {
         target.replaceSwitch.setChecked(true);
         clearMaskForBinding(target, false);
         saveAddress();
-        saveCurrentOverrides();
         saveOutputSelection();
         captureSessionInputs();
 
@@ -1531,7 +1791,9 @@ public class MainActivity extends Activity {
         final String targetKey = inputKey(target.choice);
         final int targetIndex = target.index;
         final List<ImageJob> baseJobs = snapshotImageJobs();
-        final List<FieldOverride> overrides = snapshotFieldOverrides();
+        final List<FieldOverride> overrides;
+        try { overrides = snapshotFieldOverrides(); }
+        catch (Exception e) { showError("参数不合法", e); return; }
         final List<WorkflowUtils.OutputChoice> availableOutputs = new ArrayList<>(profile.outputChoices());
         final Set<String> selectedOutputs = new LinkedHashSet<>(profile.selectedOutputNodeIds());
         final String server = currentServer();
@@ -1939,7 +2201,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < values.length; i++) if (values[i].equals(current)) checked = i;
         new AlertDialog.Builder(this)
                 .setTitle("App 图标样式")
-                .setMessage("Android 不允许已安装 App 把任意相册图片直接变成桌面 Launcher 图标，因此 V2.4.1 继续提供 3 个预置图标即时切换。主界面背景和启动页仍可使用任意图片。")
+                .setMessage("Android 不允许已安装 App 把任意相册图片直接变成桌面 Launcher 图标，因此 V2.5 继续提供 3 个预置图标即时切换。主界面背景和启动页仍可使用任意图片。")
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     IconSwitcher.apply(this, values[which]);
                     dialog.dismiss();
@@ -2139,6 +2401,9 @@ public class MainActivity extends Activity {
         final WorkflowUtils.FieldChoice choice;
         EditText editView;
         Switch switchView;
+        Spinner spinnerView;
+        Object baselineValue;
+        boolean initializing;
         FieldBinding(WorkflowUtils.FieldChoice choice) { this.choice = choice; }
     }
 

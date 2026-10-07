@@ -191,9 +191,21 @@ public final class WorkflowUtils {
         return names.isEmpty() ? "未选择输出节点" : String.join("、", names);
     }
 
-    /** Finds user-facing prompt/switch-like scalar inputs from an API prompt. */
+    /**
+     * Finds editable scalar widget inputs from an API prompt.
+     *
+     * Without /object_info we stay conservative: numbers and booleans are editable, while
+     * strings are limited to prompt/switch-like fields. With /object_info, widget metadata is
+     * authoritative and we expose normal INT/FLOAT/BOOLEAN/COMBO/STRING widgets while skipping
+     * connected inputs (their prompt value is a [nodeId, slot] array rather than a literal).
+     */
     public static List<FieldChoice> findEditableFields(JSONObject prompt) {
+        return findEditableFields(prompt, null);
+    }
+
+    public static List<FieldChoice> findEditableFields(JSONObject prompt, JSONObject objectInfo) {
         List<FieldChoice> out = new ArrayList<>();
+        if (prompt == null) return out;
         Iterator<String> keys = prompt.keys();
         while (keys.hasNext()) {
             String id = keys.next();
@@ -203,25 +215,97 @@ public final class WorkflowUtils {
             JSONObject inputs = node.optJSONObject("inputs");
             if (inputs == null) continue;
             String title = nodeTitle(node, classType);
+            JSONObject nodeDef = objectInfo == null ? null : objectInfo.optJSONObject(classType);
 
             Iterator<String> names = inputs.keys();
             while (names.hasNext()) {
                 String name = names.next();
                 Object value = inputs.opt(name);
                 if (value == null || value == JSONObject.NULL || value instanceof JSONArray || value instanceof JSONObject) continue;
-                String n = name.toLowerCase(Locale.ROOT);
 
+                FieldChoice fromSchema = fieldFromObjectInfo(id, name, title, classType, value, nodeDef);
+                if (fromSchema != null) {
+                    out.add(fromSchema);
+                    continue;
+                }
+
+                String n = name.toLowerCase(Locale.ROOT);
                 if (value instanceof Boolean) {
-                    out.add(new FieldChoice(id, name, title, FieldChoice.BOOL, value));
+                    out.add(new FieldChoice(id, name, title, classType, FieldChoice.BOOL, value));
+                } else if (value instanceof Number) {
+                    int kind = (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long)
+                            ? FieldChoice.INT : FieldChoice.FLOAT;
+                    out.add(new FieldChoice(id, name, title, classType, kind, value));
                 } else if (value instanceof String && isPromptLike(n, classType, title)) {
-                    out.add(new FieldChoice(id, name, title, FieldChoice.TEXT, value));
-                } else if ((value instanceof Number || value instanceof String) && isSwitchLike(n)) {
-                    out.add(new FieldChoice(id, name, title, FieldChoice.CONTROL, value));
+                    out.add(new FieldChoice(id, name, title, classType, FieldChoice.TEXT, value));
+                } else if (value instanceof String && isSwitchLike(n)) {
+                    out.add(new FieldChoice(id, name, title, classType, FieldChoice.CONTROL, value));
                 }
             }
         }
+        out.sort((a, b) -> {
+            int nodeCmp = compareNodeIds(a.nodeId, b.nodeId);
+            if (nodeCmp != 0) return nodeCmp;
+            return a.inputName.compareToIgnoreCase(b.inputName);
+        });
         return out;
     }
+
+    private static FieldChoice fieldFromObjectInfo(String nodeId, String inputName, String title,
+                                                   String classType, Object value, JSONObject nodeDef) {
+        if (nodeDef == null) return null;
+        JSONObject input = nodeDef.optJSONObject("input");
+        if (input == null) return null;
+        Object specObj = null;
+        JSONObject required = input.optJSONObject("required");
+        JSONObject optional = input.optJSONObject("optional");
+        if (required != null) specObj = required.opt(inputName);
+        if (specObj == null && optional != null) specObj = optional.opt(inputName);
+        if (!(specObj instanceof JSONArray)) return null;
+
+        JSONArray spec = (JSONArray) specObj;
+        Object typeSpec = spec.length() > 0 ? spec.opt(0) : null;
+        JSONObject meta = spec.length() > 1 ? spec.optJSONObject(1) : null;
+        if (meta != null && (meta.optBoolean("image_upload", false) || meta.optBoolean("forceInput", false))) return null;
+
+        List<String> comboOptions = new ArrayList<>();
+        if (typeSpec instanceof JSONArray) {
+            JSONArray a = (JSONArray) typeSpec;
+            for (int i = 0; i < a.length(); i++) comboOptions.add(String.valueOf(a.opt(i)));
+        } else if (meta != null && meta.optJSONArray("options") != null) {
+            JSONArray a = meta.optJSONArray("options");
+            for (int i = 0; i < a.length(); i++) comboOptions.add(String.valueOf(a.opt(i)));
+        }
+
+        String type = typeSpec instanceof JSONArray ? "COMBO" : String.valueOf(typeSpec == null ? "" : typeSpec).toUpperCase(Locale.ROOT);
+        if ("COMBO".equals(type) || !comboOptions.isEmpty()) {
+            return new FieldChoice(nodeId, inputName, title, classType, FieldChoice.COMBO, value,
+                    Double.NaN, Double.NaN, Double.NaN, comboOptions);
+        }
+        int kind;
+        if ("BOOLEAN".equals(type)) kind = FieldChoice.BOOL;
+        else if ("INT".equals(type)) kind = FieldChoice.INT;
+        else if ("FLOAT".equals(type) || "NUMBER".equals(type)) kind = FieldChoice.FLOAT;
+        else if ("STRING".equals(type)) {
+            String n = inputName.toLowerCase(Locale.ROOT);
+            boolean multiline = meta != null && meta.optBoolean("multiline", false);
+            kind = multiline || isPromptLike(n, classType, title) ? FieldChoice.TEXT : FieldChoice.STRING;
+        } else {
+            return null;
+        }
+
+        double min = meta != null && meta.has("min") ? meta.optDouble("min", Double.NaN) : Double.NaN;
+        double max = meta != null && meta.has("max") ? meta.optDouble("max", Double.NaN) : Double.NaN;
+        double step = meta != null && meta.has("step") ? meta.optDouble("step", Double.NaN) : Double.NaN;
+        return new FieldChoice(nodeId, inputName, title, classType, kind, value, min, max, step, new ArrayList<>());
+    }
+
+    private static int compareNodeIds(String a, String b) {
+        try { return Integer.compare(Integer.parseInt(a), Integer.parseInt(b)); }
+        catch (Exception ignored) { return safeString(a).compareToIgnoreCase(safeString(b)); }
+    }
+
+    private static String safeString(String s) { return s == null ? "" : s; }
 
     private static boolean isPromptLike(String name, String classType, String title) {
         String c = (classType + " " + title).toLowerCase(Locale.ROOT);
@@ -303,16 +387,62 @@ public final class WorkflowUtils {
         public static final int TEXT = 1;
         public static final int BOOL = 2;
         public static final int CONTROL = 3;
-        public final String nodeId, inputName, nodeTitle;
+        public static final int INT = 4;
+        public static final int FLOAT = 5;
+        public static final int COMBO = 6;
+        public static final int STRING = 7;
+
+        public final String nodeId, inputName, nodeTitle, classType;
         public final int kind;
         public final Object value;
+        public final double min, max, step;
+        public final List<String> options;
+
         public FieldChoice(String nodeId, String inputName, String nodeTitle, int kind, Object value) {
-            this.nodeId = nodeId;
-            this.inputName = inputName;
-            this.nodeTitle = nodeTitle;
+            this(nodeId, inputName, nodeTitle, "", kind, value);
+        }
+
+        public FieldChoice(String nodeId, String inputName, String nodeTitle, String classType, int kind, Object value) {
+            this(nodeId, inputName, nodeTitle, classType, kind, value,
+                    Double.NaN, Double.NaN, Double.NaN, new ArrayList<>());
+        }
+
+        public FieldChoice(String nodeId, String inputName, String nodeTitle, String classType,
+                           int kind, Object value, double min, double max, double step, List<String> options) {
+            this.nodeId = nodeId == null ? "" : nodeId;
+            this.inputName = inputName == null ? "" : inputName;
+            this.nodeTitle = nodeTitle == null || nodeTitle.isEmpty() ? "节点" : nodeTitle;
+            this.classType = classType == null ? "" : classType;
             this.kind = kind;
             this.value = value;
+            this.min = min;
+            this.max = max;
+            this.step = step;
+            this.options = options == null ? new ArrayList<>() : options;
         }
-        public String label() { return nodeTitle + " · " + inputName + " · 节点 " + nodeId; }
+
+        public boolean hasMin() { return !Double.isNaN(min); }
+        public boolean hasMax() { return !Double.isNaN(max); }
+        public boolean hasStep() { return !Double.isNaN(step) && step > 0; }
+
+        public String nodeLabel() {
+            String cls = classType == null || classType.isEmpty() ? "" : " · " + classType;
+            return nodeTitle + cls + " · 节点 " + nodeId;
+        }
+
+        public String label() { return inputName; }
+
+        public String rangeSummary() {
+            List<String> bits = new ArrayList<>();
+            if (hasMin()) bits.add("min " + compactNumber(min));
+            if (hasMax()) bits.add("max " + compactNumber(max));
+            if (hasStep()) bits.add("step " + compactNumber(step));
+            return String.join(" · ", bits);
+        }
+
+        private static String compactNumber(double v) {
+            if (Math.rint(v) == v) return String.valueOf((long) v);
+            return String.valueOf(v);
+        }
     }
 }

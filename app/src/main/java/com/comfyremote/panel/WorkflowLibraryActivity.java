@@ -8,10 +8,13 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -21,11 +24,12 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * V2.4.1 file-manager style workflow library.
+ * V2.5 file-manager style workflow library.
  * Root shows real app folders; entering a folder shows only workflows in it.
  */
 public class WorkflowLibraryActivity extends Activity {
@@ -39,7 +43,7 @@ public class WorkflowLibraryActivity extends Activity {
     private final ExecutorService pool = Executors.newSingleThreadExecutor();
     private LinearLayout list;
     private TextView title, subtitle, status;
-    private Button backButton, newFolderButton, importFilesButton, importFolderButton, folderMenuButton;
+    private Button backButton, newFolderButton, importFilesButton, importFolderButton, folderMenuButton, searchButton;
 
     private List<WorkflowFolder> folders = new ArrayList<>();
     private List<WorkflowProfile> profiles = new ArrayList<>();
@@ -78,10 +82,14 @@ public class WorkflowLibraryActivity extends Activity {
     }
 
     private void buildUi() {
+        FrameLayout shell = new FrameLayout(this);
+        shell.setBackgroundColor(ThemeManager.background(this));
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(16), dp(16), dp(16), dp(18));
         root.setBackgroundColor(ThemeManager.background(this));
+        shell.addView(root, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
@@ -128,14 +136,115 @@ public class WorkflowLibraryActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(0, 0, 0, dp(82));
+        list.setClipToPadding(false);
         scroll.addView(list);
         root.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        searchButton = button("🔍");
+        searchButton.setTextSize(20);
+        FrameLayout.LayoutParams searchLp = new FrameLayout.LayoutParams(dp(60), dp(60), Gravity.END | Gravity.BOTTOM);
+        searchLp.setMargins(0, 0, dp(20), dp(20));
+        shell.addView(searchButton, searchLp);
 
         newFolderButton.setOnClickListener(v -> createFolderDialog());
         importFilesButton.setOnClickListener(v -> chooseWorkflowFiles());
         importFolderButton.setOnClickListener(v -> chooseWholeFolder());
         folderMenuButton.setOnClickListener(v -> currentFolderSettings());
-        setContentView(root);
+        searchButton.setOnClickListener(v -> showWorkflowSearch());
+        setContentView(shell);
+    }
+
+
+    private void showWorkflowSearch() {
+        reload();
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(18), dp(8), dp(18), dp(8));
+
+        EditText query = new EditText(this);
+        query.setSingleLine(true);
+        query.setHint("输入工作流名或文件夹关键词");
+        body.addView(query, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(50)));
+
+        TextView meta = text("输入关键词即可搜索全部工作流", 12, false);
+        meta.setTextColor(ThemeManager.muted(this));
+        meta.setPadding(0, dp(6), 0, dp(6));
+        body.addView(meta);
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout results = new LinearLayout(this);
+        results.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(results);
+        body.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(420)));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("搜索工作流")
+                .setView(body)
+                .setNegativeButton("关闭", null)
+                .create();
+
+        query.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                renderSearchResults(results, meta, String.valueOf(s), dialog);
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+        dialog.setOnShowListener(x -> {
+            query.requestFocus();
+            renderSearchResults(results, meta, "", dialog);
+        });
+        dialog.show();
+    }
+
+    private void renderSearchResults(LinearLayout results, TextView meta, String rawQuery, AlertDialog dialog) {
+        results.removeAllViews();
+        String q = rawQuery == null ? "" : rawQuery.trim().toLowerCase(Locale.ROOT);
+        if (q.isEmpty()) {
+            TextView hint = text("可按工作流名称或所在文件夹搜索。搜索不会移动或修改任何工作流。", 13, false);
+            hint.setTextColor(ThemeManager.muted(this));
+            hint.setPadding(dp(4), dp(16), dp(4), dp(16));
+            results.addView(hint);
+            meta.setText("共 " + profiles.size() + " 个工作流");
+            return;
+        }
+
+        List<WorkflowProfile> matches = new ArrayList<>();
+        for (WorkflowProfile p : profiles) {
+            String folder = folderNameForProfile(p);
+            String haystack = (safe(p.name) + " " + folder).toLowerCase(Locale.ROOT);
+            if (haystack.contains(q)) matches.add(p);
+        }
+        WorkflowStore.sort(matches);
+        meta.setText("找到 " + matches.size() + " 个结果");
+        if (matches.isEmpty()) {
+            TextView empty = text("没有匹配的工作流", 14, false);
+            empty.setTextColor(ThemeManager.muted(this));
+            empty.setPadding(dp(4), dp(18), dp(4), dp(18));
+            results.addView(empty);
+            return;
+        }
+
+        int show = Math.min(100, matches.size());
+        for (int i = 0; i < show; i++) {
+            WorkflowProfile p = matches.get(i);
+            LinearLayout row = folderCard();
+            row.addView(text((p.favorite ? "★ " : "") + p.name, 15, true));
+            TextView sub = text("📁 " + folderNameForProfile(p), 11, false);
+            sub.setTextColor(ThemeManager.muted(this));
+            row.addView(sub);
+            row.setOnClickListener(v -> {
+                if (dialog != null) dialog.dismiss();
+                selectWorkflow(p);
+            });
+            results.addView(row, cardLp());
+        }
+        if (matches.size() > show) {
+            TextView more = text("结果较多，仅显示前 " + show + " 个；继续输入关键词可缩小范围。", 11, false);
+            more.setTextColor(ThemeManager.muted(this));
+            results.addView(more);
+        }
     }
 
     private void reload() {

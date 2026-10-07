@@ -17,7 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/** Shared V2.4.1 helpers for importing individual workflow files or whole SAF folders. */
+/** Shared V2.5 helpers for importing individual workflow files or whole SAF folders. */
 public final class WorkflowImporter {
     private static final int MAX_WORKFLOW_BYTES = 32 * 1024 * 1024;
     private static final int MAX_TREE_JSON_FILES = 500;
