@@ -8,6 +8,7 @@ import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 
 import org.json.JSONObject;
+import org.json.JSONArray;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -31,13 +32,18 @@ public final class WorkflowImporter {
         JSONObject json = new JSONObject(raw);
         boolean uiFormat = json.optJSONArray("nodes") != null ||
                 (json.optJSONObject("workflow") != null && json.optJSONObject("workflow").optJSONArray("nodes") != null);
-        JSONObject prompt = uiFormat ? WorkflowUiConverter.toApiPrompt(json, server) : WorkflowUtils.extractPromptObject(json);
+        JSONArray variants = uiFormat ? WorkflowVariants.detect(json) : new JSONArray();
+        String initial = variants.length() > 0 ? WorkflowVariants.initialVariantId(variants) : "";
+        JSONObject prompt = variants.length() > 0
+                ? WorkflowVariants.compile(json, variants, initial, server)
+                : (uiFormat ? WorkflowUiConverter.toApiPrompt(json, server) : WorkflowUtils.extractPromptObject(json));
         String name = WorkflowStore.uniqueName(latest, displayName(context, uri), folderId);
         JSONObject uiCopy = uiFormat ? new JSONObject(json.toString()) : null;
         WorkflowProfile profile = WorkflowProfile.create(name, prompt, uiCopy);
         profile.folderId = folderId == null ? "" : folderId;
-        if (objectInfo != null) profile.setOutputChoices(WorkflowUtils.findOutputNodes(prompt, objectInfo), true, false);
-        else profile.setOutputChoices(WorkflowUtils.findOutputNodes(prompt), false, false);
+        if (variants.length() > 0) profile.initializeCollection(variants, initial);
+        if (objectInfo != null) profile.setOutputChoices((variants.length() > 0 ? WorkflowVariants.finalOutputs(prompt, variants, initial, objectInfo) : WorkflowUtils.findOutputNodes(prompt, objectInfo)), true, false);
+        else profile.setOutputChoices((variants.length() > 0 ? WorkflowVariants.finalOutputs(prompt, variants, initial, null) : WorkflowUtils.findOutputNodes(prompt)), false, false);
         WorkflowStore.upsert(context, profile);
         return profile;
     }

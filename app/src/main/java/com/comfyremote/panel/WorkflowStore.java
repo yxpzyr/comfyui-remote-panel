@@ -40,7 +40,18 @@ public final class WorkflowStore {
                 for (File f : files) {
                     try {
                         String raw = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
-                        out.add(WorkflowProfile.fromJson(new JSONObject(raw)));
+                        WorkflowProfile profile = WorkflowProfile.fromJson(new JSONObject(raw));
+                        // Upgrade V2.5 imports without deleting saved inputs, masks or node parameters.
+                        if (!profile.isCollection() && profile.uiJson != null && !profile.uiJson.isEmpty()) {
+                            org.json.JSONArray variants = WorkflowVariants.detect(new JSONObject(profile.uiJson));
+                            if (variants.length() >= 2) {
+                                profile.initializeCollection(variants, WorkflowVariants.initialVariantId(variants));
+                                profile.setOutputChoices(WorkflowVariants.finalOutputs(
+                                        profile.promptObject(), variants, profile.activeVariantId, null), false, false);
+                                writeProfile(dir, profile);
+                            }
+                        }
+                        out.add(profile);
                     } catch (Exception ignored) {}
                 }
             }

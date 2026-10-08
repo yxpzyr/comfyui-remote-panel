@@ -29,6 +29,11 @@ public final class WorkflowProfile {
     public JSONObject inputReplace = new JSONObject();
     // V2.2: optional per-input RGBA file containing a painted alpha mask.
     public JSONObject inputMaskPaths = new JSONObject();
+    // V2.6: One original UI workflow, multiple independently persisted execution views.
+    public JSONArray variants = new JSONArray();
+    public String activeVariantId = "";
+    public JSONObject variantStates = new JSONObject();
+
 
     public WorkflowProfile(String id, String name, String promptJson, String uiJson,
                            boolean favorite, long createdAt, long updatedAt, JSONObject overrides) {
@@ -140,6 +145,66 @@ public final class WorkflowProfile {
         } catch (Exception ignored) {}
     }
 
+    public boolean isCollection() { return variants != null && variants.length() >= 2; }
+
+    public void initializeCollection(JSONArray detected, String initial) {
+        variants = detected == null ? new JSONArray() : detected;
+        activeVariantId = initial == null ? "" : initial;
+        variantStates = new JSONObject();
+    }
+
+    private JSONObject captureVariantState() {
+        JSONObject state = new JSONObject();
+        try {
+            state.put("prompt_json", promptJson);
+            state.put("overrides", new JSONObject(overrides.toString()));
+            state.put("input_uris", new JSONObject(inputUris.toString()));
+            state.put("input_replace", new JSONObject(inputReplace.toString()));
+            state.put("input_mask_paths", new JSONObject(inputMaskPaths.toString()));
+            state.put("output_nodes", outputNodesJson);
+            state.put("selected_outputs", selectedOutputNodeIdsJson);
+            state.put("outputs_verified", outputNodesVerified);
+        } catch (Exception ignored) {}
+        return state;
+    }
+
+    public void rememberActiveVariant() {
+        if (!isCollection() || activeVariantId == null || activeVariantId.isEmpty()) return;
+        try { variantStates.put(activeVariantId, captureVariantState()); } catch (Exception ignored) {}
+    }
+
+    public void activateVariant(String selectedId, JSONObject compiledPrompt) throws Exception {
+        if (!isCollection()) throw new Exception("当前工作流不是合集");
+        boolean valid = false;
+        for (int i = 0; i < variants.length(); i++) {
+            JSONObject v = variants.optJSONObject(i);
+            if (v != null && selectedId.equals(v.optString("id", ""))) valid = true;
+        }
+        if (!valid) throw new Exception("未知子功能：" + selectedId);
+        rememberActiveVariant();
+        JSONObject saved = variantStates.optJSONObject(selectedId);
+        activeVariantId = selectedId;
+        if (saved == null) {
+            promptJson = compiledPrompt.toString();
+            overrides = new JSONObject();
+            inputUris = new JSONObject();
+            inputReplace = new JSONObject();
+            inputMaskPaths = new JSONObject();
+            outputNodesJson = "[]";
+            selectedOutputNodeIdsJson = "[]";
+            outputNodesVerified = false;
+        } else {
+            promptJson = saved.optString("prompt_json", compiledPrompt.toString());
+            overrides = new JSONObject(saved.optJSONObject("overrides") == null ? "{}" : saved.getJSONObject("overrides").toString());
+            inputUris = new JSONObject(saved.optJSONObject("input_uris") == null ? "{}" : saved.getJSONObject("input_uris").toString());
+            inputReplace = new JSONObject(saved.optJSONObject("input_replace") == null ? "{}" : saved.getJSONObject("input_replace").toString());
+            inputMaskPaths = new JSONObject(saved.optJSONObject("input_mask_paths") == null ? "{}" : saved.getJSONObject("input_mask_paths").toString());
+            outputNodesJson = saved.optString("output_nodes", "[]");
+            selectedOutputNodeIdsJson = saved.optString("selected_outputs", "[]");
+            outputNodesVerified = saved.optBoolean("outputs_verified", false);
+        }
+    }
+
     public JSONObject promptObject() throws Exception {
         return new JSONObject(promptJson);
     }
@@ -149,6 +214,7 @@ public final class WorkflowProfile {
     }
 
     public JSONObject toJson() {
+        rememberActiveVariant();
         JSONObject o = new JSONObject();
         try {
             o.put("id", id);
@@ -157,6 +223,9 @@ public final class WorkflowProfile {
             if (uiJson != null) o.put("ui_json", uiJson);
             o.put("favorite", favorite);
             o.put("folder_id", folderId == null ? "" : folderId);
+            o.put("variants", variants);
+            o.put("active_variant_id", activeVariantId);
+            o.put("variant_states", variantStates);
             o.put("created_at", createdAt);
             o.put("updated_at", updatedAt);
             o.put("overrides", overrides == null ? new JSONObject() : overrides);
@@ -183,6 +252,9 @@ public final class WorkflowProfile {
                 overrides == null ? new JSONObject() : overrides
         );
         p.folderId = o.optString("folder_id", "");
+        p.variants = o.optJSONArray("variants") == null ? new JSONArray() : o.optJSONArray("variants");
+        p.activeVariantId = o.optString("active_variant_id", "");
+        p.variantStates = o.optJSONObject("variant_states") == null ? new JSONObject() : o.optJSONObject("variant_states");
         JSONArray outputNodes = o.optJSONArray("output_nodes");
         JSONArray selected = o.optJSONArray("selected_output_node_ids");
         p.outputNodesJson = outputNodes == null ? o.optString("output_nodes_json", "[]") : outputNodes.toString();

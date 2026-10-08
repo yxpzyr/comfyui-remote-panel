@@ -90,6 +90,7 @@ public final class WorkflowUiConverter {
                     Link link = linkById.get(linkId);
                     if (link == null) continue;
                     ResolvedSource src = resolveSource(link.sourceId, link.sourceSlot, nodeById, linkById, new HashSet<>());
+                    if (src.absent) continue;
                     if (src.literalSet) apiInputs.put(name, src.literal);
                     else apiInputs.put(name, new JSONArray().put(src.nodeId).put(src.slot));
                     connectedNames.add(name);
@@ -99,6 +100,13 @@ public final class WorkflowUiConverter {
             NodeSchema schema = NodeSchema.from(def);
             applyWidgetValues(node, schema, apiInputs, connectedNames);
             normalizeAndFillRequired(schema, apiInputs, connectedNames);
+            // V2.6 preflight: never submit a compiled branch with missing required inputs.
+            for (InputDef requiredInput : schema.defs.values()) {
+                if (requiredInput.required && !apiInputs.has(requiredInput.name)) {
+                    throw new JSONException("节点 " + id + "（" + type + "）缺少必填输入 " + requiredInput.name +
+                            "。请检查子功能选择或电脑端工作流旁路连接。");
+                }
+            }
 
             prompt.put(id, apiNode);
         }
@@ -183,20 +191,25 @@ public final class WorkflowUiConverter {
 
         String type = node.optString("type", "");
         int mode = node.optInt("mode", 0);
-        if ("PrimitiveNode".equalsIgnoreCase(type)) {
+        if ("PrimitiveNode".equalsIgnoreCase(type) || type.toLowerCase(Locale.ROOT).contains("seed (rgthree)")) {
             Object literal = firstWidgetValue(node);
-            if (literal == null || literal == JSONObject.NULL) throw new JSONException("PrimitiveNode " + nodeId + " 没有可解析的值");
+            if (literal == null || literal == JSONObject.NULL) throw new JSONException("常量节点 " + nodeId + " 没有可解析的值");
+            if (type.toLowerCase(Locale.ROOT).contains("seed (rgthree)")) {
+                long seed = literal instanceof Number ? ((Number) literal).longValue() : -1L;
+                if (seed < 0) seed = (System.nanoTime() & 0xFFFFFFFFFFFFL);
+                literal = seed;
+            }
             return ResolvedSource.literal(literal);
         }
         if (mode == 2) throw new JSONException("节点 " + nodeId + "（" + type + "）处于禁用模式，但仍被其他节点引用。请在 ComfyUI 中启用它或断开连接。");
         if (mode == 4 || isReroute(type)) {
             JSONArray ins = node.optJSONArray("inputs");
-            if (ins == null || ins.length() == 0) throw new JSONException("无法解析旁路节点 " + nodeId);
+            if (ins == null || ins.length() == 0) return ResolvedSource.absent();
             JSONObject chosen = choosePassthroughInput(node, slot);
-            if (chosen == null) throw new JSONException("旁路节点 " + nodeId + " 没有可用输入连接");
+            if (chosen == null) return ResolvedSource.absent();
             String lid = normalizeLinkId(chosen.opt("link"));
             Link l = lid == null ? null : links.get(lid);
-            if (l == null) throw new JSONException("旁路节点 " + nodeId + " 的输入未连接");
+            if (l == null) return ResolvedSource.absent();
             return resolveSource(l.sourceId, l.sourceSlot, nodes, links, visiting);
         }
         return ResolvedSource.connection(nodeId, slot);
@@ -445,7 +458,7 @@ public final class WorkflowUiConverter {
     private static boolean isVirtualNode(String type) {
         if (type == null) return false;
         String t = type.toLowerCase(Locale.ROOT);
-        return t.equals("primitivenode") || isReroute(type) || t.equals("note") || t.equals("markdownnote") ||
+        return t.equals("primitivenode") || t.contains("seed (rgthree)") || isReroute(type) || t.equals("note") || t.equals("markdownnote") ||
                 t.equals("group") || t.equals("groupnode");
     }
 
@@ -516,12 +529,13 @@ public final class WorkflowUiConverter {
     }
 
     private static final class ResolvedSource {
-        final String nodeId; final int slot; final boolean literalSet; final Object literal;
-        private ResolvedSource(String nodeId, int slot, boolean literalSet, Object literal) {
-            this.nodeId = nodeId; this.slot = slot; this.literalSet = literalSet; this.literal = literal;
+        final String nodeId; final int slot; final boolean literalSet, absent; final Object literal;
+        private ResolvedSource(String nodeId, int slot, boolean literalSet, boolean absent, Object literal) {
+            this.nodeId = nodeId; this.slot = slot; this.literalSet = literalSet; this.absent = absent; this.literal = literal;
         }
-        static ResolvedSource connection(String id, int slot) { return new ResolvedSource(id, slot, false, null); }
-        static ResolvedSource literal(Object value) { return new ResolvedSource(null, 0, true, value); }
+        static ResolvedSource connection(String id, int slot) { return new ResolvedSource(id, slot, false, false, null); }
+        static ResolvedSource literal(Object value) { return new ResolvedSource(null, 0, true, false, value); }
+        static ResolvedSource absent() { return new ResolvedSource(null, 0, false, true, null); }
     }
 
     private static final class InputDef {

@@ -67,11 +67,12 @@ public class MainActivity extends Activity {
 
     private EditText addressEdit;
     private TextView connectionState, workflowState, statusText;
-    private Button submitButton, queueButton, saveAllButton, advancedToggleButton, folderFilterButton, refreshParametersButton, saveParameterChangesButton;
+    private Button submitButton, queueButton, saveAllButton, advancedToggleButton, folderFilterButton, refreshParametersButton, saveParameterChangesButton, variantButton;
     private LinearLayout workflowStrip, inputList, parameterList, outputSelectorList, outputList;
     private LinearLayout connectionCardView, parameterCardView, outputSelectCardView;
     private ScrollView mainScroll;
     private boolean advancedExpanded = false;
+    private boolean variantSwitching = false;
     private volatile boolean workflowImporting = false;
     private boolean refreshWorkflowsOnResume = false;
 
@@ -188,7 +189,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.5 · 工作流搜索 / 完整节点参数调节 / 参数改动显式保存", 13, false);
+        TextView subtitle = text("V2.6 · 合集子功能切换 / 工作流搜索 / 节点参数调节", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -209,6 +210,13 @@ public class MainActivity extends Activity {
         workflowState.setTextColor(ThemeManager.secondary(this));
         workflowState.setPadding(0, dp(8), 0, dp(6));
         workflowCard.addView(workflowState);
+        variantButton = button("合集功能 ▼");
+        variantButton.setVisibility(View.GONE);
+        LinearLayout.LayoutParams variantLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(46));
+        variantLp.setMargins(0, dp(5), 0, dp(8));
+        workflowCard.addView(variantButton, variantLp);
+        variantButton.setOnClickListener(v -> chooseVariant());
 
         HorizontalScrollView workflowScroll = new HorizontalScrollView(this);
         workflowScroll.setHorizontalScrollBarEnabled(false);
@@ -398,6 +406,14 @@ public class MainActivity extends Activity {
                 lp.setMargins(0, 0, dp(8), 0);
                 workflowStrip.addView(b, lp);
                 b.setOnClickListener(v -> switchWorkflow(profile.id));
+            }
+        }
+        if (variantButton != null) {
+            boolean isCollection = activeProfile != null && activeProfile.isCollection();
+            variantButton.setVisibility(isCollection ? View.VISIBLE : View.GONE);
+            if (isCollection) {
+                variantButton.setText("合集功能：" + WorkflowVariants.label(activeProfile.variants, activeProfile.activeVariantId) + " ▼");
+                variantButton.setEnabled(!variantSwitching);
             }
         }
         if (profiles.isEmpty()) workflowState.setText("当前：未选择");
@@ -650,7 +666,15 @@ public class MainActivity extends Activity {
         File[] files = dir.listFiles();
         if (files != null) {
             String prefix = activeProfile.id.replaceAll("[^A-Za-z0-9._-]", "_") + "_";
-            for (File f : files) if (f.getName().startsWith(prefix)) f.delete();
+            if (activeProfile.isCollection()) {
+                // Do not delete the masks belonging to another sub-function of this collection.
+                java.util.Set<String> activePaths = new java.util.HashSet<>();
+                java.util.Iterator<String> keys = activeProfile.inputMaskPaths.keys();
+                while (keys.hasNext()) activePaths.add(activeProfile.inputMaskPaths.optString(keys.next(), ""));
+                for (File f : files) if (f.getName().startsWith(prefix) && activePaths.contains(f.getAbsolutePath())) f.delete();
+            } else {
+                for (File f : files) if (f.getName().startsWith(prefix)) f.delete();
+            }
         }
         activeProfile.inputUris = new JSONObject();
         activeProfile.inputMaskPaths = new JSONObject();
@@ -658,6 +682,73 @@ public class MainActivity extends Activity {
         sessionInputUris.remove(activeProfile.id);
         rebuildInputControls();
         statusText.setText("状态：已清空当前工作流记住的输入图和蒙版");
+    }
+
+    private void chooseVariant() {
+        if (activeProfile == null || !activeProfile.isCollection() || variantSwitching) return;
+        final JSONArray variants = activeProfile.variants;
+        final String[] labels = new String[variants.length()];
+        int checked = 0;
+        for (int i = 0; i < variants.length(); i++) {
+            JSONObject v = variants.optJSONObject(i);
+            if (v == null) continue;
+            labels[i] = v.optString("title", "子功能 " + (i + 1));
+            if (activeProfile.activeVariantId.equals(v.optString("id", ""))) checked = i;
+        }
+        new AlertDialog.Builder(this).setTitle("选择合集子功能")
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                    dialog.dismiss();
+                    JSONObject selected = variants.optJSONObject(which);
+                    if (selected == null) return;
+                    String target = selected.optString("id", "");
+                    if (activeProfile != null && !target.equals(activeProfile.activeVariantId))
+                        runAfterParameterChangesHandled(() -> switchVariant(target));
+                })
+                .setNegativeButton("取消", null).show();
+    }
+
+    private void switchVariant(String selectedId) {
+        final WorkflowProfile profile = activeProfile;
+        if (profile == null || !profile.isCollection() || variantSwitching) return;
+        final String oldVariantId = profile.activeVariantId;
+        if (selectedId.equals(oldVariantId)) return;
+        captureSessionInputs();
+        saveOutputSelection();
+        variantSwitching = true;
+        rebuildWorkflowStrip();
+        statusText.setText("状态：正在解析合集功能 " + WorkflowVariants.label(profile.variants, selectedId) + "…");
+        final String server = currentServer();
+        pool.submit(() -> {
+            try {
+                JSONObject compiled = WorkflowVariants.compile(profile.uiObjectOrNull(), profile.variants, selectedId, server);
+                runOnUiThread(() -> {
+                    variantSwitching = false;
+                    if (activeProfile == null || !profile.id.equals(activeProfile.id) ||
+                            !oldVariantId.equals(activeProfile.activeVariantId)) return;
+                    try {
+                        activeProfile.activateVariant(selectedId, compiled);
+                        List<WorkflowUtils.OutputChoice> outputs = WorkflowVariants.finalOutputs(
+                                activeProfile.promptObject(), activeProfile.variants, selectedId, null);
+                        if (activeProfile.outputChoices().isEmpty()) activeProfile.setOutputChoices(outputs, false, false);
+                        WorkflowStore.upsert(this, activeProfile);
+                        transientParameterValues.clear();
+                        expandedParameterNodes.clear();
+                        parameterObjectInfo = null;
+                        parameterMetadataProfileId = "";
+                        sessionInputUris.remove(activeProfile.id);
+                        rebuildWorkflowStrip();
+                        rebuildDynamicControls();
+                        statusText.setText("状态：已切换到 " + WorkflowVariants.label(activeProfile.variants, selectedId));
+                    } catch (Exception e) { showError("切换合集功能失败", e); rebuildWorkflowStrip(); }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    variantSwitching = false;
+                    rebuildWorkflowStrip();
+                    showError("该子功能无法执行", new Exception("未切换工作流，也没有提交任务。\n" + e.getMessage(), e));
+                });
+            }
+        });
     }
 
     private void switchWorkflow(String profileId) {
@@ -851,13 +942,18 @@ public class MainActivity extends Activity {
         JSONObject json = new JSONObject(raw);
         boolean uiFormat = json.optJSONArray("nodes") != null ||
                 (json.optJSONObject("workflow") != null && json.optJSONObject("workflow").optJSONArray("nodes") != null);
-        JSONObject prompt = uiFormat ? WorkflowUiConverter.toApiPrompt(json, server) : WorkflowUtils.extractPromptObject(json);
+        JSONArray variants = uiFormat ? WorkflowVariants.detect(json) : new JSONArray();
+        String initialVariant = variants.length() > 0 ? WorkflowVariants.initialVariantId(variants) : "";
+        JSONObject prompt = variants.length() > 0
+                ? WorkflowVariants.compile(json, variants, initialVariant, server)
+                : (uiFormat ? WorkflowUiConverter.toApiPrompt(json, server) : WorkflowUtils.extractPromptObject(json));
         String name = WorkflowStore.uniqueName(latest, getDisplayName(uri), folderId);
         JSONObject uiCopy = uiFormat ? new JSONObject(json.toString()) : null;
         WorkflowProfile profile = WorkflowProfile.create(name, prompt, uiCopy);
         profile.folderId = folderId == null ? "" : folderId;
-        if (objectInfo != null) profile.setOutputChoices(WorkflowUtils.findOutputNodes(prompt, objectInfo), true, false);
-        else profile.setOutputChoices(WorkflowUtils.findOutputNodes(prompt), false, false);
+        if (variants.length() > 0) profile.initializeCollection(variants, initialVariant);
+        if (objectInfo != null) profile.setOutputChoices((variants.length() > 0 ? WorkflowVariants.finalOutputs(prompt, variants, initialVariant, objectInfo) : WorkflowUtils.findOutputNodes(prompt, objectInfo)), true, false);
+        else profile.setOutputChoices((variants.length() > 0 ? WorkflowVariants.finalOutputs(prompt, variants, initialVariant, null) : WorkflowUtils.findOutputNodes(prompt)), false, false);
         WorkflowStore.upsert(this, profile);
         return profile;
     }
@@ -1579,19 +1675,24 @@ public class MainActivity extends Activity {
     private void refreshOutputMetadataAsync(boolean userInitiated) {
         if (activeProfile == null) { if (userInitiated) toast("请先选择工作流"); return; }
         final String profileId = activeProfile.id;
+        final String variantAtStart = activeProfile.activeVariantId;
         if (!outputRefreshInFlight.add(profileId)) { if (userInitiated) toast("正在检测输出节点…"); return; }
         if (userInitiated) statusText.setText("状态：正在读取 ComfyUI 输出节点定义…");
         final String server = currentServer();
         pool.submit(() -> {
             try {
                 WorkflowProfile profile = WorkflowStore.find(WorkflowStore.load(this), profileId);
-                if (profile == null) return;
+                if (profile == null || !variantAtStart.equals(profile.activeVariantId)) return;
                 JSONObject objectInfo = getObjectInfoCached(server);
                 List<WorkflowUtils.OutputChoice> detectedTmp = WorkflowUtils.findOutputNodes(profile.promptObject(), objectInfo);
                 if (detectedTmp.isEmpty()) detectedTmp = WorkflowUtils.findOutputNodes(profile.promptObject());
+                if (profile.isCollection()) detectedTmp = WorkflowVariants.finalOutputs(
+                        profile.promptObject(), profile.variants, variantAtStart, objectInfo);
                 final List<WorkflowUtils.OutputChoice> detected = detectedTmp;
-                profile.setOutputChoices(detected, true, true);
-                WorkflowStore.upsert(this, profile);
+                WorkflowProfile newest = WorkflowStore.find(WorkflowStore.load(this), profileId);
+                if (newest == null || !variantAtStart.equals(newest.activeVariantId)) return;
+                newest.setOutputChoices(detected, true, true);
+                WorkflowStore.upsert(this, newest);
                 runOnUiThread(() -> {
                     profiles = WorkflowStore.load(this);
                     if (activeProfile != null && profileId.equals(activeProfile.id)) {
@@ -1710,6 +1811,7 @@ public class MainActivity extends Activity {
     }
 
     private void submitGeneration() {
+        if (variantSwitching) { toast("正在切换合集功能，请稍候"); return; }
         if (activeProfile == null) { toast("请先导入或选择工作流"); return; }
         saveAddress();
         saveOutputSelection();
@@ -2201,7 +2303,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < values.length; i++) if (values[i].equals(current)) checked = i;
         new AlertDialog.Builder(this)
                 .setTitle("App 图标样式")
-                .setMessage("Android 不允许已安装 App 把任意相册图片直接变成桌面 Launcher 图标，因此 V2.5 继续提供 3 个预置图标即时切换。主界面背景和启动页仍可使用任意图片。")
+                .setMessage("Android 不允许已安装 App 把任意相册图片直接变成桌面 Launcher 图标，因此 App 继续提供 3 个预置图标即时切换。主界面背景和启动页仍可使用任意图片。")
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     IconSwitcher.apply(this, values[which]);
                     dialog.dismiss();
