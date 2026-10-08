@@ -189,7 +189,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.6 · 合集子功能切换 / 工作流搜索 / 节点参数调节", 13, false);
+        TextView subtitle = text("V2.6.2 · 合集可选参考图 / 节点标题完整显示", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -1072,6 +1072,16 @@ public class MainActivity extends Activity {
         }
         try {
             List<WorkflowUtils.NodeChoice> nodes = WorkflowUtils.findLoadImageNodes(activeProfile.promptObject());
+            Set<String> optionalImageIds = new HashSet<>();
+            if (activeProfile.isCollection()) {
+                for (WorkflowUtils.NodeChoice opt : WorkflowVariants.optionalImageInputs(
+                        activeProfile.uiObjectOrNull(), activeProfile.variants, activeProfile.activeVariantId)) {
+                    optionalImageIds.add(opt.id);
+                    boolean alreadyListed = false;
+                    for (WorkflowUtils.NodeChoice existing : nodes) if (existing.id.equals(opt.id)) { alreadyListed = true; break; }
+                    if (!alreadyListed) nodes.add(opt);
+                }
+            }
             if (nodes.isEmpty()) {
                 inputList.addView(text("这个工作流没有需要从手机替换的文件型图片输入。", 13, false));
                 refreshSubmitEnabled();
@@ -1081,6 +1091,8 @@ public class MainActivity extends Activity {
             for (int i = 0; i < nodes.size(); i++) {
                 WorkflowUtils.NodeChoice n = nodes.get(i);
                 ImageBinding b = new ImageBinding(i, n);
+                final boolean optionalImage = optionalImageIds.contains(n.id);
+                final boolean branchEnabled = !optionalImage || activeProfile.isAuxImageEnabled(n.id);
                 String key = inputKey(n);
                 String persisted = activeProfile.savedInputUri(key);
                 if (persisted != null && !persisted.isEmpty()) {
@@ -1096,11 +1108,32 @@ public class MainActivity extends Activity {
                 imageBindings.add(b);
 
                 LinearLayout box = miniCard();
-                TextView label = text("输入图 " + (i + 1) + " · " + n.title + " · 节点 " + n.id, 13, true);
+                TextView label = text((optionalImage ? "可选参考图 " : "输入图 ") + (i + 1) + " · " + n.title + " · 节点 " + n.id, 13, true);
                 box.addView(label);
+                if (optionalImage) {
+                    Switch enableBranch = new Switch(this);
+                    enableBranch.setText("启用此参考图分支（默认保持原工作流旁路）");
+                    enableBranch.setChecked(branchEnabled);
+                    box.addView(enableBranch);
+                    TextView note = text("关闭时不参与生成；开启后重新解析节点连线，才会使用这张参考图片。", 11, false);
+                    note.setTextColor(ThemeManager.muted(this));
+                    box.addView(note);
+                    final boolean[] ignoringProgrammaticToggle = {false};
+                    enableBranch.setOnCheckedChangeListener((view, checked) -> {
+                        if (ignoringProgrammaticToggle[0]) return;
+                        // Keep the displayed switch consistent with the CURRENT compiled prompt
+                        // while preflight/unsaved-changes dialogs are pending (including Cancel).
+                        ignoringProgrammaticToggle[0] = true;
+                        enableBranch.setChecked(!checked);
+                        ignoringProgrammaticToggle[0] = false;
+                        if (variantSwitching) return;
+                        runAfterParameterChangesHandled(() -> setAuxImageBranch(n.id, checked));
+                    });
+                }
                 b.replaceSwitch = new Switch(this);
                 b.replaceSwitch.setText("替换此输入");
-                b.replaceSwitch.setChecked(activeProfile.savedReplaceEnabled(key, true));
+                b.replaceSwitch.setChecked(branchEnabled && activeProfile.savedReplaceEnabled(key, true));
+                b.replaceSwitch.setEnabled(branchEnabled);
                 box.addView(b.replaceSwitch);
                 b.preview = previewImage();
                 box.addView(b.preview, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(178)));
@@ -1125,6 +1158,8 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams maskClearLp = weightedButton();
                 maskClearLp.setMargins(dp(8), 0, 0, 0);
                 b.maskRow.addView(b.clearMaskButton, maskClearLp);
+                b.maskButton.setEnabled(branchEnabled);
+                b.clearMaskButton.setEnabled(branchEnabled);
                 LinearLayout.LayoutParams maskRowLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
                 maskRowLp.setMargins(0, dp(6), 0, 0);
                 box.addView(b.maskRow, maskRowLp);
@@ -1139,6 +1174,8 @@ public class MainActivity extends Activity {
                 b.uploadState.setTextColor(ThemeManager.muted(this));
                 b.uploadState.setPadding(0, dp(5), 0, 0);
                 box.addView(b.uploadState);
+                b.selectButton.setEnabled(branchEnabled);
+                b.batchButton.setEnabled(branchEnabled);
                 b.selectButton.setOnClickListener(v -> chooseInputImage(b));
                 b.batchButton.setOnClickListener(v -> chooseInputImages(b));
                 b.replaceSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
@@ -1159,7 +1196,7 @@ public class MainActivity extends Activity {
                 inputList.addView(box, boxLp);
                 if (b.uri != null) {
                     loadPreviewOnly(b, b.uri);
-                    if (b.replaceSwitch.isChecked()) startInputUpload(b, b.uri);
+                    if (branchEnabled && b.replaceSwitch.isChecked()) startInputUpload(b, b.uri);
                 }
             }
             refreshMaskCapabilitiesAsync(activeProfile.id);
@@ -1167,6 +1204,51 @@ public class MainActivity extends Activity {
             inputList.addView(text("读取工作流输入失败：" + e.getMessage(), 13, false));
         }
         refreshSubmitEnabled();
+    }
+
+    private void setAuxImageBranch(String nodeId, boolean enabled) {
+        final WorkflowProfile profile = activeProfile;
+        if (profile == null || !profile.isCollection() || variantSwitching) return;
+        captureSessionInputs();
+        saveOutputSelection();
+        final String variantId = profile.activeVariantId;
+        final String server = currentServer();
+        final Set<String> selectedInputs = new HashSet<>();
+        if (profile.enabledAuxImages != null) {
+            java.util.Iterator<String> ids = profile.enabledAuxImages.keys();
+            while (ids.hasNext()) {
+                String id = ids.next();
+                if (profile.isAuxImageEnabled(id)) selectedInputs.add(id);
+            }
+        }
+        if (enabled) selectedInputs.add(nodeId); else selectedInputs.remove(nodeId);
+        variantSwitching = true;
+        statusText.setText("状态：正在" + (enabled ? "启用" : "关闭") + "可选参考图节点 " + nodeId + "…");
+        pool.submit(() -> {
+            try {
+                JSONObject compiled = WorkflowVariants.compile(profile.uiObjectOrNull(), profile.variants,
+                        variantId, server, selectedInputs);
+                runOnUiThread(() -> {
+                    variantSwitching = false;
+                    if (activeProfile == null || !profile.id.equals(activeProfile.id) ||
+                            !variantId.equals(activeProfile.activeVariantId)) return;
+                    profile.promptJson = compiled.toString();
+                    profile.setAuxImageEnabled(nodeId, enabled);
+                    // A disabled auxiliary loader is never an active image replacement.
+                    if (!enabled) profile.setSavedReplaceEnabled(nodeId + "|image", false);
+                    else profile.setSavedReplaceEnabled(nodeId + "|image", true);
+                    WorkflowStore.upsert(this, profile);
+                    rebuildDynamicControls();
+                    statusText.setText("状态：参考图节点 " + nodeId + (enabled ? " 已启用" : " 已恢复旁路"));
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    variantSwitching = false;
+                    rebuildInputControls();
+                    showError("切换可选参考图失败", e);
+                });
+            }
+        });
     }
 
     private void chooseInputImage(ImageBinding binding) {
@@ -1430,19 +1512,22 @@ public class MainActivity extends Activity {
                 if (nodeFields.isEmpty()) continue;
                 WorkflowUtils.FieldChoice first = nodeFields.get(0);
                 LinearLayout nodeBox = miniCard();
-                Button header = button("");
+                TextView header = text("", 14, true);
+                header.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                header.setPadding(dp(12), dp(10), dp(12), dp(10));
+                header.setMinHeight(dp(52));
                 LinearLayout content = new LinearLayout(this);
                 content.setOrientation(LinearLayout.VERTICAL);
                 boolean expanded = expandedParameterNodes.contains(first.nodeId);
                 content.setVisibility(expanded ? View.VISIBLE : View.GONE);
-                header.setText((expanded ? "▾ " : "▸ ") + first.nodeLabel() + " · 可调参数 " + nodeFields.size());
-                nodeBox.addView(header, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)));
+                header.setText((expanded ? "▾ " : "▸ ") + first.nodeLabel() + "\n可调参数 " + nodeFields.size());
+                nodeBox.addView(header, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
                 nodeBox.addView(content);
                 header.setOnClickListener(v -> {
                     boolean nowExpanded = content.getVisibility() != View.VISIBLE;
                     content.setVisibility(nowExpanded ? View.VISIBLE : View.GONE);
                     if (nowExpanded) expandedParameterNodes.add(first.nodeId); else expandedParameterNodes.remove(first.nodeId);
-                    header.setText((nowExpanded ? "▾ " : "▸ ") + first.nodeLabel() + " · 可调参数 " + nodeFields.size());
+                    header.setText((nowExpanded ? "▾ " : "▸ ") + first.nodeLabel() + "\n可调参数 " + nodeFields.size());
                 });
 
                 for (WorkflowUtils.FieldChoice f : nodeFields) addParameterField(content, f);

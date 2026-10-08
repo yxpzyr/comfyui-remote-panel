@@ -90,7 +90,95 @@ public final class WorkflowVariants {
         return out;
     }
 
+    /** Returns LoadImage inputs that are upstream of the selected output but were
+     * bypassed in the imported UI workflow. They must remain visible in the app,
+     * but must NOT silently become active without an explicit opt-in. */
+    public static List<WorkflowUtils.NodeChoice> optionalImageInputs(JSONObject original, JSONArray variants,
+                                                                     String variantId) throws Exception {
+        JSONObject v = find(variants, variantId);
+        List<WorkflowUtils.NodeChoice> result = new ArrayList<>();
+        if (v == null) return result;
+        JSONObject ui = unwrap(original);
+        JSONArray nodes = ui.optJSONArray("nodes"), links = ui.optJSONArray("links");
+        if (nodes == null || links == null) return result;
+        Map<String, JSONObject> all = new LinkedHashMap<>();
+        for (int i = 0; i < nodes.length(); i++) {
+            JSONObject n = nodes.optJSONObject(i);
+            if (n != null) all.put(String.valueOf(n.opt("id")), n);
+        }
+        Map<String, String> origins = linkOrigins(links);
+        Set<String> ancestors = ancestors(all, origins, outputIds(v));
+        for (JSONObject n : all.values()) {
+            String id = String.valueOf(n.opt("id"));
+            String type = n.optString("type", "");
+            if (!ancestors.contains(id) || n.optInt("mode", 0) != 4 ||
+                    !(type.equalsIgnoreCase("LoadImage") || type.equalsIgnoreCase("LoadImageOutput"))) continue;
+            JSONArray inputs = n.optJSONArray("inputs");
+            String name = "image";
+            if (inputs != null) {
+                for (int j = 0; j < inputs.length(); j++) {
+                    JSONObject input = inputs.optJSONObject(j);
+                    if (input != null && "image".equals(input.optString("name", ""))) {
+                        name = input.optString("name", "image"); break;
+                    }
+                }
+            }
+            // Most specific small source-image group is the useful label (e.g. image-2).
+            String title = n.optString("title", "");
+            if (title.isEmpty()) title = "可选参考图片";
+            result.add(new WorkflowUtils.NodeChoice(id, title, name, type, true));
+        }
+        return result;
+    }
+
+    private static Set<String> outputIds(JSONObject variant) {
+        Set<String> ids = new HashSet<>();
+        JSONArray outputs = variant.optJSONArray("outputs");
+        if (outputs != null) for (int i = 0; i < outputs.length(); i++) ids.add(outputs.optString(i, ""));
+        return ids;
+    }
+
+    private static Map<String, String> linkOrigins(JSONArray links) {
+        Map<String, String> origins = new HashMap<>();
+        for (int i = 0; i < links.length(); i++) {
+            JSONArray a = links.optJSONArray(i);
+            if (a != null && a.length() >= 5) origins.put(String.valueOf(a.opt(0)), String.valueOf(a.opt(1)));
+            JSONObject o = links.optJSONObject(i);
+            if (o != null) origins.put(String.valueOf(o.opt("id")), o.optString("origin_id", o.optString("source_id", "")));
+        }
+        return origins;
+    }
+
+    private static Set<String> ancestors(Map<String, JSONObject> all, Map<String, String> origins,
+                                         Set<String> outputIds) throws Exception {
+        Set<String> seen = new HashSet<>();
+        ArrayDeque<String> stack = new ArrayDeque<>(outputIds);
+        while (!stack.isEmpty()) {
+            String id = stack.removeLast();
+            if (!seen.add(id)) continue;
+            JSONObject n = all.get(id);
+            if (n == null) throw new JSONException("功能输出引用不存在的节点：" + id);
+            JSONArray inputs = n.optJSONArray("inputs");
+            if (inputs == null) continue;
+            for (int i = 0; i < inputs.length(); i++) {
+                JSONObject input = inputs.optJSONObject(i);
+                if (input == null || input.isNull("link")) continue;
+                String linkId = String.valueOf(input.opt("link"));
+                String source = origins.get(linkId);
+                if (source == null || source.isEmpty()) throw new JSONException("节点 " + id + " 缺失连线：" + linkId);
+                stack.add(source);
+            }
+        }
+        return seen;
+    }
+
     public static JSONObject compile(JSONObject original, JSONArray variants, String variantId, String server) throws Exception {
+        return compile(original, variants, variantId, server, new HashSet<>());
+    }
+
+    /** Preserve bypassed auxiliary groups unless their image loader is explicitly enabled. */
+    public static JSONObject compile(JSONObject original, JSONArray variants, String variantId,
+                                     String server, Set<String> enabledAuxImages) throws Exception {
         JSONObject v = find(variants, variantId);
         if (v == null) throw new JSONException("找不到指定的合集子功能：" + variantId);
         JSONObject copy = new JSONObject(unwrap(original).toString());
@@ -123,29 +211,36 @@ public final class WorkflowVariants {
             }
         }
 
-        Map<String, String> linkOrigins = new HashMap<>();
+        Map<String, String> linkOrigins = linkOrigins(links);
+        Set<String> ancestorIds = ancestors(all, linkOrigins, targetOutputIds);
+
+        // Activate only bypassed nodes on the path from an opted-in LoadImage to its
+        // first normally active consumer. Unrelated LoRA/reference groups retain mode=4.
+        Set<String> eligible = new HashSet<>();
+        for (WorkflowUtils.NodeChoice input : optionalImageInputs(original, variants, variantId)) eligible.add(input.id);
+        Map<String, Set<String>> consumers = new HashMap<>();
         for (int i = 0; i < links.length(); i++) {
             JSONArray a = links.optJSONArray(i);
-            if (a != null && a.length() >= 5) linkOrigins.put(String.valueOf(a.opt(0)), String.valueOf(a.opt(1)));
+            String from = "", to = "";
+            if (a != null && a.length() >= 5) { from = String.valueOf(a.opt(1)); to = String.valueOf(a.opt(3)); }
             JSONObject o = links.optJSONObject(i);
-            if (o != null) linkOrigins.put(String.valueOf(o.opt("id")), o.optString("origin_id", o.optString("source_id", "")));
+            if (o != null) { from = o.optString("origin_id", o.optString("source_id", "")); to = o.optString("target_id", o.optString("dest_id", "")); }
+            if (ancestorIds.contains(from) && ancestorIds.contains(to))
+                consumers.computeIfAbsent(from, k -> new HashSet<>()).add(to);
         }
-        Set<String> ancestorIds = new HashSet<>();
-        ArrayDeque<String> stack = new ArrayDeque<>(targetOutputIds);
-        while (!stack.isEmpty()) {
-            String id = stack.removeLast();
-            if (!ancestorIds.add(id)) continue;
-            JSONObject node = all.get(id);
-            if (node == null) throw new JSONException("功能输出引用不存在的节点：" + id);
-            JSONArray inputs = node.optJSONArray("inputs");
-            if (inputs == null) continue;
-            for (int j = 0; j < inputs.length(); j++) {
-                JSONObject input = inputs.optJSONObject(j);
-                if (input == null || input.isNull("link")) continue;
-                String rawLink = String.valueOf(input.opt("link"));
-                String src = linkOrigins.get(rawLink);
-                if (src == null || src.isEmpty()) throw new JSONException("节点 " + id + " 的输入 " + input.optString("name") + " 缺失连线 " + rawLink);
-                stack.add(src);
+        if (enabledAuxImages != null) for (String enabled : enabledAuxImages) {
+            if (!eligible.contains(enabled)) throw new JSONException("不属于当前子功能的可选输入：" + enabled);
+            ArrayDeque<String> toActivate = new ArrayDeque<>();
+            Set<String> visited = new HashSet<>();
+            toActivate.add(enabled);
+            while (!toActivate.isEmpty()) {
+                String id = toActivate.removeLast();
+                if (!visited.add(id)) continue;
+                JSONObject node = all.get(id);
+                if (node == null || !ancestorIds.contains(id)) continue;
+                if (node.optInt("mode", 0) != 4) continue; // stop at active consumer
+                node.put("mode", 0);
+                for (String downstream : consumers.getOrDefault(id, new HashSet<>())) toActivate.add(downstream);
             }
         }
         JSONArray keptNodes = new JSONArray();

@@ -29,6 +29,9 @@ public final class WorkflowProfile {
     public JSONObject inputReplace = new JSONObject();
     // V2.2: optional per-input RGBA file containing a painted alpha mask.
     public JSONObject inputMaskPaths = new JSONObject();
+    // V2.6.2: optional source-image branches that are bypassed in the original UI.
+    // Stored per subworkflow; false means preserve the original bypass semantics.
+    public JSONObject enabledAuxImages = new JSONObject();
     // V2.6: One original UI workflow, multiple independently persisted execution views.
     public JSONArray variants = new JSONArray();
     public String activeVariantId = "";
@@ -161,6 +164,7 @@ public final class WorkflowProfile {
             state.put("input_uris", new JSONObject(inputUris.toString()));
             state.put("input_replace", new JSONObject(inputReplace.toString()));
             state.put("input_mask_paths", new JSONObject(inputMaskPaths.toString()));
+            state.put("enabled_aux_images", new JSONObject(enabledAuxImages.toString()));
             state.put("output_nodes", outputNodesJson);
             state.put("selected_outputs", selectedOutputNodeIdsJson);
             state.put("outputs_verified", outputNodesVerified);
@@ -190,6 +194,7 @@ public final class WorkflowProfile {
             inputUris = new JSONObject();
             inputReplace = new JSONObject();
             inputMaskPaths = new JSONObject();
+            enabledAuxImages = new JSONObject();
             outputNodesJson = "[]";
             selectedOutputNodeIdsJson = "[]";
             outputNodesVerified = false;
@@ -199,10 +204,22 @@ public final class WorkflowProfile {
             inputUris = new JSONObject(saved.optJSONObject("input_uris") == null ? "{}" : saved.getJSONObject("input_uris").toString());
             inputReplace = new JSONObject(saved.optJSONObject("input_replace") == null ? "{}" : saved.getJSONObject("input_replace").toString());
             inputMaskPaths = new JSONObject(saved.optJSONObject("input_mask_paths") == null ? "{}" : saved.getJSONObject("input_mask_paths").toString());
+            enabledAuxImages = new JSONObject(saved.optJSONObject("enabled_aux_images") == null ? "{}" : saved.getJSONObject("enabled_aux_images").toString());
             outputNodesJson = saved.optString("output_nodes", "[]");
             selectedOutputNodeIdsJson = saved.optString("selected_outputs", "[]");
             outputNodesVerified = saved.optBoolean("outputs_verified", false);
         }
+    }
+
+    public boolean isAuxImageEnabled(String nodeId) {
+        return enabledAuxImages != null && enabledAuxImages.optBoolean(nodeId, false);
+    }
+
+    public void setAuxImageEnabled(String nodeId, boolean enabled) {
+        if (nodeId == null || nodeId.isEmpty()) return;
+        if (enabledAuxImages == null) enabledAuxImages = new JSONObject();
+        if (enabled) { try { enabledAuxImages.put(nodeId, true); } catch (Exception ignored) {} }
+        else enabledAuxImages.remove(nodeId);
     }
 
     public JSONObject promptObject() throws Exception {
@@ -235,6 +252,7 @@ public final class WorkflowProfile {
             o.put("input_uris", inputUris == null ? new JSONObject() : inputUris);
             o.put("input_replace", inputReplace == null ? new JSONObject() : inputReplace);
             o.put("input_mask_paths", inputMaskPaths == null ? new JSONObject() : inputMaskPaths);
+            o.put("enabled_aux_images", enabledAuxImages == null ? new JSONObject() : enabledAuxImages);
         } catch (Exception ignored) {}
         return o;
     }
@@ -266,6 +284,8 @@ public final class WorkflowProfile {
         p.inputUris = inputUris == null ? new JSONObject() : inputUris;
         p.inputReplace = inputReplace == null ? new JSONObject() : inputReplace;
         p.inputMaskPaths = inputMaskPaths == null ? new JSONObject() : inputMaskPaths;
+        JSONObject enabledAux = o.optJSONObject("enabled_aux_images");
+        p.enabledAuxImages = enabledAux == null ? new JSONObject() : enabledAux;
         return p;
     }
 
