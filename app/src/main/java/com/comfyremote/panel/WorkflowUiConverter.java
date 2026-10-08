@@ -102,7 +102,7 @@ public final class WorkflowUiConverter {
             normalizeAndFillRequired(schema, apiInputs, connectedNames);
             // V2.6 preflight: never submit a compiled branch with missing required inputs.
             for (InputDef requiredInput : schema.defs.values()) {
-                if (requiredInput.required && !apiInputs.has(requiredInput.name)) {
+                if (requiredInput.required && !hasRequiredInput(requiredInput, apiInputs)) {
                     throw new JSONException("节点 " + id + "（" + type + "）缺少必填输入 " + requiredInput.name +
                             "。请检查子功能选择或电脑端工作流旁路连接。");
                 }
@@ -299,6 +299,31 @@ public final class WorkflowUiConverter {
     }
 
     /** Validate combo values against the live /object_info and fill missing required widgets. */
+    /**
+     * V2.6.1: V3 Autogrow slots are serialized as namespaced keys, e.g.
+     * "images.image_1": ["674", 0]. There is deliberately NO literal "images"
+     * property in a valid ComfyUI API prompt. Never synthesize one.
+     *
+     * A zero-minimum autogrow is optional even if /object_info lists its
+     * parent under required; a positive minimum requires enough actual slots.
+     * Other required inputs remain subject to strict validation.
+     */
+    private static boolean hasRequiredInput(InputDef def, JSONObject apiInputs) {
+        if (apiInputs.has(def.name) && !apiInputs.isNull(def.name)) return true;
+        int count = 0;
+        String prefix = def.name + ".";
+        Iterator<String> keys = apiInputs.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            if (key.startsWith(prefix) && key.length() > prefix.length() && !apiInputs.isNull(key)) count++;
+        }
+        if (def.autogrow) return count >= def.autogrowMin;
+        // Older /object_info versions sometimes flatten the schema while UI
+        // graphs still emit namespaced Autogrow sockets. An existing child key
+        // is sufficient for the parent, but unrelated missing inputs still fail.
+        return count > 0;
+    }
+
     private static void normalizeAndFillRequired(NodeSchema schema, JSONObject apiInputs, Set<String> connected) throws JSONException {
         for (InputDef def : schema.defs.values()) {
             String name = def.name;
@@ -541,6 +566,8 @@ public final class WorkflowUiConverter {
     private static final class InputDef {
         final String name, type;
         final boolean widget, combo, required, hasDefault;
+        final boolean autogrow;
+        final int autogrowMin;
         final Object defaultValue;
         final List<Object> allowedValues;
         final boolean hasMin, hasMax;
@@ -548,12 +575,15 @@ public final class WorkflowUiConverter {
 
         InputDef(String name, String type, boolean widget, boolean combo, boolean required,
                  boolean hasDefault, Object defaultValue, List<Object> allowedValues,
-                 boolean hasMin, double minValue, boolean hasMax, double maxValue) {
+                 boolean hasMin, double minValue, boolean hasMax, double maxValue,
+                 boolean autogrow, int autogrowMin) {
             this.name = name;
             this.type = type;
             this.widget = widget;
             this.combo = combo;
             this.required = required;
+            this.autogrow = autogrow;
+            this.autogrowMin = autogrowMin;
             this.hasDefault = hasDefault;
             this.defaultValue = defaultValue;
             this.allowedValues = allowedValues == null ? new ArrayList<>() : allowedValues;
@@ -603,7 +633,8 @@ public final class WorkflowUiConverter {
         }
 
         private static InputDef parseInputDef(String name, Object raw, boolean required) {
-            boolean combo = false, widget = false, hasDefault = false;
+            boolean combo = false, widget = false, hasDefault = false, autogrow = false;
+            int autogrowMin = 0;
             boolean hasMin = false, hasMax = false;
             double minValue = 0.0, maxValue = 0.0;
             String type = "";
@@ -637,6 +668,18 @@ public final class WorkflowUiConverter {
                     }
                 }
 
+                // V3's IO.Autogrow.Input registers a parent socket (e.g. images)
+                // with child API keys (images.image_1, images.image_2, ...).
+                // Different ComfyUI versions describe its template differently.
+                JSONObject template = opts == null ? null : opts.optJSONObject("template");
+                autogrow = "AUTOGROW".equalsIgnoreCase(type) ||
+                        (opts != null && (opts.has("template") || opts.has("autogrow")));
+                if (autogrow) {
+                    autogrowMin = template != null ? template.optInt("min", 0) : 0;
+                    if (opts != null) autogrowMin = opts.optInt("min", autogrowMin);
+                    autogrowMin = Math.max(0, autogrowMin);
+                }
+
                 boolean forceInput = opts != null && opts.optBoolean("forceInput", false);
                 String upper = type.toUpperCase(Locale.ROOT);
                 if (!forceInput && (combo || upper.equals("INT") || upper.equals("FLOAT") || upper.equals("NUMBER") ||
@@ -656,7 +699,7 @@ public final class WorkflowUiConverter {
             }
 
             return new InputDef(name, type, widget, combo, required, hasDefault, defaultValue, allowed,
-                    hasMin, minValue, hasMax, maxValue);
+                    hasMin, minValue, hasMax, maxValue, autogrow, autogrowMin);
         }
     }
 }
