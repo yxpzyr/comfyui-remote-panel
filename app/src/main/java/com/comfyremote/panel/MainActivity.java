@@ -68,10 +68,11 @@ public class MainActivity extends Activity {
     private EditText addressEdit;
     private TextView connectionState, workflowState, statusText;
     private Button submitButton, queueButton, saveAllButton, advancedToggleButton, folderFilterButton, refreshParametersButton, saveParameterChangesButton, variantButton;
-    private LinearLayout workflowStrip, inputList, parameterList, outputSelectorList, outputList;
-    private LinearLayout connectionCardView, parameterCardView, outputSelectCardView;
+    private LinearLayout workflowStrip, inputList, parameterList, outputSelectorList, outputList, collectionNodeList;
+    private LinearLayout connectionCardView, parameterCardView, outputSelectCardView, collectionNodeCardView;
     private ScrollView mainScroll;
     private boolean advancedExpanded = false;
+    private boolean nodeInventoryExpanded = false;
     private boolean variantSwitching = false;
     private volatile boolean workflowImporting = false;
     private boolean refreshWorkflowsOnResume = false;
@@ -189,7 +190,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.6.2 · 合集可选参考图 / 节点标题完整显示", 13, false);
+        TextView subtitle = text("V2.6.3 · 合集节点状态 / LoRA独立开关 / 安全验证", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -280,6 +281,17 @@ public class MainActivity extends Activity {
         clearLp.setMargins(0, dp(4), 0, 0);
         inputCard.addView(clearInputsBtn, clearLp);
         clearInputsBtn.setOnClickListener(v -> clearPersistedInputs());
+
+        collectionNodeCardView = cardWithTopMargin(root);
+        collectionNodeCardView.addView(sectionTitle("合集节点与运行状态（包含旁路、前端工具）"));
+        TextView inventoryTip = text("这不是全部可执行参数：灰色前端控制器不会提交到 /prompt；被旁路的 LoRA 需显式开启才会运行。所有状态均以当前子功能编译图为准。", 12, false);
+        inventoryTip.setTextColor(ThemeManager.muted(this));
+        collectionNodeCardView.addView(inventoryTip);
+        collectionNodeList = new LinearLayout(this);
+        collectionNodeList.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams invLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        invLp.setMargins(0, dp(8), 0, 0);
+        collectionNodeCardView.addView(collectionNodeList, invLp);
 
         parameterCardView = cardWithTopMargin(root);
         parameterCardView.addView(sectionTitle("节点参数"));
@@ -638,6 +650,8 @@ public class MainActivity extends Activity {
         int visibility = advancedExpanded ? View.VISIBLE : View.GONE;
         if (connectionCardView != null) connectionCardView.setVisibility(visibility);
         if (parameterCardView != null) parameterCardView.setVisibility(visibility);
+        if (collectionNodeCardView != null) collectionNodeCardView.setVisibility(visibility == View.VISIBLE &&
+                activeProfile != null && activeProfile.isCollection() ? View.VISIBLE : View.GONE);
         if (outputSelectCardView != null) outputSelectCardView.setVisibility(visibility);
         if (advancedToggleButton != null) {
             advancedToggleButton.setText(advancedExpanded
@@ -1058,6 +1072,7 @@ public class MainActivity extends Activity {
     private void rebuildDynamicControls() {
         rebuildInputControls();
         rebuildParameterControls();
+        rebuildCollectionNodeInventory();
         rebuildOutputNodeControls();
         refreshSubmitEnabled();
     }
@@ -1223,11 +1238,12 @@ public class MainActivity extends Activity {
         }
         if (enabled) selectedInputs.add(nodeId); else selectedInputs.remove(nodeId);
         variantSwitching = true;
+        refreshSubmitEnabled();
         statusText.setText("状态：正在" + (enabled ? "启用" : "关闭") + "可选参考图节点 " + nodeId + "…");
         pool.submit(() -> {
             try {
                 JSONObject compiled = WorkflowVariants.compile(profile.uiObjectOrNull(), profile.variants,
-                        variantId, server, selectedInputs);
+                        variantId, server, selectedInputs, profile.auxLoRAIds());
                 runOnUiThread(() -> {
                     variantSwitching = false;
                     if (activeProfile == null || !profile.id.equals(activeProfile.id) ||
@@ -1245,6 +1261,7 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     variantSwitching = false;
                     rebuildInputControls();
+                    refreshSubmitEnabled();
                     showError("切换可选参考图失败", e);
                 });
             }
@@ -1348,7 +1365,7 @@ public class MainActivity extends Activity {
 
     private void refreshSubmitEnabled() {
         if (submitButton == null) return;
-        boolean ready = activeProfile != null;
+        boolean ready = activeProfile != null && !variantSwitching;
         if (ready) {
             for (ImageBinding b : imageBindings) {
                 if (b.replaceSwitch != null && b.replaceSwitch.isChecked()) {
@@ -1482,6 +1499,148 @@ public class MainActivity extends Activity {
         } else if (reuploadOriginal) {
             statusText.setText("状态：蒙版已清除");
         }
+    }
+
+    /** Show EVERY relevant source node, even if it is bypassed or frontend-only.
+     * Do not equate presence here with an executable API node. */
+    private void rebuildCollectionNodeInventory() {
+        if (collectionNodeList == null || collectionNodeCardView == null) return;
+        collectionNodeList.removeAllViews();
+        boolean visible = activeProfile != null && activeProfile.isCollection();
+        collectionNodeCardView.setVisibility(visible && advancedExpanded ? View.VISIBLE : View.GONE);
+        if (!visible) return;
+        try {
+            final WorkflowProfile profile = activeProfile;
+            JSONObject source = profile.uiObjectOrNull();
+            JSONObject prompt = profile.promptObject();
+            Set<String> enabledImages = new HashSet<>();
+            if (profile.enabledAuxImages != null) {
+                java.util.Iterator<String> keys = profile.enabledAuxImages.keys();
+                while (keys.hasNext()) {
+                    String id=keys.next();
+                    if (profile.isAuxImageEnabled(id)) enabledImages.add(id);
+                }
+            }
+            List<WorkflowNodeInventory.Entry> nodes = WorkflowNodeInventory.entries(
+                    source, profile.variants, profile.activeVariantId, prompt, enabledImages);
+            int executing = 0, bypassed = 0, frontend = 0;
+            for (WorkflowNodeInventory.Entry n : nodes) {
+                if (n.frontend) frontend++;
+                else if (n.enabled) executing++;
+                else bypassed++;
+            }
+            TextView overview = text("当前功能：" + WorkflowVariants.label(profile.variants, profile.activeVariantId)
+                    + "\n正在执行 " + executing + " · 旁路/未执行 " + bypassed
+                    + " · 前端辅助 " + frontend, 13, true);
+            overview.setPadding(dp(4), dp(8), dp(4), dp(12));
+            collectionNodeList.addView(overview);
+            Button showAll = button(nodeInventoryExpanded ? "收起全部节点结构" : "展开全部节点结构（含旁路 / 前端）");
+            collectionNodeList.addView(showAll);
+            LinearLayout detailList = new LinearLayout(this);
+            detailList.setOrientation(LinearLayout.VERTICAL);
+            detailList.setVisibility(nodeInventoryExpanded ? View.VISIBLE : View.GONE);
+            showAll.setOnClickListener(v -> {
+                nodeInventoryExpanded = !nodeInventoryExpanded;
+                detailList.setVisibility(nodeInventoryExpanded ? View.VISIBLE : View.GONE);
+                showAll.setText(nodeInventoryExpanded ? "收起全部节点结构" : "展开全部节点结构（含旁路 / 前端）");
+            });
+            EditText nodeFilter = new EditText(this);
+            nodeFilter.setSingleLine(true);
+            nodeFilter.setTextSize(13);
+            nodeFilter.setHint("查找节点编号、名称或类型，如 690 / LoRA / Bypasser");
+            detailList.addView(nodeFilter);
+            List<View> filterableRows = new ArrayList<>();
+            List<String> filterLabels = new ArrayList<>();
+            nodeFilter.addTextChangedListener(new TextWatcher() {
+                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+                @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                    String q = s.toString().trim().toLowerCase(java.util.Locale.ROOT);
+                    for (int i = 0; i < filterableRows.size(); i++)
+                        filterableRows.get(i).setVisibility(filterLabels.get(i).contains(q) ? View.VISIBLE : View.GONE);
+                }
+                @Override public void afterTextChanged(Editable e) {}
+            });
+            collectionNodeList.addView(detailList);
+            for (WorkflowNodeInventory.Entry n : nodes) {
+                LinearLayout item = miniCard();
+                TextView name = text("节点 " + n.id + " · " + n.title
+                        + (n.title.equals(n.type) ? "" : " · " + n.type), 13, true);
+                item.addView(name);
+                TextView state = text(n.status, 12, true);
+                state.setTextColor(n.enabled ? ThemeManager.success(this) : ThemeManager.secondary(this));
+                state.setPadding(0, dp(4), 0, dp(3));
+                item.addView(state);
+                TextView details = text(n.description, 12, false);
+                details.setTextColor(ThemeManager.muted(this));
+                item.addView(details);
+                if (n.availableLoRA) {
+                    Switch sw = new Switch(this);
+                    sw.setText("启用此 LoRA（影响当前功能生成结果）");
+                    sw.setTextSize(12);
+                    sw.setChecked(profile.isAuxLoRAEnabled(n.id));
+                    sw.setOnClickListener(v -> {
+                        boolean requested = sw.isChecked();
+                        sw.setChecked(!requested); // Display COMMITTED state until recompile succeeds.
+                        if (!variantSwitching) runAfterParameterChangesHandled(() -> setAuxLoRABranch(n.id, requested));
+                    });
+                    item.addView(sw);
+                }
+                LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                rowLp.setMargins(0, 0, 0, dp(8));
+                detailList.addView(item, rowLp);
+                filterableRows.add(item);
+                filterLabels.add((n.id + " " + n.title + " " + n.type + " " + n.status)
+                        .toLowerCase(java.util.Locale.ROOT));
+            }
+        } catch (Exception e) {
+            collectionNodeList.addView(text("无法读取合集结构：" + e.getMessage(), 12, false));
+        }
+    }
+
+    private void setAuxLoRABranch(String nodeId, boolean enabled) {
+        final WorkflowProfile profile = activeProfile;
+        if (profile == null || !profile.isCollection() || variantSwitching) return;
+        captureSessionInputs();
+        saveOutputSelection();
+        final String variantId = profile.activeVariantId;
+        final String server = currentServer();
+        Set<String> loras = profile.auxLoRAIds();
+        if (enabled) loras.add(nodeId); else loras.remove(nodeId);
+        Set<String> images = new HashSet<>();
+        if (profile.enabledAuxImages != null) {
+            java.util.Iterator<String> keys = profile.enabledAuxImages.keys();
+            while (keys.hasNext()) {
+                String id = keys.next();
+                if (profile.isAuxImageEnabled(id)) images.add(id);
+            }
+        }
+        variantSwitching = true;
+        refreshSubmitEnabled();
+        statusText.setText("状态：正在校验并" + (enabled ? "启用" : "旁路") + " LoRA 节点 " + nodeId + "…");
+        pool.submit(() -> {
+            try {
+                JSONObject compiled = WorkflowVariants.compile(profile.uiObjectOrNull(), profile.variants,
+                        variantId, server, images, loras);
+                runOnUiThread(() -> {
+                    variantSwitching = false;
+                    if (activeProfile == null || !profile.id.equals(activeProfile.id) ||
+                            !variantId.equals(activeProfile.activeVariantId)) return;
+                    profile.promptJson = compiled.toString();
+                    profile.setAuxLoRAEnabled(nodeId, enabled);
+                    WorkflowStore.upsert(this, profile);
+                    rebuildDynamicControls();
+                    statusText.setText("状态：LoRA 节点 " + nodeId + (enabled ? " 已启用" : " 已旁路"));
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    variantSwitching = false;
+                    rebuildCollectionNodeInventory();
+                    refreshSubmitEnabled();
+                    showError("LoRA 开关校验失败", new Exception("未保存开关、未提交任务。\n" + e.getMessage(), e));
+                });
+            }
+        });
     }
 
     private void rebuildParameterControls() {

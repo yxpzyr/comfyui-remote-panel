@@ -1,6 +1,6 @@
 # ComfyUI Remote Panel
 
-**版本：V2.5 源码版**
+**版本：V2.6.3 源码版**
 
 V2.4 is based on the permanently signed V2.3 `main` configuration and keeps the V2.3 task-level gallery/final-output behavior.
 

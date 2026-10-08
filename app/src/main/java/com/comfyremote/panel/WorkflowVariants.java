@@ -173,12 +173,20 @@ public final class WorkflowVariants {
     }
 
     public static JSONObject compile(JSONObject original, JSONArray variants, String variantId, String server) throws Exception {
-        return compile(original, variants, variantId, server, new HashSet<>());
+        return compile(original, variants, variantId, server, new HashSet<>(), new HashSet<>());
     }
 
     /** Preserve bypassed auxiliary groups unless their image loader is explicitly enabled. */
     public static JSONObject compile(JSONObject original, JSONArray variants, String variantId,
                                      String server, Set<String> enabledAuxImages) throws Exception {
+        return compile(original, variants, variantId, server, enabledAuxImages, new HashSet<>());
+    }
+
+    /** LoRA switches are explicitly opted-in and validated against upstream output dependencies.
+     * They are never inferred from a nearby rgthree frontend bypass button. */
+    public static JSONObject compile(JSONObject original, JSONArray variants, String variantId,
+                                     String server, Set<String> enabledAuxImages,
+                                     Set<String> enabledAuxLoras) throws Exception {
         JSONObject v = find(variants, variantId);
         if (v == null) throw new JSONException("找不到指定的合集子功能：" + variantId);
         JSONObject copy = new JSONObject(unwrap(original).toString());
@@ -213,6 +221,14 @@ public final class WorkflowVariants {
 
         Map<String, String> linkOrigins = linkOrigins(links);
         Set<String> ancestorIds = ancestors(all, linkOrigins, targetOutputIds);
+
+        Set<String> eligibleLoras = WorkflowNodeInventory.optionalLoraIds(original, variants, variantId);
+        if (enabledAuxLoras != null) for (String loRaId : enabledAuxLoras) {
+            if (!eligibleLoras.contains(loRaId))
+                throw new JSONException("此 LoRA 不是当前功能可独立启用的原始旁路节点：" + loRaId);
+            JSONObject node = all.get(loRaId);
+            if (node != null) node.put("mode", 0);
+        }
 
         // Activate only bypassed nodes on the path from an opted-in LoadImage to its
         // first normally active consumer. Unrelated LoRA/reference groups retain mode=4.
