@@ -1,6 +1,6 @@
-# V2.7.0
+# V2.7.1
 
-This release optimizes gallery performance and stability without adding new user-facing features. See V2.7_CHANGELOG.md.
+V2.7.1 fixes the Java compile failure in GalleryActivity introduced in V2.7 while preserving its gallery performance optimizations. See V2.7.1_CHANGELOG.md and V2.7_CHANGELOG.md.
 
 # V2.6 — 合集工作流子功能切换
 

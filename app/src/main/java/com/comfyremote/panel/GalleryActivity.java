@@ -159,8 +159,9 @@ public class GalleryActivity extends Activity {
         selection.addView(selectAllButton, weightedButton());
         LinearLayout.LayoutParams middle = weightedButton(); middle.setMargins(dp(6), dp(6), dp(6), 0);
         selection.addView(downloadButton, middle);
-        LinearLayout.LayoutParams right = weightedButton(); right.setMargins(0, dp(6), 0, 0);
-        selection.addView(clearSelectButton, right);
+        LinearLayout.LayoutParams clearSelectionParams = weightedButton();
+        clearSelectionParams.setMargins(0, dp(6), 0, 0);
+        selection.addView(clearSelectButton, clearSelectionParams);
         root.addView(selection);
 
         scroll = new ScrollView(this);

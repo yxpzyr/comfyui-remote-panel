@@ -1,10 +1,10 @@
-# Current release: V2.7.0
+# Current release: V2.7.1
 
 Gallery bandwidth/memory/performance stabilization; see V2.7_CHANGELOG.md and docs/V2.7_TEST_PLAN.md.
 
 # ComfyUI Remote Panel
 
-**版本：V2.7.0 源码版**
+**版本：V2.7.1 源码版**
 
 V2.4 is based on the permanently signed V2.3 `main` configuration and keeps the V2.3 task-level gallery/final-output behavior.
 
@@ -29,3 +29,7 @@ V2.4.1: 已将 V2.4 的分类筛选重构为文件管理器式工作流库，并
 
 
 V2.5: 工作流库新增全局搜索；高级设置升级为按节点折叠的完整 scalar widget 参数编辑器，并加入临时参数/显式保存/离开确认。版本 16 / 2.5.0。
+
+## V2.7.1
+
+Fix `GalleryActivity.buildUi()` Java variable name collision (`right`). No gallery behavior changes beyond compilation fix. See V2.7.1_CHANGELOG.md.
