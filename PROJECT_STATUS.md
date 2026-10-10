@@ -1,6 +1,10 @@
+# Current release: V2.7.0
+
+Gallery bandwidth/memory/performance stabilization; see V2.7_CHANGELOG.md and docs/V2.7_TEST_PLAN.md.
+
 # ComfyUI Remote Panel
 
-**版本：V2.6.3 源码版**
+**版本：V2.7.0 源码版**
 
 V2.4 is based on the permanently signed V2.3 `main` configuration and keeps the V2.3 task-level gallery/final-output behavior.
 

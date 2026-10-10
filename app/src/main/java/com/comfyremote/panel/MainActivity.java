@@ -190,7 +190,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.6.3 · 合集节点状态 / LoRA独立开关 / 安全验证", 13, false);
+        TextView subtitle = text("V2.7 · 性能优化 / 图库轻量加载 / 稳定性修复", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -2303,8 +2303,10 @@ public class MainActivity extends Activity {
                     } catch (Exception ignored) {}
                     if (remote.isEmpty()) {
                         try {
-                            JSONObject all = api.getAllHistory(300);
-                            remote = api.parseAllImagesForPrompt(all, job.promptId);
+                            // Gallery metadata streaming avoids rebuilding 300 large prompt graphs.
+                            for (ImageRef candidate : api.getGalleryHistoryRefs(300, 10000)) {
+                                if (job.promptId.equals(candidate.promptId)) remote.add(candidate);
+                            }
                         } catch (Exception ignored) {}
                     }
                     refs = mergeOutputRefs(refs, remote);
@@ -2323,10 +2325,16 @@ public class MainActivity extends Activity {
 
                 ImageRef finalRef = ImageRef.chooseFinal(refs);
                 if (finalRef == null) return;
-                ComfyApiClient.ImageDownload dl = api.fetchImage(finalRef);
-                Bitmap bmp = decodeScaled(dl.bytes, 1400, 1400);
-                if (bmp == null) return;
-                OutputBinding finalOutput = new OutputBinding(finalRef, dl, bmp);
+                // Do not retain the full original PNG on the home screen. Preview is bounded.
+                Bitmap bmp = null;
+                try {
+                    ComfyApiClient.ImageDownload preview = api.fetchImagePreview(finalRef, 76, 7 * 1024 * 1024);
+                    bmp = GalleryThumbnailLoader.decodeThumbnail(preview.bytes, 1200);
+                } catch (Exception ignored) {
+                    // Older servers may not support previews. Saving the untouched original
+                    // must remain available even when the preview cannot be displayed.
+                }
+                OutputBinding finalOutput = new OutputBinding(finalRef, serverForJob, bmp);
                 List<ImageRef> fullRefs = new ArrayList<>(refs);
                 runOnUiThread(() -> {
                     lastPreviewedPromptId = safe(job.promptId);
@@ -2370,6 +2378,9 @@ public class MainActivity extends Activity {
         FrameLayout imageFrame = new FrameLayout(this);
         ImageView image = previewImage();
         image.setImageBitmap(finalOutput.bitmap);
+        if (finalOutput.bitmap == null) {
+            image.setBackgroundColor(ThemeManager.imagePlaceholder(this));
+        }
         imageFrame.addView(image, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, dp(235)));
         if (fullRefs.size() > 1) {
@@ -2381,6 +2392,7 @@ public class MainActivity extends Activity {
             folder.setOnClickListener(v -> openTaskOutputs(job));
         }
         box.addView(imageFrame, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(235)));
+        if (finalOutput.bitmap == null) box.addView(text("预览暂不可用，仍可保存原始图片", 12, false));
 
         Button save = button("保存这张");
         LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
@@ -2406,7 +2418,8 @@ public class MainActivity extends Activity {
     private void saveOneOutput(OutputBinding o) {
         pool.submit(() -> {
             try {
-                MediaSaver.saveImage(this, o.download.bytes, o.ref.filename, o.download.mime);
+                ComfyApiClient.ImageDownload original = new ComfyApiClient(o.server).fetchImage(o.ref);
+                MediaSaver.saveImage(this, original.bytes, o.ref.filename, original.mime);
                 runOnUiThread(() -> toast("已保存到 Pictures/ComfyRemote"));
             } catch (Exception e) { runOnUiThread(() -> showError("保存失败", e)); }
         });
@@ -2755,10 +2768,10 @@ public class MainActivity extends Activity {
 
     private static final class OutputBinding {
         final ImageRef ref;
-        final ComfyApiClient.ImageDownload download;
+        final String server;
         final Bitmap bitmap;
-        OutputBinding(ImageRef ref, ComfyApiClient.ImageDownload download, Bitmap bitmap) {
-            this.ref = ref; this.download = download; this.bitmap = bitmap;
+        OutputBinding(ImageRef ref, String server, Bitmap bitmap) {
+            this.ref = ref; this.server = server; this.bitmap = bitmap;
         }
     }
 }

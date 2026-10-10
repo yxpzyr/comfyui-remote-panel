@@ -44,12 +44,21 @@ public class GalleryActivity extends Activity {
     private static final int REMOTE_HISTORY_ITEMS = 300;
     private static final int REMOTE_IMAGE_METADATA_LIMIT = 10000;
     private static final String PREF_PAGE_SIZE = "gallery_page_size_v23";
+    private static final Object HISTORY_CACHE_LOCK = new Object();
+    private static final long HISTORY_CACHE_TTL_MS = 90_000L;
+    private static List<ImageRef> recentRemoteHistory = new ArrayList<>();
+    private static String recentRemoteServer = "";
+    private static long recentRemoteAt = 0;
 
-    private final ExecutorService thumbPool = Executors.newFixedThreadPool(4);
-    private final ExecutorService downloadPool = Executors.newFixedThreadPool(2);
+    private final ExecutorService workPool = Executors.newSingleThreadExecutor();
+    private final ExecutorService detailPool = Executors.newSingleThreadExecutor();
+    private final ExecutorService downloadPool = Executors.newSingleThreadExecutor();
     private final List<GalleryTask> allTasks = new ArrayList<>();
     private final Set<String> selectedTaskKeys = ConcurrentHashMap.newKeySet();
     private final Map<String, LinearLayout> tileByTaskKey = new LinkedHashMap<>();
+    private final List<PendingThumb> pendingThumbs = new ArrayList<>();
+    private final Set<String> submittedThumbKeys = new java.util.HashSet<>();
+    private ScrollView scroll;
 
     private GridLayout grid;
     private TextView state, pageCountText;
@@ -79,12 +88,14 @@ public class GalleryActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
-        // V2.3 intentionally refreshes once on entry/resume; no 5-second polling loop.
-        refreshGallery(true);
+        // Returning from a preview/sub-page must not re-fetch up to 300 history entries.
+        if (allTasks.isEmpty() && !fetching) refreshGallery(true);
     }
 
     @Override protected void onDestroy() {
-        thumbPool.shutdownNow();
+        ++renderGeneration;
+        workPool.shutdownNow();
+        detailPool.shutdownNow();
         downloadPool.shutdownNow();
         super.onDestroy();
     }
@@ -152,15 +163,18 @@ public class GalleryActivity extends Activity {
         selection.addView(clearSelectButton, right);
         root.addView(selection);
 
-        ScrollView scroll = new ScrollView(this);
+        scroll = new ScrollView(this);
+        scroll.setOnScrollChangeListener((View.OnScrollChangeListener) (v, sx, sy, oldX, oldY) -> requestVisibleThumbnails());
         grid = new GridLayout(this);
         grid.setColumnCount(2);
         grid.setUseDefaultMargins(false);
+        grid.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+                requestVisibleThumbnails());
         scroll.addView(grid);
         root.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         back.setOnClickListener(v -> finish());
-        refresh.setOnClickListener(v -> refreshGallery(true));
+        refresh.setOnClickListener(v -> refreshGallery(true, true));
         sortButton.setOnClickListener(v -> showSortMenu(v));
         prevButton.setOnClickListener(v -> goToPage(page - 1));
         nextButton.setOnClickListener(v -> goToPage(page + 1));
@@ -181,11 +195,13 @@ public class GalleryActivity extends Activity {
         setContentView(root);
     }
 
-    private void refreshGallery(boolean forceMessage) {
+    private void refreshGallery(boolean forceMessage) { refreshGallery(forceMessage, false); }
+
+    private void refreshGallery(boolean forceMessage, boolean bypassCache) {
         if (fetching || batchDownloading) return;
         fetching = true;
         if (forceMessage) state.setText("正在同步 ComfyUI history 与本机任务记录…");
-        thumbPool.submit(() -> {
+        workPool.submit(() -> {
             LinkedHashMap<String, GalleryTask> tasks = new LinkedHashMap<>();
             String warning = "";
 
@@ -195,10 +211,23 @@ public class GalleryActivity extends Activity {
                 if (task != null) tasks.put(task.key, task);
             }
 
+            // Show cached task metadata immediately; remote history may be slow on mobile data.
+            if (!tasks.isEmpty()) {
+                List<GalleryTask> localSnapshot = new ArrayList<>(tasks.values());
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    allTasks.clear();
+                    allTasks.addAll(localSnapshot);
+                    clampPage();
+                    renderCurrentPage();
+                    state.setText("本机任务已就绪，正在合并远端图库…");
+                });
+            }
+
             // Merge server history for jobs that were generated outside this phone or older app records.
             try {
                 ComfyApiClient api = new ComfyApiClient(server);
-                List<ImageRef> remoteRefs = api.parseImagesFromAllHistory(api.getAllHistory(REMOTE_HISTORY_ITEMS), REMOTE_IMAGE_METADATA_LIMIT);
+                List<ImageRef> remoteRefs = loadRemoteHistory(api, bypassCache);
                 LinkedHashMap<String, List<ImageRef>> grouped = new LinkedHashMap<>();
                 for (ImageRef ref : remoteRefs) {
                     if (ref == null || ref.filename == null || ref.filename.isEmpty()) continue;
@@ -226,6 +255,7 @@ public class GalleryActivity extends Activity {
             String finalWarning = warning;
             runOnUiThread(() -> {
                 fetching = false;
+                if (isFinishing() || isDestroyed()) return;
                 allTasks.clear();
                 allTasks.addAll(normalized);
                 selectedTaskKeys.retainAll(taskKeys(allTasks));
@@ -234,6 +264,22 @@ public class GalleryActivity extends Activity {
                 updateState(finalWarning);
             });
         });
+    }
+
+    private List<ImageRef> loadRemoteHistory(ComfyApiClient api, boolean bypassCache) throws Exception {
+        String base = api.getBase();
+        synchronized (HISTORY_CACHE_LOCK) {
+            if (!bypassCache && base.equals(recentRemoteServer) && recentRemoteAt > 0 &&
+                    System.currentTimeMillis() - recentRemoteAt < HISTORY_CACHE_TTL_MS)
+                return new ArrayList<>(recentRemoteHistory);
+        }
+        List<ImageRef> fresh = api.getGalleryHistoryRefs(REMOTE_HISTORY_ITEMS, REMOTE_IMAGE_METADATA_LIMIT);
+        synchronized (HISTORY_CACHE_LOCK) {
+            recentRemoteHistory = new ArrayList<>(fresh);
+            recentRemoteServer = base;
+            recentRemoteAt = System.currentTimeMillis();
+        }
+        return fresh;
     }
 
     private GalleryTask findByPrompt(Map<String, GalleryTask> tasks, String promptId) {
@@ -268,6 +314,8 @@ public class GalleryActivity extends Activity {
         final int generation = ++renderGeneration;
         grid.removeAllViews();
         tileByTaskKey.clear();
+        pendingThumbs.clear();
+        submittedThumbKeys.clear();
         List<GalleryTask> sorted = sortedTasks();
         int pageCount = pageCount(sorted.size());
         if (page > pageCount) page = pageCount;
@@ -276,8 +324,8 @@ public class GalleryActivity extends Activity {
         int end = Math.min(sorted.size(), start + pageSize);
         List<GalleryTask> visible = new ArrayList<>(sorted.subList(start, end));
 
-        ComfyApiClient api = new ComfyApiClient(server);
-        for (GalleryTask task : visible) addTaskTile(api, task, generation);
+        for (GalleryTask task : visible) addTaskTile(task, generation);
+        grid.post(this::requestVisibleThumbnails);
         updatePager(pageCount);
         updateSelectionControls();
     }
@@ -300,7 +348,7 @@ public class GalleryActivity extends Activity {
         return new ArrayList<>(sorted.subList(start, end));
     }
 
-    private void addTaskTile(ComfyApiClient api, GalleryTask task, int generation) {
+    private void addTaskTile(GalleryTask task, int generation) {
         ImageRef ref = task.finalRef();
         if (ref == null) return;
         LinearLayout tile = new LinearLayout(this);
@@ -332,21 +380,8 @@ public class GalleryActivity extends Activity {
         grid.addView(tile, lp);
         tileByTaskKey.put(task.key, tile);
 
-        // Critical V2.3 traffic rule: only current-page final thumbnails are requested.
-        thumbPool.submit(() -> {
-            try {
-                if (generation != renderGeneration) return;
-                ComfyApiClient.ImageDownload dl = api.fetchImage(ref);
-                Bitmap bmp = MainActivity.decodeScaled(dl.bytes, 720, 720);
-                runOnUiThread(() -> {
-                    if (generation == renderGeneration && bmp != null) image.setImageBitmap(bmp);
-                });
-            } catch (Exception ignored) {
-                runOnUiThread(() -> {
-                    if (generation == renderGeneration) name.setText(task.displayName() + "\n（封面加载失败）");
-                });
-            }
-        });
+        // V2.7: do not request the image until its tile approaches the viewport.
+        pendingThumbs.add(new PendingThumb(task.key, task.server, ref, tile, image, generation));
 
         tile.setOnLongClickListener(v -> {
             toggleSelected(task);
@@ -357,6 +392,32 @@ public class GalleryActivity extends Activity {
             if (!selectedTaskKeys.isEmpty()) toggleSelected(task);
             else showPreview(task);
         });
+    }
+
+    private void requestVisibleThumbnails() {
+        if (scroll == null || isFinishing() || isDestroyed()) return;
+        int y = scroll.getScrollY();
+        int top = Math.max(0, y - dp(220));
+        int bottom = y + scroll.getHeight() + dp(220);
+        for (PendingThumb thumb : pendingThumbs) {
+            if (thumb.tile.getHeight() == 0) continue;
+            if (thumb.tile.getBottom() < top || thumb.tile.getTop() > bottom) continue;
+            if (!submittedThumbKeys.add(thumb.taskKey)) continue;
+            GalleryThumbnailLoader.load(this, thumb.server, thumb.ref, thumb.view, 320,
+                    () -> !isFinishing() && !isDestroyed() && thumb.generation == renderGeneration);
+        }
+    }
+
+    private static final class PendingThumb {
+        final String taskKey, server;
+        final ImageRef ref;
+        final View tile;
+        final ImageView view;
+        final int generation;
+        PendingThumb(String taskKey, String server, ImageRef ref, View tile, ImageView view, int generation) {
+            this.taskKey = taskKey; this.server = server; this.ref = ref;
+            this.tile = tile; this.view = view; this.generation = generation;
+        }
     }
 
     private void showPreview(GalleryTask task) {
@@ -380,24 +441,28 @@ public class GalleryActivity extends Activity {
         if (task.refs.size() > 1) builder.setNeutralButton("查看全部图", null);
         AlertDialog dialog = builder.create();
         dialog.setOnShowListener(x -> {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                saveOne(ref, task.server);
+                dialog.dismiss();
+            });
             if (task.refs.size() > 1) {
                 dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
                     dialog.dismiss();
                     openTaskOutputs(task);
                 });
             }
-            thumbPool.submit(() -> {
+            detailPool.submit(() -> {
                 try {
-                    ComfyApiClient.ImageDownload dl = new ComfyApiClient(task.server).fetchImage(ref);
-                    Bitmap bmp = MainActivity.decodeScaled(dl.bytes, 2200, 2200);
+                    ComfyApiClient.ImageDownload dl = new ComfyApiClient(task.server).fetchImagePreview(ref, 78, 7 * 1024 * 1024);
+                    Bitmap bmp = GalleryThumbnailLoader.decodeThumbnail(dl.bytes, 1400);
                     runOnUiThread(() -> {
-                        large.setImageBitmap(bmp);
-                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
-                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> saveOne(ref, dl));
+                        if (!isFinishing() && !isDestroyed() && dialog.isShowing() && bmp != null) large.setImageBitmap(bmp);
                     });
                 } catch (Exception e) {
-                    runOnUiThread(() -> Toast.makeText(this, "图片加载失败：" + e.getMessage(), Toast.LENGTH_LONG).show());
+                    runOnUiThread(() -> {
+                        if (!isFinishing() && !isDestroyed() && dialog.isShowing())
+                            Toast.makeText(this, "预览加载失败，请稍后重试", Toast.LENGTH_SHORT).show();
+                    });
                 }
             });
         });
@@ -454,10 +519,11 @@ public class GalleryActivity extends Activity {
                 } catch (Exception ignored) {}
                 int done = i + 1;
                 int good = ok;
-                runOnUiThread(() -> state.setText("下载最终图：" + done + " / " + selected.size() + " · 成功 " + good));
+                runOnUiThread(() -> { if (!isFinishing() && !isDestroyed()) state.setText("下载最终图：" + done + " / " + selected.size() + " · 成功 " + good); });
             }
             int finalOk = ok;
             runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
                 batchDownloading = false;
                 Toast.makeText(this, "最终图下载完成：" + finalOk + " / " + selected.size(), Toast.LENGTH_LONG).show();
                 clearSelection();
@@ -466,13 +532,21 @@ public class GalleryActivity extends Activity {
         });
     }
 
-    private void saveOne(ImageRef ref, ComfyApiClient.ImageDownload dl) {
+    private void saveOne(ImageRef ref, String sourceServer) {
         downloadPool.submit(() -> {
             try {
-                MediaSaver.saveImage(this, dl.bytes, ref.filename, dl.mime);
-                runOnUiThread(() -> Toast.makeText(this, "已保存到 Pictures/ComfyRemote", Toast.LENGTH_SHORT).show());
+                // Saving is deliberate: fetch untouched original, never the lossy gallery preview.
+                ComfyApiClient.ImageDownload dl = new ComfyApiClient(sourceServer).fetchImage(ref);
+                MediaSaver.saveImage(getApplicationContext(), dl.bytes, ref.filename, dl.mime);
+                runOnUiThread(() -> {
+                    if (!isFinishing() && !isDestroyed())
+                        Toast.makeText(this, "已保存原图到 Pictures/ComfyRemote", Toast.LENGTH_SHORT).show();
+                });
             } catch (Exception e) {
-                runOnUiThread(() -> Toast.makeText(this, "保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show());
+                runOnUiThread(() -> {
+                    if (!isFinishing() && !isDestroyed())
+                        Toast.makeText(this, "保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+                });
             }
         });
     }

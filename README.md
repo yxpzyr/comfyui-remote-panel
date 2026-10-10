@@ -1,3 +1,7 @@
+# V2.7.0
+
+This release optimizes gallery performance and stability without adding new user-facing features. See V2.7_CHANGELOG.md.
+
 # V2.6 — 合集工作流子功能切换
 
 V2.6 保留完整原始 UI 工作流，识别拥有独立输出的分组，并在首页工作流区域显示“合集功能”按钮。

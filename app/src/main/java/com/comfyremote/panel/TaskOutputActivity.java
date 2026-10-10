@@ -6,6 +6,7 @@ import android.graphics.Bitmap;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.view.Gravity;
+import android.view.View;
 import android.widget.Button;
 import android.widget.GridLayout;
 import android.widget.ImageView;
@@ -39,11 +40,17 @@ public class TaskOutputActivity extends Activity {
     public static final String EXTRA_SERVER = "server";
     public static final String EXTRA_TITLE = "title";
 
-    private final ExecutorService thumbPool = Executors.newFixedThreadPool(4);
-    private final ExecutorService downloadPool = Executors.newFixedThreadPool(2);
+    private final ExecutorService workPool = Executors.newSingleThreadExecutor();
+    private final ExecutorService detailPool = Executors.newSingleThreadExecutor();
+    private final ExecutorService downloadPool = Executors.newSingleThreadExecutor();
     private final List<ImageRef> refs = new ArrayList<>();
     private final Set<String> selectedKeys = ConcurrentHashMap.newKeySet();
     private final Map<String, LinearLayout> tileByKey = new LinkedHashMap<>();
+    private final List<PendingThumb> pendingThumbs = new ArrayList<>();
+    private final Set<String> requestedThumbKeys = new java.util.HashSet<>();
+    private ScrollView scroll;
+    private int renderedCount = 0;
+    private String finalKey = "";
 
     private GridLayout grid;
     private TextView state;
@@ -71,7 +78,9 @@ public class TaskOutputActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
-        thumbPool.shutdownNow();
+        ++renderGeneration;
+        workPool.shutdownNow();
+        detailPool.shutdownNow();
         downloadPool.shutdownNow();
         super.onDestroy();
     }
@@ -111,10 +120,16 @@ public class TaskOutputActivity extends Activity {
         selection.addView(clearButton, weightedButton());
         root.addView(selection);
 
-        ScrollView scroll = new ScrollView(this);
+        scroll = new ScrollView(this);
+        scroll.setOnScrollChangeListener((android.view.View.OnScrollChangeListener) (v, sx, sy, ox, oy) -> {
+            requestVisibleThumbnails();
+            if (scroll.getChildCount() > 0 && sy + scroll.getHeight() + dp(480) >= grid.getHeight()) appendMoreTiles();
+        });
         grid = new GridLayout(this);
         grid.setColumnCount(2);
         grid.setUseDefaultMargins(false);
+        grid.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+                requestVisibleThumbnails());
         scroll.addView(grid);
         root.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
@@ -131,10 +146,20 @@ public class TaskOutputActivity extends Activity {
         if (loading || downloading) return;
         loading = true;
         state.setText("正在读取该任务全部输出…");
-        thumbPool.submit(() -> {
+        workPool.submit(() -> {
             List<ImageRef> found = new ArrayList<>();
             JobRecord job = localId.isEmpty() ? null : JobStore.find(this, localId);
             if (job != null) found.addAll(job.outputRefs());
+            if (!found.isEmpty()) {
+                List<ImageRef> localSnapshot = normalize(found);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    refs.clear();
+                    refs.addAll(localSnapshot);
+                    renderGrid();
+                    state.setText("本机记录已显示，正在补齐远端过程图…");
+                });
+            }
             if (!promptId.isEmpty()) {
                 try {
                     // Always merge remote history here. Older V2.2 local jobs could have been
@@ -147,8 +172,10 @@ public class TaskOutputActivity extends Activity {
                     } catch (Exception ignored) {}
                     if (remote.isEmpty()) {
                         try {
-                            JSONObject all = api.getAllHistory(500);
-                            remote.addAll(api.parseAllImagesForPrompt(all, promptId));
+                            // Stream gallery metadata: never deserialize 500 complete prompt graphs.
+                            for (ImageRef candidate : api.getGalleryHistoryRefs(500, 10000)) {
+                                if (promptId.equals(candidate.promptId)) remote.add(candidate);
+                            }
                         } catch (Exception ignored) {}
                     }
                     found.addAll(remote);
@@ -157,6 +184,7 @@ public class TaskOutputActivity extends Activity {
             List<ImageRef> normalized = normalize(found);
             runOnUiThread(() -> {
                 loading = false;
+                if (isFinishing() || isDestroyed()) return;
                 refs.clear();
                 refs.addAll(normalized);
                 selectedKeys.retainAll(keysOf(refs));
@@ -198,20 +226,22 @@ public class TaskOutputActivity extends Activity {
         int generation = ++renderGeneration;
         grid.removeAllViews();
         tileByKey.clear();
+        pendingThumbs.clear();
+        requestedThumbKeys.clear();
+        renderedCount = 0;
         ImageRef finalRef = ImageRef.chooseFinal(refs);
-        String finalKey = finalRef == null ? "" : finalRef.key();
+        finalKey = finalRef == null ? "" : finalRef.key();
         if (refs.isEmpty()) {
             state.setText("没有可读取的图片输出");
             updateSelectionControls();
             return;
         }
         state.setText("共 " + refs.size() + " 张 · 最后一张标记为最终图 · 长按进入多选");
-        ComfyApiClient api = new ComfyApiClient(server);
-        for (int i = 0; i < refs.size(); i++) addTile(api, refs.get(i), i + 1, finalKey, generation);
+        appendMoreTiles();
         updateSelectionControls();
     }
 
-    private void addTile(ComfyApiClient api, ImageRef ref, int index, String finalKey, int generation) {
+    private void addTile(ImageRef ref, int index, String finalKey, int generation) {
         LinearLayout tile = new LinearLayout(this);
         tile.setOrientation(LinearLayout.VERTICAL);
         tile.setPadding(dp(6), dp(6), dp(6), dp(8));
@@ -243,15 +273,7 @@ public class TaskOutputActivity extends Activity {
         grid.addView(tile, lp);
         tileByKey.put(ref.key(), tile);
 
-        thumbPool.submit(() -> {
-            try {
-                ComfyApiClient.ImageDownload dl = api.fetchImage(ref);
-                Bitmap bmp = MainActivity.decodeScaled(dl.bytes, 720, 720);
-                runOnUiThread(() -> {
-                    if (generation == renderGeneration && bmp != null) image.setImageBitmap(bmp);
-                });
-            } catch (Exception ignored) {}
-        });
+        pendingThumbs.add(new PendingThumb(ref, tile, image, generation));
 
         tile.setOnLongClickListener(v -> {
             toggleSelected(ref);
@@ -262,6 +284,39 @@ public class TaskOutputActivity extends Activity {
             if (!selectedKeys.isEmpty()) toggleSelected(ref);
             else showPreview(ref, ref.key().equals(finalKey));
         });
+    }
+
+    private void appendMoreTiles() {
+        if (grid == null || refs.isEmpty() || isFinishing() || isDestroyed()) return;
+        if (renderedCount >= refs.size()) return;
+        int end = Math.min(refs.size(), renderedCount + 32);
+        int generation = renderGeneration;
+        for (int i = renderedCount; i < end; i++) addTile(refs.get(i), i + 1, finalKey, generation);
+        renderedCount = end;
+        grid.post(this::requestVisibleThumbnails);
+    }
+
+    private void requestVisibleThumbnails() {
+        if (scroll == null || isFinishing() || isDestroyed()) return;
+        int top = Math.max(0, scroll.getScrollY() - dp(200));
+        int bottom = scroll.getScrollY() + scroll.getHeight() + dp(200);
+        for (PendingThumb thumb : pendingThumbs) {
+            if (thumb.tile.getHeight() == 0) continue;
+            if (thumb.tile.getBottom() < top || thumb.tile.getTop() > bottom) continue;
+            if (!requestedThumbKeys.add(thumb.ref.key())) continue;
+            GalleryThumbnailLoader.load(this, server, thumb.ref, thumb.view, 320,
+                    () -> !isFinishing() && !isDestroyed() && renderGeneration == thumb.generation);
+        }
+    }
+
+    private static final class PendingThumb {
+        final ImageRef ref;
+        final View tile;
+        final ImageView view;
+        final int generation;
+        PendingThumb(ImageRef ref, View tile, ImageView view, int generation) {
+            this.ref = ref; this.tile = tile; this.view = view; this.generation = generation;
+        }
     }
 
     private void showPreview(ImageRef ref, boolean isFinal) {
@@ -282,18 +337,22 @@ public class TaskOutputActivity extends Activity {
                 .setPositiveButton("保存", null)
                 .create();
         dialog.setOnShowListener(x -> {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
-            thumbPool.submit(() -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                saveOne(ref);
+                dialog.dismiss();
+            });
+            detailPool.submit(() -> {
                 try {
-                    ComfyApiClient.ImageDownload dl = new ComfyApiClient(server).fetchImage(ref);
-                    Bitmap bmp = MainActivity.decodeScaled(dl.bytes, 2200, 2200);
+                    ComfyApiClient.ImageDownload dl = new ComfyApiClient(server).fetchImagePreview(ref, 78, 7 * 1024 * 1024);
+                    Bitmap bmp = GalleryThumbnailLoader.decodeThumbnail(dl.bytes, 1400);
                     runOnUiThread(() -> {
-                        large.setImageBitmap(bmp);
-                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
-                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> saveOne(ref, dl));
+                        if (!isFinishing() && !isDestroyed() && dialog.isShowing() && bmp != null) large.setImageBitmap(bmp);
                     });
                 } catch (Exception e) {
-                    runOnUiThread(() -> Toast.makeText(this, "图片加载失败：" + e.getMessage(), Toast.LENGTH_LONG).show());
+                    runOnUiThread(() -> {
+                        if (!isFinishing() && !isDestroyed() && dialog.isShowing())
+                            Toast.makeText(this, "预览加载失败，请稍后重试", Toast.LENGTH_SHORT).show();
+                    });
                 }
             });
         });
@@ -342,10 +401,11 @@ public class TaskOutputActivity extends Activity {
                 } catch (Exception ignored) {}
                 int done = i + 1;
                 int good = ok;
-                runOnUiThread(() -> state.setText("批量下载中：" + done + " / " + selected.size() + " · 成功 " + good));
+                runOnUiThread(() -> { if (!isFinishing() && !isDestroyed()) state.setText("批量下载中：" + done + " / " + selected.size() + " · 成功 " + good); });
             }
             int finalOk = ok;
             runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
                 downloading = false;
                 Toast.makeText(this, "下载完成：" + finalOk + " / " + selected.size(), Toast.LENGTH_LONG).show();
                 clearSelection();
@@ -354,13 +414,20 @@ public class TaskOutputActivity extends Activity {
         });
     }
 
-    private void saveOne(ImageRef ref, ComfyApiClient.ImageDownload dl) {
+    private void saveOne(ImageRef ref) {
         downloadPool.submit(() -> {
             try {
-                MediaSaver.saveImage(this, dl.bytes, ref.filename, dl.mime);
-                runOnUiThread(() -> Toast.makeText(this, "已保存到 Pictures/ComfyRemote", Toast.LENGTH_SHORT).show());
+                ComfyApiClient.ImageDownload dl = new ComfyApiClient(server).fetchImage(ref);
+                MediaSaver.saveImage(getApplicationContext(), dl.bytes, ref.filename, dl.mime);
+                runOnUiThread(() -> {
+                    if (!isFinishing() && !isDestroyed())
+                        Toast.makeText(this, "已保存原图到 Pictures/ComfyRemote", Toast.LENGTH_SHORT).show();
+                });
             } catch (Exception e) {
-                runOnUiThread(() -> Toast.makeText(this, "保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show());
+                runOnUiThread(() -> {
+                    if (!isFinishing() && !isDestroyed())
+                        Toast.makeText(this, "保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+                });
             }
         });
     }

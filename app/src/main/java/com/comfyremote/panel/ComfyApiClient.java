@@ -3,6 +3,8 @@ package com.comfyremote.panel;
 import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
+import android.util.JsonReader;
+import android.util.JsonToken;
 import android.provider.OpenableColumns;
 
 import org.json.JSONArray;
@@ -14,6 +16,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -163,6 +166,132 @@ public class ComfyApiClient {
     public JSONObject getObjectInfo() throws Exception {
         HttpResult r = getAny(new String[]{"/object_info", "/api/object_info"}, 8000, 30000);
         return new JSONObject(r.text());
+    }
+
+    /**
+     * V2.7 gallery-only streaming history reader. ComfyUI history embeds entire execution
+     * prompts; loading 300 prompts as a JSONObject can exhaust a phone's heap. Skip all large
+     * prompt payloads and materialize only per-task status/time/output image metadata.
+     */
+    public List<ImageRef> getGalleryHistoryRefs(int maxItems, int maxImageRefs) throws Exception {
+        int count = Math.max(1, Math.min(maxItems, 500));
+        Exception last = null;
+        for (String path : new String[]{"/history?max_items=" + count, "/api/history_v2?max_items=" + count}) {
+            HttpURLConnection con = null;
+            try {
+                con = (HttpURLConnection) new URL(base + path).openConnection();
+                con.setRequestMethod("GET");
+                con.setConnectTimeout(8000);
+                con.setReadTimeout(28000);
+                if (con.getResponseCode() != 200) {
+                    last = new Exception("history HTTP " + con.getResponseCode());
+                    continue;
+                }
+                LinkedHashMap<String, ImageRef> dedup = new LinkedHashMap<>();
+                try (InputStream in = con.getInputStream();
+                     JsonReader reader = new JsonReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+                    reader.beginObject();
+                    while (reader.hasNext()) {
+                        String key = reader.nextName();
+                        if ("history".equals(key) && reader.peek() == JsonToken.BEGIN_ARRAY) {
+                            reader.beginArray();
+                            while (reader.hasNext()) parseGalleryHistoryEntry(reader, "", dedup, maxImageRefs);
+                            reader.endArray();
+                        } else if (reader.peek() == JsonToken.BEGIN_OBJECT) {
+                            parseGalleryHistoryEntry(reader, key, dedup, maxImageRefs);
+                        } else reader.skipValue();
+                    }
+                    reader.endObject();
+                }
+                List<ImageRef> result = new ArrayList<>(dedup.values());
+                result.sort(java.util.Comparator.comparingLong((ImageRef r) -> r.timestamp).reversed());
+                if (result.size() > maxImageRefs) return new ArrayList<>(result.subList(0, maxImageRefs));
+                return result;
+            } catch (Exception e) { last = e; }
+            finally { if (con != null) con.disconnect(); }
+        }
+        throw last == null ? new Exception("history 请求失败") : last;
+    }
+
+    private void parseGalleryHistoryEntry(JsonReader reader, String fallbackPromptId,
+                                          LinkedHashMap<String, ImageRef> dedup, int maxImages) throws Exception {
+        if (reader.peek() != JsonToken.BEGIN_OBJECT) { reader.skipValue(); return; }
+        JSONObject entry = new JSONObject();
+        String promptId = fallbackPromptId;
+        reader.beginObject();
+        while (reader.hasNext()) {
+            String name = reader.nextName();
+            if ("outputs".equals(name) || "status".equals(name)) {
+                Object value = readGalleryJson(reader, 0);
+                if (value != null) entry.put(name, value);
+            } else if ("timestamp".equals(name)) {
+                Object value = readGalleryJson(reader, 0);
+                if (value != null) entry.put(name, value);
+            } else if ("prompt_id".equals(name) && reader.peek() == JsonToken.STRING) {
+                promptId = reader.nextString();
+            } else if ("prompt".equals(name) && reader.peek() == JsonToken.BEGIN_ARRAY) {
+                // Legacy array: [number, promptId, giant prompt graph, ...]
+                reader.beginArray();
+                if (reader.hasNext()) reader.skipValue();
+                if (reader.hasNext()) {
+                    if (reader.peek() == JsonToken.STRING) promptId = reader.nextString();
+                    else reader.skipValue();
+                }
+                while (reader.hasNext()) reader.skipValue();
+                reader.endArray();
+            } else reader.skipValue();
+        }
+        reader.endObject();
+        if (promptId == null) promptId = "";
+        entry.put("prompt_id", promptId);
+        // Reuse existing image parser and final-image ordering semantics.
+        JSONObject wrapper = new JSONObject();
+        wrapper.put(promptId.isEmpty() ? "legacy" : promptId, entry);
+        for (ImageRef ref : parseImagesFromAllHistory(wrapper, Math.max(1, maxImages))) {
+            String key = promptId + "|" + ref.key();
+            ImageRef old = dedup.get(key);
+            if (old == null || ref.timestamp >= old.timestamp) dedup.put(key, ref);
+        }
+    }
+
+    /** Parse only outputs/status metadata, never the huge workflow graph. */
+    private static Object readGalleryJson(JsonReader r, int depth) throws Exception {
+        if (depth > 20) { r.skipValue(); return null; }
+        JsonToken token = r.peek();
+        if (token == JsonToken.BEGIN_OBJECT) {
+            JSONObject obj = new JSONObject();
+            r.beginObject();
+            while (r.hasNext()) {
+                String name = r.nextName();
+                Object child = readGalleryJson(r, depth + 1);
+                if (child != null) obj.put(name, child);
+            }
+            r.endObject();
+            return obj;
+        }
+        if (token == JsonToken.BEGIN_ARRAY) {
+            JSONArray arr = new JSONArray();
+            r.beginArray();
+            while (r.hasNext()) {
+                Object child = readGalleryJson(r, depth + 1);
+                arr.put(child == null ? JSONObject.NULL : child);
+            }
+            r.endArray();
+            return arr;
+        }
+        if (token == JsonToken.BOOLEAN) return r.nextBoolean();
+        if (token == JsonToken.NULL) { r.nextNull(); return JSONObject.NULL; }
+        if (token == JsonToken.STRING) return r.nextString();
+        if (token == JsonToken.NUMBER) {
+            String raw = r.nextString();
+            try { return Long.valueOf(raw); }
+            catch (NumberFormatException ignored) {
+                try { return Double.valueOf(raw); }
+                catch (NumberFormatException ignored2) { return raw; }
+            }
+        }
+        r.skipValue();
+        return null;
     }
 
     public JSONObject getAllHistory() throws Exception {
@@ -444,6 +573,52 @@ public class ComfyApiClient {
         String q = "?filename=" + enc(ref.filename) + "&subfolder=" + enc(ref.subfolder) + "&type=" + enc(ref.type);
         HttpResult r = getAny(new String[]{"/view" + q, "/api/view" + q}, 10000, 60000);
         return new ImageDownload(r.body, r.contentType == null ? MediaSaver.guessMime(ref.filename) : r.contentType);
+    }
+
+    /** Compressed image preview for gallery tiles; never use this method for saving originals. */
+    public ImageDownload fetchImagePreview(ImageRef ref, int quality, int maxBytes) throws Exception {
+        return fetchImagePreview(ref, quality, maxBytes, () -> true);
+    }
+
+    public ImageDownload fetchImagePreview(ImageRef ref, int quality, int maxBytes,
+                                           java.util.function.BooleanSupplier keepGoing) throws Exception {
+        int q = Math.max(35, Math.min(85, quality));
+        String query = "?filename=" + enc(ref.filename) + "&subfolder=" + enc(ref.subfolder)
+                + "&type=" + enc(ref.type) + "&preview=jpeg;" + q + "&channel=rgb";
+        Exception last = null;
+        for (String path : new String[]{"/view" + query, "/api/view" + query}) {
+            if (!keepGoing.getAsBoolean() || Thread.currentThread().isInterrupted())
+                throw new java.io.InterruptedIOException("预览请求已取消");
+            HttpURLConnection con = null;
+            try {
+                con = (HttpURLConnection) new URL(base + path).openConnection();
+                con.setRequestMethod("GET");
+                con.setConnectTimeout(7000);
+                con.setReadTimeout(20000);
+                con.setUseCaches(false);
+                int status = con.getResponseCode();
+                if (status != 200) {
+                    last = new Exception("预览图片 HTTP " + status);
+                    continue;
+                }
+                if (con.getContentLengthLong() > maxBytes) throw new Exception("预览超过流量上限");
+                try (InputStream in = con.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                    byte[] buf = new byte[32 * 1024];
+                    int n;
+                    while ((n = in.read(buf)) != -1) {
+                        if (!keepGoing.getAsBoolean() || Thread.currentThread().isInterrupted())
+                            throw new java.io.InterruptedIOException("预览请求已取消");
+                        if (out.size() + n > maxBytes) throw new Exception("预览超过流量上限");
+                        out.write(buf, 0, n);
+                    }
+                    String mime = con.getContentType();
+                    if (mime != null && !mime.startsWith("image/")) throw new Exception("服务器未返回预览图片");
+                    return new ImageDownload(out.toByteArray(), mime == null ? "image/jpeg" : mime);
+                }
+            } catch (Exception e) { last = e; }
+            finally { if (con != null) con.disconnect(); }
+        }
+        throw last == null ? new Exception("预览不可用") : last;
     }
 
     public void interrupt() throws Exception {
