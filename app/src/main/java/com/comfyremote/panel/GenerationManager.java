@@ -309,7 +309,11 @@ public final class GenerationManager {
     }
 
     private static void complete(Context context, String localId, List<ImageRef> refs) {
-        JobStore.complete(context, localId, refs, "生成完成，共 " + refs.size() + " 张输出");
+        boolean savedToOutput = false;
+        for (ImageRef ref : refs) if (ref != null && ref.isSavedOutput()) { savedToOutput = true; break; }
+        String message = savedToOutput ? "生成完成，共 " + refs.size() + " 张图片记录"
+                : "生成完成，但仅发现临时预览/非 output 图片；请确认工作流已启用 SaveImage 保存节点";
+        JobStore.complete(context, localId, refs, message);
         notifyListeners(JobStore.find(context, localId));
     }
 

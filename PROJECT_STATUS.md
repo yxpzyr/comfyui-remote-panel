@@ -33,3 +33,6 @@ V2.5: 工作流库新增全局搜索；高级设置升级为按节点折叠的�
 ## V2.7.1
 
 Fix `GalleryActivity.buildUi()` Java variable name collision (`right`). No gallery behavior changes beyond compilation fix. See V2.7.1_CHANGELOG.md.
+
+
+V2.7.2：图库历史排序与临时预览标识修复，详见 V2.7.2_CHANGELOG.md。

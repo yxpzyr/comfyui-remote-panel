@@ -101,7 +101,10 @@ final class GalleryThumbnailLoader {
     }
 
     private static String cacheKey(String server, ImageRef ref, int size) {
-        return sha256(ComfyApiClient.normalizeBase(server) + "|" + ref.key() + "|" + size);
+        // A file name is not a unique task identity. ComfyUI can reuse names after
+        // restarts or through custom save nodes; do not return an older task's bitmap.
+        return sha256(ComfyApiClient.normalizeBase(server) + "|" + ref.promptId + "|"
+                + ref.sourceNodeId + "|" + ref.key() + "|" + size);
     }
 
     private static String sha256(String value) {

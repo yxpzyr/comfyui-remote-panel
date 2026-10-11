@@ -721,12 +721,13 @@ public class GalleryActivity extends Activity {
             refs.addAll(map.values());
         }
 
-        ImageRef finalRef() { return ImageRef.chooseFinal(refs); }
+        ImageRef finalRef() { return ImageRef.chooseFinalSaved(refs); }
 
         String displayName() {
             if (workflowName != null && !workflowName.trim().isEmpty()) return workflowName;
             ImageRef f = finalRef();
-            return f == null || f.filename == null || f.filename.isEmpty() ? "生成任务" : f.filename;
+            if (f == null || f.filename == null || f.filename.isEmpty()) return "生成任务";
+            return f.isTemporary() ? "临时预览（非 output） · " + f.filename : f.filename;
         }
     }
 }

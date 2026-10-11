@@ -244,13 +244,23 @@ public class ComfyApiClient {
         reader.endObject();
         if (promptId == null) promptId = "";
         entry.put("prompt_id", promptId);
-        // Reuse existing image parser and final-image ordering semantics.
-        JSONObject wrapper = new JSONObject();
-        wrapper.put(promptId.isEmpty() ? "legacy" : promptId, entry);
-        for (ImageRef ref : parseImagesFromAllHistory(wrapper, Math.max(1, maxImages))) {
+        // Gallery timestamps must originate from real ComfyUI history metadata.
+        // Legacy entries without a trustworthy timestamp remain 0 (unknown), not "now".
+        // The old parseImagesFromAllHistory() fallback assigned every undated historical
+        // entry the CURRENT time, causing old images to jump to the newest gallery page.
+        long timestamp = historyTimestamp(entry, 0L);
+        long now = System.currentTimeMillis();
+        if (timestamp > now + 24L * 60 * 60 * 1000) timestamp = 0L;
+        LinkedHashMap<String, ImageRef> images = new LinkedHashMap<>();
+        for (ImageRef ref : parseImagesFromEntry(entry, promptId, timestamp))
+            images.put(ref.key(), ref);
+        for (ImageRef ref : parseImagesDeepFromEntry(entry, promptId, timestamp, null))
+            images.putIfAbsent(ref.key(), ref);
+        for (ImageRef ref : images.values()) {
             String key = promptId + "|" + ref.key();
             ImageRef old = dedup.get(key);
-            if (old == null || ref.timestamp >= old.timestamp) dedup.put(key, ref);
+            if (old == null || (old.timestamp <= 0 && ref.timestamp > 0)
+                    || (old.timestamp > 0 && ref.timestamp > old.timestamp)) dedup.put(key, ref);
         }
     }
 

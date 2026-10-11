@@ -229,7 +229,7 @@ public class TaskOutputActivity extends Activity {
         pendingThumbs.clear();
         requestedThumbKeys.clear();
         renderedCount = 0;
-        ImageRef finalRef = ImageRef.chooseFinal(refs);
+        ImageRef finalRef = ImageRef.chooseFinalSaved(refs);
         finalKey = finalRef == null ? "" : finalRef.key();
         if (refs.isEmpty()) {
             state.setText("没有可读取的图片输出");

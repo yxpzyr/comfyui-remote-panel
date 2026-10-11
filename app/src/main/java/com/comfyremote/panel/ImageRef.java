@@ -98,6 +98,27 @@ public class ImageRef {
      * V2.3 final-image rule: newest observed output wins. For legacy records without V2.3
      * observation metadata, later list position is the deterministic fallback requested by the UI.
      */
+    /** A ComfyUI PreviewImage creates temp files, not output/ files.
+     * Prefer newest actual saved output for task cover; retain legacy fallback for temp-only tasks.
+     * Within saved outputs, V2.3 first-seen order remains authoritative.
+     */
+    public static ImageRef chooseFinalSaved(List<ImageRef> refs) {
+        if (refs != null) {
+            java.util.ArrayList<ImageRef> saved = new java.util.ArrayList<>();
+            for (ImageRef ref : refs) if (ref != null && ref.isSavedOutput()) saved.add(ref);
+            if (!saved.isEmpty()) return chooseFinal(saved);
+        }
+        return chooseFinal(refs);
+    }
+
+    public boolean isSavedOutput() { return "output".equalsIgnoreCase(type); }
+    public boolean isTemporary() { return "temp".equalsIgnoreCase(type); }
+
+    /** Location inside ComfyUI server, not a local Android download path. */
+    public String serverRelativePath() {
+        return type + "/" + (subfolder == null || subfolder.isEmpty() ? "" : subfolder + "/") + filename;
+    }
+
     public static ImageRef chooseFinal(List<ImageRef> refs) {
         if (refs == null || refs.isEmpty()) return null;
         int bestIndex = -1;

@@ -1878,7 +1878,11 @@ public class MainActivity extends Activity {
                 sw.setChecked(selected.contains(choice.id));
                 binding.switchView = sw;
                 box.addView(sw);
-                TextView note = text("关闭后，本次提交会从 API Prompt 中移除此输出节点。", 11, false);
+                String lowerOutputType = choice.classType == null ? "" : choice.classType.toLowerCase(java.util.Locale.ROOT);
+                String outputNote = lowerOutputType.contains("preview")
+                        ? "注意：PreviewImage 只保存到 ComfyUI/temp，不会写入电脑 output；请同时启用 SaveImage。"
+                        : "关闭后，本次提交会从 API Prompt 中移除此输出节点。";
+                TextView note = text(outputNote, 11, false);
                 note.setTextColor(ThemeManager.muted(this));
                 box.addView(note);
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -2323,7 +2327,7 @@ public class MainActivity extends Activity {
                     return;
                 }
 
-                ImageRef finalRef = ImageRef.chooseFinal(refs);
+                ImageRef finalRef = ImageRef.chooseFinalSaved(refs);
                 if (finalRef == null) return;
                 // Do not retain the full original PNG on the home screen. Preview is bounded.
                 Bitmap bmp = null;
@@ -2372,7 +2376,8 @@ public class MainActivity extends Activity {
         outputList.removeAllViews();
 
         LinearLayout box = miniCard();
-        String title = "最终输出 · " + finalOutput.ref.filename;
+        String title = (finalOutput.ref.isTemporary() ? "临时预览（不在电脑 output） · " : "最终输出 · ")
+                + finalOutput.ref.filename;
         if (fullRefs.size() > 1) title += " · 共 " + fullRefs.size() + " 张";
         box.addView(text(title, 12, true));
         FrameLayout imageFrame = new FrameLayout(this);
@@ -2393,6 +2398,11 @@ public class MainActivity extends Activity {
         }
         box.addView(imageFrame, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(235)));
         if (finalOutput.bitmap == null) box.addView(text("预览暂不可用，仍可保存原始图片", 12, false));
+        box.addView(text("服务器图片位置：" + finalOutput.ref.serverRelativePath(), 11, false));
+        if (finalOutput.ref.isTemporary()) {
+            box.addView(text("本次仅找到 temp 临时预览：该文件不会出现在电脑 ComfyUI/output，"
+                    + "请在高级设置中检查是否启用了 SaveImage 等保存节点。", 12, false));
+        }
 
         Button save = button("保存这张");
         LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
