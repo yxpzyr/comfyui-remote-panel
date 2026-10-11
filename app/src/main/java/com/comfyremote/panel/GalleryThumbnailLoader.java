@@ -117,7 +117,7 @@ final class GalleryThumbnailLoader {
     }
 
     private static File folder(Context context) {
-        return new File(context.getCacheDir(), "gallery_previews_v27");
+        return new File(context.getCacheDir(), "gallery_previews_v273");
     }
 
     private static byte[] readDisk(Context context, String key) {

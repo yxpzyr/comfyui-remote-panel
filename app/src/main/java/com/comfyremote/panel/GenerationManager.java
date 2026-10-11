@@ -71,7 +71,23 @@ public final class GenerationManager {
             JobStore.markSubmitting(context, localId);
             notifyListeners(JobStore.find(context, localId));
             ComfyApiClient api = new ComfyApiClient(server);
-            String promptId = api.queuePrompt(new JSONObject(job.promptJson));
+            // The original Qwen Image 2.1 collection uses QW21-%date:yyyyMMddhhmmss%.
+            // Default SaveImage treats this as literal text on affected installations.
+            // Resolve only in the submission copy and append a stable per-job suffix,
+            // preventing separate prompts from referring to the same server filename.
+            JSONObject submittedPrompt = new JSONObject(job.promptJson);
+            java.util.Iterator<String> nodes = submittedPrompt.keys();
+            while (nodes.hasNext()) {
+                JSONObject node = submittedPrompt.optJSONObject(nodes.next());
+                if (node == null) continue;
+                JSONObject inputs = node.optJSONObject("inputs");
+                if (inputs == null) continue;
+                Object value = inputs.opt("filename_prefix");
+                if (!(value instanceof String)) continue;
+                String replacement = SubmissionFilenamePolicy.forTask((String) value, job.localId, job.submittedAt);
+                if (!replacement.equals(value)) inputs.put("filename_prefix", replacement);
+            }
+            String promptId = api.queuePrompt(submittedPrompt);
             JobRecord afterSubmit = JobStore.find(context, localId);
             if (afterSubmit == null || afterSubmit.isTerminal()) {
                 try { api.deleteQueuePrompt(promptId); } catch (Exception ignored) {}

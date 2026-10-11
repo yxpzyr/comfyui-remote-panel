@@ -73,6 +73,7 @@ public class GalleryActivity extends Activity {
     private int pageSize = 10;
     private volatile boolean fetching = false;
     private volatile boolean batchDownloading = false;
+    private int duplicatePaths = 0;
 
     private enum SortMode { TIME_DESC, TIME_ASC, NAME_ASC, NAME_DESC }
 
@@ -214,7 +215,7 @@ public class GalleryActivity extends Activity {
 
             // Show cached task metadata immediately; remote history may be slow on mobile data.
             if (!tasks.isEmpty()) {
-                List<GalleryTask> localSnapshot = new ArrayList<>(tasks.values());
+                List<GalleryTask> localSnapshot = collapseDuplicatePhysicalImages(new ArrayList<>(tasks.values()));
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     allTasks.clear();
@@ -252,11 +253,14 @@ public class GalleryActivity extends Activity {
                 warning = e.getMessage() == null ? "history 读取失败" : e.getMessage();
             }
 
-            List<GalleryTask> normalized = new ArrayList<>(tasks.values());
+            List<GalleryTask> beforeDedup = new ArrayList<>(tasks.values());
+            List<GalleryTask> normalized = collapseDuplicatePhysicalImages(beforeDedup);
+            int collapsed = beforeDedup.size() - normalized.size();
             String finalWarning = warning;
             runOnUiThread(() -> {
                 fetching = false;
                 if (isFinishing() || isDestroyed()) return;
+                duplicatePaths = collapsed;
                 allTasks.clear();
                 allTasks.addAll(normalized);
                 selectedTaskKeys.retainAll(taskKeys(allTasks));
@@ -281,6 +285,25 @@ public class GalleryActivity extends Activity {
             recentRemoteAt = System.currentTimeMillis();
         }
         return fresh;
+    }
+
+    /** Different prompts can refer to the SAME actual /view filename. Only one copy exists
+     * at that server path; showing duplicates as different creations is misleading.
+     * Local job history remains untouched for diagnostics/recovery.
+     */
+    private List<GalleryTask> collapseDuplicatePhysicalImages(List<GalleryTask> records) {
+        records.sort(Comparator.comparingLong((GalleryTask t) -> t.time).reversed());
+        LinkedHashMap<String, GalleryTask> byFile = new LinkedHashMap<>();
+        List<GalleryTask> noFile = new ArrayList<>();
+        for (GalleryTask task : records) {
+            ImageRef ref = task.finalRef();
+            if (ref == null) { noFile.add(task); continue; }
+            String key = ComfyApiClient.normalizeBase(task.server) + "|" + ref.key();
+            byFile.putIfAbsent(key, task);
+        }
+        List<GalleryTask> result = new ArrayList<>(byFile.values());
+        result.addAll(noFile);
+        return result;
     }
 
     private GalleryTask findByPrompt(Map<String, GalleryTask> tasks, String promptId) {
@@ -622,7 +645,9 @@ public class GalleryActivity extends Activity {
         }
         int count = pageCount(allTasks.size());
         String suffix = warning == null || warning.isEmpty() ? "" : " · history 暂不可用，已优先显示本机任务";
-        state.setText("共 " + allTasks.size() + " 个任务 · 第 " + page + " / " + count + " 页 · 当前页只加载最终图 · 手动刷新" + suffix);
+        String duplicateNote = duplicatePaths > 0 ?
+                " · " + duplicatePaths + " 条历史任务引用同一服务器文件，已折叠重复封面（不能恢复已覆盖原图）" : "";
+        state.setText("共 " + allTasks.size() + " 个可访问文件 · 第 " + page + " / " + count + " 页 · 当前页只加载最终图 · 手动刷新" + duplicateNote + suffix);
     }
 
     private void updateSelectionControls() {
