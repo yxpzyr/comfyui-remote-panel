@@ -76,6 +76,8 @@ public class MainActivity extends Activity {
     private boolean variantSwitching = false;
     private volatile boolean workflowImporting = false;
     private boolean refreshWorkflowsOnResume = false;
+    private int profileLoadGeneration;
+    private boolean profileLoading;
 
     private final List<ImageBinding> imageBindings = new ArrayList<>();
     private final List<FieldBinding> fieldBindings = new ArrayList<>();
@@ -124,11 +126,10 @@ public class MainActivity extends Activity {
         workflowFolders = WorkflowFolderStore.load(this);
         workflowFolderFilter = prefs.getString(PREF_FOLDER_FILTER, FOLDER_ALL);
         normalizeFolderFilter();
-        profiles = WorkflowStore.load(this);
-        resolveActiveProfile();
         buildUi();
         rebuildWorkflowStrip();
         rebuildDynamicControls();
+        loadProfilesAsync();
         GenerationManager.resumePending(this, currentServer());
         syncLatestCompletedOutput();
     }
@@ -144,19 +145,7 @@ public class MainActivity extends Activity {
         super.onResume();
         if (refreshWorkflowsOnResume) {
             refreshWorkflowsOnResume = false;
-            String previousProfileId = activeProfile == null ? "" : activeProfile.id;
-            workflowFolders = WorkflowFolderStore.load(this);
-            profiles = WorkflowStore.load(this);
-            resolveActiveProfile();
-            String resumedProfileId = activeProfile == null ? "" : activeProfile.id;
-            if (!previousProfileId.equals(resumedProfileId)) {
-                transientParameterValues.clear();
-                expandedParameterNodes.clear();
-                parameterObjectInfo = null;
-                parameterMetadataProfileId = "";
-            }
-            rebuildWorkflowStrip();
-            rebuildDynamicControls();
+            loadProfilesAsync();
         }
         GenerationManager.resumePending(this, currentServer());
         refreshQueueButton();
@@ -190,7 +179,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.7 · 性能优化 / 图库轻量加载 / 稳定性修复", 13, false);
+        TextView subtitle = text("V2.7.4 · 工作流库轻量加载 / 合集识别修复", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -383,17 +372,50 @@ public class MainActivity extends Activity {
         String activeId = WorkflowStore.getActiveId(this);
         activeProfile = WorkflowStore.find(profiles, activeId);
         if (activeProfile == null && !profiles.isEmpty()) {
-            activeProfile = profiles.get(0);
-            WorkflowStore.setActiveId(this, activeProfile.id);
+            activeProfile = WorkflowStore.find(profiles, profiles.get(0).id);
+            if (activeProfile != null) WorkflowStore.setActiveId(this, activeProfile.id);
         }
     }
 
-    private void refreshProfiles() {
-        workflowFolders = WorkflowFolderStore.load(this);
-        normalizeFolderFilter();
-        profiles = WorkflowStore.load(this);
-        resolveActiveProfile();
-        rebuildWorkflowStrip();
+    private void refreshProfiles() { loadProfilesAsync(); }
+
+    private void loadProfilesAsync() {
+        final int generation = ++profileLoadGeneration;
+        final String server = currentServer();
+        profileLoading = true;
+        refreshSubmitEnabled();
+        pool.submit(() -> {
+            try {
+                List<WorkflowFolder> nextFolders = WorkflowFolderStore.load(this);
+                List<WorkflowProfile> nextProfiles = WorkflowStore.load(this);
+                String selected = WorkflowStore.getActiveId(this);
+                boolean found = false;
+                for (WorkflowProfile p : nextProfiles) if (p.id.equals(selected)) found = true;
+                if (!found) selected = nextProfiles.isEmpty() ? "" : nextProfiles.get(0).id;
+                WorkflowProfile next = selected.isEmpty() ? null : WorkflowStore.open(this, selected, server);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed() || generation != profileLoadGeneration) return;
+                    String previous = activeProfile == null ? "" : activeProfile.id;
+                    String resumed = next == null ? "" : next.id;
+                    profileLoading = false;
+                    profiles = nextProfiles; workflowFolders = nextFolders; activeProfile = next;
+                    WorkflowStore.setActiveId(this, resumed);
+                    normalizeFolderFilter();
+                    if (!previous.equals(resumed)) {
+                        transientParameterValues.clear(); expandedParameterNodes.clear();
+                        parameterObjectInfo = null; parameterMetadataProfileId = "";
+                    }
+                    rebuildWorkflowStrip(); rebuildDynamicControls();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (isDestroyed() || generation != profileLoadGeneration) return;
+                    profileLoading = false;
+                    refreshSubmitEnabled();
+                    showError("工作流加载失败", e);
+                });
+            }
+        });
     }
 
     private void rebuildWorkflowStrip() {
@@ -425,7 +447,7 @@ public class MainActivity extends Activity {
             variantButton.setVisibility(isCollection ? View.VISIBLE : View.GONE);
             if (isCollection) {
                 variantButton.setText("合集功能：" + WorkflowVariants.label(activeProfile.variants, activeProfile.activeVariantId) + " ▼");
-                variantButton.setEnabled(!variantSwitching);
+                variantButton.setEnabled(!variantSwitching && !profileLoading);
             }
         }
         if (profiles.isEmpty()) workflowState.setText("当前：未选择");
@@ -699,7 +721,7 @@ public class MainActivity extends Activity {
     }
 
     private void chooseVariant() {
-        if (activeProfile == null || !activeProfile.isCollection() || variantSwitching) return;
+        if (activeProfile == null || !activeProfile.isCollection() || variantSwitching || profileLoading) return;
         final JSONArray variants = activeProfile.variants;
         final String[] labels = new String[variants.length()];
         int checked = 0;
@@ -771,19 +793,36 @@ public class MainActivity extends Activity {
     }
 
     private void switchWorkflowNow(String profileId) {
+        if (variantSwitching) return;
         captureSessionInputs();
         saveOutputSelection();
-        WorkflowProfile next = WorkflowStore.find(profiles, profileId);
-        if (next == null) return;
-        transientParameterValues.clear();
-        expandedParameterNodes.clear();
-        parameterObjectInfo = null;
-        parameterMetadataProfileId = "";
-        activeProfile = next;
-        WorkflowStore.setActiveId(this, next.id);
-        rebuildWorkflowStrip();
-        rebuildDynamicControls();
-        statusText.setText("状态：已切换到 " + next.name);
+        final int generation = ++profileLoadGeneration;
+        final String server = currentServer();
+        profileLoading = true;
+        refreshSubmitEnabled();
+        statusText.setText("状态：正在加载工作流…");
+        pool.submit(() -> {
+            try {
+                WorkflowProfile next = WorkflowStore.open(this, profileId, server);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed() || generation != profileLoadGeneration) return;
+                    profileLoading = false;
+                    transientParameterValues.clear(); expandedParameterNodes.clear();
+                    parameterObjectInfo = null; parameterMetadataProfileId = "";
+                    activeProfile = next;
+                    WorkflowStore.setActiveId(this, next.id);
+                    rebuildWorkflowStrip(); rebuildDynamicControls();
+                    statusText.setText("状态：已切换到 " + next.name);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (isDestroyed() || generation != profileLoadGeneration) return;
+                    profileLoading = false;
+                    refreshSubmitEnabled();
+                    showError("工作流加载失败，原数据已保留", e);
+                });
+            }
+        });
     }
 
     private void chooseWorkflow() {
@@ -914,8 +953,8 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> workflowState.setText("当前：正在导入 " + current + " / " + batch.size() + " · " + getDisplayName(uri)));
                 try {
                     WorkflowProfile profile = importWorkflowProfile(uri, destination, latest, detectedObjectInfo, serverForImport);
-                    imported.add(profile);
-                    latest.add(profile);
+                    imported.add(WorkflowStore.summary(profile));
+                    latest.add(WorkflowStore.summary(profile));
                 } catch (Exception e) {
                     failures.add(getDisplayName(uri) + "：" + safe(e.getMessage()));
                 }
@@ -1365,7 +1404,7 @@ public class MainActivity extends Activity {
 
     private void refreshSubmitEnabled() {
         if (submitButton == null) return;
-        boolean ready = activeProfile != null && !variantSwitching;
+        boolean ready = activeProfile != null && !variantSwitching && !profileLoading;
         if (ready) {
             for (ImageBinding b : imageBindings) {
                 if (b.replaceSwitch != null && b.replaceSwitch.isChecked()) {
@@ -2059,6 +2098,7 @@ public class MainActivity extends Activity {
     }
 
     private void submitGeneration() {
+        if (profileLoading) { toast("正在加载工作流，请稍候"); return; }
         if (variantSwitching) { toast("正在切换合集功能，请稍候"); return; }
         if (activeProfile == null) { toast("请先导入或选择工作流"); return; }
         saveAddress();
@@ -2129,6 +2169,7 @@ public class MainActivity extends Activity {
     }
 
     private void startBatchGeneration(ImageBinding target, List<Uri> uris) {
+        if (profileLoading || variantSwitching) { toast("正在切换工作流，请稍候"); return; }
         if (activeProfile == null || target == null || uris == null || uris.isEmpty()) return;
         target.replaceSwitch.setChecked(true);
         clearMaskForBinding(target, false);

@@ -22,6 +22,7 @@ import java.util.Set;
  * an arbitrary crop of the visual canvas and does not emulate arbitrary custom group logic.
  */
 public final class WorkflowVariants {
+    public static final int DETECTION_VERSION = 3;
     private WorkflowVariants() {}
 
     public static JSONArray detect(JSONObject original) {
@@ -58,8 +59,74 @@ public final class WorkflowVariants {
                 result.put(entry);
             } catch (JSONException ignored) {}
         }
-        // Do not split ordinary workflows that merely use groups for organization.
-        return result.length() >= 2 ? result : new JSONArray();
+        if (result.length() < 2) return new JSONArray();
+        // Canvas rectangles are labels, not independent execution boundaries. Merge
+        // output groups that share image/latent processing (including diagnostic saves).
+        // Shared loaders, models, LoRAs and scalar settings alone do not merge branches.
+        JSONArray links = ui.optJSONArray("links");
+        if (links == null) return new JSONArray();
+        try {
+            Map<String, JSONObject> all = new LinkedHashMap<>();
+            for (int i = 0; i < nodes.length(); i++) {
+                JSONObject node = nodes.optJSONObject(i);
+                if (node != null) all.put(String.valueOf(node.opt("id")), node);
+            }
+            Map<String, String> origins = linkOrigins(links);
+            List<Set<String>> paths = new ArrayList<>();
+            int[] parent = new int[result.length()];
+            for (int i = 0; i < result.length(); i++) {
+                parent[i] = i;
+                paths.add(ancestors(all, origins, outputIds(result.getJSONObject(i))));
+            }
+            for (int i = 0; i < paths.size(); i++) for (int j = 0; j < i; j++) {
+                boolean related = false;
+                for (String id : paths.get(i)) {
+                    if (paths.get(j).contains(id) && isImageProcessing(all.get(id))) {
+                        related = true; break;
+                    }
+                }
+                if (related) parent[root(parent, i)] = root(parent, j);
+            }
+            Map<Integer, JSONObject> merged = new LinkedHashMap<>();
+            for (int i = 0; i < result.length(); i++) {
+                JSONObject entry = result.getJSONObject(i);
+                int key = root(parent, i);
+                JSONObject target = merged.get(key);
+                if (target == null) {
+                    target = new JSONObject(entry.toString());
+                    target.put("group_indices", new JSONArray());
+                    target.put("outputs", new JSONArray());
+                    merged.put(key, target);
+                }
+                target.getJSONArray("group_indices").put(entry.getInt("group_index"));
+                JSONArray outputs = entry.getJSONArray("outputs");
+                for (int k = 0; k < outputs.length(); k++) target.getJSONArray("outputs").put(outputs.get(k));
+                if (entry.optBoolean("initially_enabled")) target.put("initially_enabled", true);
+            }
+            return merged.size() < 2 ? new JSONArray() : new JSONArray(merged.values());
+        } catch (Exception invalidGraph) {
+            return new JSONArray(); // Uncertain connectivity must never crop a workflow.
+        }
+    }
+
+    private static int root(int[] parent, int i) {
+        while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+        return i;
+    }
+
+    private static boolean isImageProcessing(JSONObject node) {
+        if (node == null) return false;
+        String type = node.optString("type", "").toLowerCase(java.util.Locale.ROOT);
+        if (type.contains("sampler")) return true;
+        JSONArray inputs = node.optJSONArray("inputs");
+        if (inputs != null) for (int i = 0; i < inputs.length(); i++) {
+            JSONObject input = inputs.optJSONObject(i);
+            if (input == null || input.isNull("link")) continue;
+            String t = input.optString("type", "").toUpperCase(java.util.Locale.ROOT);
+            if (t.equals("IMAGE") || t.equals("MASK") || t.equals("LATENT") ||
+                    t.equals("SEGS") || t.equals("VIDEO") || t.equals("AUDIO")) return true;
+        }
+        return false;
     }
 
     public static String initialVariantId(JSONArray variants) {
@@ -212,7 +279,7 @@ public final class WorkflowVariants {
             all.put(id, n);
             if (isFinalOutput(n.optString("type", ""))) {
                 n.put("mode", targetOutputIds.contains(id) ? 0 : 2);
-            } else if (inside(n, selectedRect.optJSONArray("bounding"))) {
+            } else if (insideVariant(n, v, groups, selectedRect)) {
                 // Activate the chosen feature only. Outside it, preserve e.g. optional
                 // bypassed LoRA, reference-image and preprocessing groups as authored.
                 if (n.optInt("mode", 0) == 4) n.put("mode", 0);
@@ -335,5 +402,15 @@ public final class WorkflowVariants {
         double x = pos.optDouble(0), y = pos.optDouble(1);
         return x >= rect.optDouble(0) && y >= rect.optDouble(1) &&
                 x <= rect.optDouble(0) + rect.optDouble(2) && y <= rect.optDouble(1) + rect.optDouble(3);
+    }
+
+    private static boolean insideVariant(JSONObject node, JSONObject variant, JSONArray groups, JSONObject fallback) {
+        JSONArray indices = variant.optJSONArray("group_indices");
+        if (indices == null) return inside(node, fallback.optJSONArray("bounding"));
+        for (int i = 0; i < indices.length(); i++) {
+            JSONObject group = groups.optJSONObject(indices.optInt(i, -1));
+            if (group != null && inside(node, group.optJSONArray("bounding"))) return true;
+        }
+        return false;
     }
 }

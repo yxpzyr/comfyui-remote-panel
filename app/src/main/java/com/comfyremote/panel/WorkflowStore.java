@@ -34,27 +34,7 @@ public final class WorkflowStore {
         synchronized (LOCK) {
             SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
             File dir = dir(context);
-            List<WorkflowProfile> out = new ArrayList<>();
-            File[] files = dir.listFiles((d, name) -> name.endsWith(".json"));
-            if (files != null) {
-                for (File f : files) {
-                    try {
-                        String raw = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
-                        WorkflowProfile profile = WorkflowProfile.fromJson(new JSONObject(raw));
-                        // Upgrade V2.5 imports without deleting saved inputs, masks or node parameters.
-                        if (!profile.isCollection() && profile.uiJson != null && !profile.uiJson.isEmpty()) {
-                            org.json.JSONArray variants = WorkflowVariants.detect(new JSONObject(profile.uiJson));
-                            if (variants.length() >= 2) {
-                                profile.initializeCollection(variants, WorkflowVariants.initialVariantId(variants));
-                                profile.setOutputChoices(WorkflowVariants.finalOutputs(
-                                        profile.promptObject(), variants, profile.activeVariantId, null), false, false);
-                                writeProfile(dir, profile);
-                            }
-                        }
-                        out.add(profile);
-                    } catch (Exception ignored) {}
-                }
-            }
+            List<WorkflowProfile> out = WorkflowIndex.load(dir);
 
             if (out.isEmpty() && !p.getBoolean(KEY_MIGRATED, false)) {
                 migrateLegacy(context, p, out);
@@ -71,7 +51,7 @@ public final class WorkflowStore {
             Set<String> keep = new HashSet<>();
             for (WorkflowProfile profile : profiles) {
                 keep.add(profile.id + ".json");
-                writeProfile(dir, profile);
+                writeProfile(dir, materializeMetadata(profile));
             }
             File[] existing = dir.listFiles((d, name) -> name.endsWith(".json"));
             if (existing != null) {
@@ -82,9 +62,11 @@ public final class WorkflowStore {
 
     public static WorkflowProfile upsert(Context context, WorkflowProfile profile) {
         synchronized (LOCK) {
-            profile.updatedAt = System.currentTimeMillis();
-            writeProfile(dir(context), profile);
-            return profile;
+            WorkflowProfile full = materializeMetadata(profile);
+            full.updatedAt = System.currentTimeMillis();
+            writeProfile(dir(context), full);
+            profile.updatedAt = full.updatedAt;
+            return full;
         }
     }
 
@@ -109,8 +91,20 @@ public final class WorkflowStore {
 
     public static WorkflowProfile find(List<WorkflowProfile> profiles, String id) {
         if (profiles == null) return null;
-        for (WorkflowProfile p : profiles) if (p.id.equals(id)) return p;
+        for (WorkflowProfile p : profiles) if (p.id.equals(id)) {
+            if (!p.metadataOnly) return p;
+            try { return readProfile(p.backingFile); }
+            catch (Exception e) { return null; }
+        }
         return null;
+    }
+
+    public static WorkflowProfile summary(WorkflowProfile p) {
+        WorkflowProfile out = new WorkflowProfile(p.id, p.name, "{}", null, p.favorite, p.createdAt, p.updatedAt, null);
+        out.folderId = p.folderId;
+        out.metadataOnly = true;
+        out.backingFile = p.backingFile;
+        return out;
     }
 
     public static String uniqueName(List<WorkflowProfile> profiles, String desired) {
@@ -160,18 +154,109 @@ public final class WorkflowStore {
     }
 
     private static void writeProfile(File dir, WorkflowProfile profile) {
+        if (profile.metadataOnly) throw new IllegalStateException("Cannot save an unloaded workflow");
         File target = new File(dir, profile.id + ".json");
-        File temp = new File(dir, profile.id + ".json.tmp");
         try {
-            Files.write(temp.toPath(), profile.toJson().toString().getBytes(StandardCharsets.UTF_8));
-            try {
-                Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (Exception atomicUnsupported) {
-                Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            }
-        } catch (Exception ignored) {
-            temp.delete();
+            atomicWrite(target, profile.toJson().toString());
+            profile.backingFile = target;
+            WorkflowIndex.updated(target, profile);
+        } catch (Exception failure) {
+            throw new IllegalStateException("工作流保存失败：" + profile.name, failure);
         }
+    }
+
+    static void atomicWrite(File target, String raw) throws Exception {
+        File temp = new File(target.getParentFile(), target.getName() + ".tmp");
+        try {
+            Files.write(temp.toPath(), raw.getBytes(StandardCharsets.UTF_8));
+            try { Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); }
+            catch (Exception unsupported) { Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING); }
+        } finally { temp.delete(); }
+    }
+
+    private static WorkflowProfile readProfile(File file) throws Exception {
+        return WorkflowProfile.fromJson(new JSONObject(new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8)));
+    }
+
+    private static WorkflowProfile materializeMetadata(WorkflowProfile summary) {
+        if (!summary.metadataOnly) return summary;
+        try {
+            WorkflowProfile full = readProfile(summary.backingFile);
+            full.name = summary.name; full.favorite = summary.favorite; full.folderId = summary.folderId;
+            return full;
+        } catch (Exception e) { throw new IllegalStateException("工作流读取失败，原文件未改动：" + summary.name, e); }
+    }
+
+    /** Called on a worker only. Old misclassified collections are repaired only
+     * when selected, after a complete compile succeeds and a recovery copy exists. */
+    public static WorkflowProfile open(Context context, String id, String server) throws Exception {
+        WorkflowProfile p;
+        File file = new File(dir(context), id + ".json");
+        long sourceModified, sourceSize;
+        synchronized (LOCK) {
+            p = readProfile(file); sourceModified = file.lastModified(); sourceSize = file.length();
+        }
+        if (p.collectionDetectionVersion == WorkflowVariants.DETECTION_VERSION || p.uiJson == null) return p;
+        org.json.JSONArray detected = WorkflowVariants.detect(p.uiObjectOrNull());
+        boolean wasCollection = p.isCollection();
+        if (wasCollection && detected.length() == 0) {
+            JSONObject fullPrompt = WorkflowUiConverter.toApiPrompt(p.uiObjectOrNull(), server);
+            // Keep the active view's choices on conflicts; recover missing keyed
+            // inputs/masks/parameters from the other previously split views.
+            java.util.Iterator<String> states = p.variantStates.keys();
+            while (states.hasNext()) {
+                JSONObject state = p.variantStates.optJSONObject(states.next());
+                if (state == null) continue;
+                mergeMissing(p.overrides, state.optJSONObject("overrides"));
+                mergeMissing(p.inputUris, state.optJSONObject("input_uris"));
+                mergeMissing(p.inputReplace, state.optJSONObject("input_replace"));
+                mergeMissing(p.inputMaskPaths, state.optJSONObject("input_mask_paths"));
+            }
+            p.promptJson = fullPrompt.toString();
+            p.variants = new org.json.JSONArray(); p.activeVariantId = "";
+            // Retain archived variant states as recovery data; isCollection is false.
+            p.setOutputChoices(WorkflowUtils.findOutputNodes(fullPrompt), false, false);
+        } else if (detected.length() >= 2) {
+            String selected = p.activeVariantId;
+            JSONObject chosen = null;
+            for (int i = 0; i < detected.length(); i++) {
+                JSONObject entry = detected.getJSONObject(i);
+                if (entry.optString("id").equals(selected)) chosen = entry;
+            }
+            if (chosen == null) selected = WorkflowVariants.initialVariantId(detected);
+            JSONObject previous = null;
+            for (int i = 0; i < p.variants.length(); i++) {
+                JSONObject entry = p.variants.optJSONObject(i);
+                if (entry != null && selected.equals(entry.optString("id"))) previous = entry;
+            }
+            boolean sameOutputs = chosen != null && previous != null &&
+                    chosen.optJSONArray("outputs").toString().equals(previous.optJSONArray("outputs").toString());
+            if (!wasCollection || !sameOutputs) {
+                Set<String> images = new HashSet<>();
+                java.util.Iterator<String> keys = p.enabledAuxImages.keys();
+                while (keys.hasNext()) { String key = keys.next(); if (p.isAuxImageEnabled(key)) images.add(key); }
+                JSONObject compiled = WorkflowVariants.compile(p.uiObjectOrNull(), detected, selected, server, images, p.auxLoRAIds());
+                p.promptJson = compiled.toString();
+                p.setOutputChoices(WorkflowVariants.finalOutputs(compiled, detected, selected, null), false, true);
+            }
+            p.variants = detected; p.activeVariantId = selected;
+        }
+        p.collectionDetectionVersion = WorkflowVariants.DETECTION_VERSION;
+        synchronized (LOCK) {
+            if (file.lastModified() != sourceModified || file.length() != sourceSize)
+                throw new Exception("工作流刚被更新，请重新选择；原数据已保留。");
+            File backup = new File(new File(dir(context), "backup_before_v274"), file.getName());
+            backup.getParentFile().mkdirs();
+            if (!backup.exists()) Files.copy(file.toPath(), backup.toPath());
+            writeProfile(dir(context), p);
+        }
+        return p;
+    }
+
+    private static void mergeMissing(JSONObject target, JSONObject source) throws Exception {
+        if (source == null) return;
+        java.util.Iterator<String> keys = source.keys();
+        while (keys.hasNext()) { String key = keys.next(); if (!target.has(key)) target.put(key, source.get(key)); }
     }
 
     private static boolean containsName(List<WorkflowProfile> profiles, String name, String folderId, String excludeProfileId) {

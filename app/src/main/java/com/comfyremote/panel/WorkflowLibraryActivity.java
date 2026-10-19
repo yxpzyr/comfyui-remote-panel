@@ -16,7 +16,11 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
+import android.widget.ListView;
+import android.widget.BaseAdapter;
+import android.view.ViewGroup;
+import android.os.Handler;
+import android.os.Looper;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -41,7 +45,12 @@ public class WorkflowLibraryActivity extends Activity {
     private static final String FAVORITES = "__favorites__";
 
     private final ExecutorService pool = Executors.newSingleThreadExecutor();
-    private LinearLayout list;
+    private ListView list;
+    private RowAdapter rowAdapter;
+    private final List<LibraryRow> rows = new ArrayList<>();
+    private final Handler searchHandler = new Handler(Looper.getMainLooper());
+    private int reloadGeneration;
+    private boolean loading;
     private TextView title, subtitle, status;
     private Button backButton, newFolderButton, importFilesButton, importFolderButton, folderMenuButton, searchButton;
 
@@ -58,7 +67,6 @@ public class WorkflowLibraryActivity extends Activity {
         super.onCreate(savedInstanceState);
         ThemeManager.applyWindow(this);
         buildUi();
-        reload();
         render();
 
         String auto = getIntent().getStringExtra(EXTRA_AUTO_ACTION);
@@ -68,6 +76,8 @@ public class WorkflowLibraryActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        reloadGeneration++;
+        searchHandler.removeCallbacksAndMessages(null);
         pool.shutdownNow();
         super.onDestroy();
     }
@@ -133,13 +143,13 @@ public class WorkflowLibraryActivity extends Activity {
         status.setPadding(0, dp(8), 0, dp(8));
         root.addView(status);
 
-        ScrollView scroll = new ScrollView(this);
-        list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
+        list = new ListView(this);
+        list.setDividerHeight(dp(10));
         list.setPadding(0, 0, 0, dp(82));
         list.setClipToPadding(false);
-        scroll.addView(list);
-        root.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        rowAdapter = new RowAdapter(rows);
+        list.setAdapter(rowAdapter);
+        root.addView(list, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         searchButton = button("🔍");
         searchButton.setTextSize(20);
@@ -157,7 +167,7 @@ public class WorkflowLibraryActivity extends Activity {
 
 
     private void showWorkflowSearch() {
-        reload();
+        if (loading) return;
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(18), dp(8), dp(18), dp(8));
@@ -172,11 +182,11 @@ public class WorkflowLibraryActivity extends Activity {
         meta.setPadding(0, dp(6), 0, dp(6));
         body.addView(meta);
 
-        ScrollView scroll = new ScrollView(this);
-        LinearLayout results = new LinearLayout(this);
-        results.setOrientation(LinearLayout.VERTICAL);
-        scroll.addView(results);
-        body.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(420)));
+        ListView results = new ListView(this);
+        results.setDividerHeight(dp(8));
+        RowAdapter searchAdapter = new RowAdapter(new ArrayList<>());
+        results.setAdapter(searchAdapter);
+        body.addView(results, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(420)));
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("搜索工作流")
@@ -184,77 +194,78 @@ public class WorkflowLibraryActivity extends Activity {
                 .setNegativeButton("关闭", null)
                 .create();
 
+        final Runnable[] pending = {null};
+        dialog.setOnDismissListener(d -> {
+            if (pending[0] != null) searchHandler.removeCallbacks(pending[0]);
+        });
         query.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
-                renderSearchResults(results, meta, String.valueOf(s), dialog);
+                if (pending[0] != null) searchHandler.removeCallbacks(pending[0]);
+                String value = String.valueOf(s);
+                pending[0] = () -> renderSearchResults(searchAdapter, meta, value, dialog);
+                searchHandler.postDelayed(pending[0], 180);
             }
             @Override public void afterTextChanged(Editable s) {}
         });
         dialog.setOnShowListener(x -> {
             query.requestFocus();
-            renderSearchResults(results, meta, "", dialog);
+            renderSearchResults(searchAdapter, meta, "", dialog);
         });
         dialog.show();
     }
 
-    private void renderSearchResults(LinearLayout results, TextView meta, String rawQuery, AlertDialog dialog) {
-        results.removeAllViews();
+    private void renderSearchResults(RowAdapter adapter, TextView meta, String rawQuery, AlertDialog dialog) {
+        adapter.items.clear();
         String q = rawQuery == null ? "" : rawQuery.trim().toLowerCase(Locale.ROOT);
         if (q.isEmpty()) {
-            TextView hint = text("可按工作流名称或所在文件夹搜索。搜索不会移动或修改任何工作流。", 13, false);
-            hint.setTextColor(ThemeManager.muted(this));
-            hint.setPadding(dp(4), dp(16), dp(4), dp(16));
-            results.addView(hint);
-            meta.setText("共 " + profiles.size() + " 个工作流");
-            return;
+            meta.setText("共 " + profiles.size() + " 个工作流，输入名称或文件夹关键词");
+        } else {
+            for (WorkflowProfile p : profiles) {
+                String folder = folderNameForProfile(p);
+                if ((safe(p.name) + " " + folder).toLowerCase(Locale.ROOT).contains(q)) {
+                    adapter.items.add(new LibraryRow((p.favorite ? "★ " : "") + p.name,
+                            "📁 " + folder, () -> { dialog.dismiss(); selectWorkflow(p); }, null));
+                }
+            }
+            meta.setText("找到 " + adapter.items.size() + " 个结果");
         }
-
-        List<WorkflowProfile> matches = new ArrayList<>();
-        for (WorkflowProfile p : profiles) {
-            String folder = folderNameForProfile(p);
-            String haystack = (safe(p.name) + " " + folder).toLowerCase(Locale.ROOT);
-            if (haystack.contains(q)) matches.add(p);
-        }
-        WorkflowStore.sort(matches);
-        meta.setText("找到 " + matches.size() + " 个结果");
-        if (matches.isEmpty()) {
-            TextView empty = text("没有匹配的工作流", 14, false);
-            empty.setTextColor(ThemeManager.muted(this));
-            empty.setPadding(dp(4), dp(18), dp(4), dp(18));
-            results.addView(empty);
-            return;
-        }
-
-        int show = Math.min(100, matches.size());
-        for (int i = 0; i < show; i++) {
-            WorkflowProfile p = matches.get(i);
-            LinearLayout row = folderCard();
-            row.addView(text((p.favorite ? "★ " : "") + p.name, 15, true));
-            TextView sub = text("📁 " + folderNameForProfile(p), 11, false);
-            sub.setTextColor(ThemeManager.muted(this));
-            row.addView(sub);
-            row.setOnClickListener(v -> {
-                if (dialog != null) dialog.dismiss();
-                selectWorkflow(p);
-            });
-            results.addView(row, cardLp());
-        }
-        if (matches.size() > show) {
-            TextView more = text("结果较多，仅显示前 " + show + " 个；继续输入关键词可缩小范围。", 11, false);
-            more.setTextColor(ThemeManager.muted(this));
-            results.addView(more);
-        }
+        adapter.notifyDataSetChanged();
     }
 
     private void reload() {
-        folders = WorkflowFolderStore.load(this);
-        profiles = WorkflowStore.load(this);
+        loading = true;
+        searchButton.setEnabled(false);
+        final int generation = ++reloadGeneration;
+        status.setText("正在读取工作流列表…");
+        pool.submit(() -> {
+            try {
+                List<WorkflowFolder> nextFolders = WorkflowFolderStore.load(this);
+                List<WorkflowProfile> nextProfiles = WorkflowStore.load(this);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed() || generation != reloadGeneration) return;
+                    folders = nextFolders;
+                    profiles = nextProfiles;
+                    loading = false;
+                    searchButton.setEnabled(true);
+                    renderLoaded();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed() || generation != reloadGeneration) return;
+                    loading = false;
+                    searchButton.setEnabled(true);
+                    status.setText("列表读取失败，可返回后重试");
+                    showError("工作流列表读取失败", e);
+                });
+            }
+        });
     }
 
-    private void render() {
-        reload();
-        list.removeAllViews();
+    private void render() { reload(); }
+
+    private void renderLoaded() {
+        rows.clear();
         boolean atRoot = currentFolderId == null;
         backButton.setText(atRoot ? "关闭" : "← 返回");
         newFolderButton.setVisibility(atRoot ? View.VISIBLE : View.GONE);
@@ -269,10 +280,7 @@ public class WorkflowLibraryActivity extends Activity {
             addVirtualFolder("未分类", "", countInFolder(""), "V2.3 / 旧版工作流默认在这里");
             for (WorkflowFolder folder : folders) addRealFolder(folder);
             if (folders.isEmpty()) {
-                TextView hint = text("还没有自定义文件夹。点上方“＋ 新建文件夹”，例如建立：动漫转真人 / 换脸 / 放大修复 / 测试。", 13, false);
-                hint.setTextColor(ThemeManager.muted(this));
-                hint.setPadding(dp(8), dp(14), dp(8), dp(14));
-                list.addView(hint);
+                rows.add(new LibraryRow("还没有自定义文件夹", "点上方“＋ 新建文件夹”开始整理工作流。", null, null));
             }
         } else {
             String name = currentFolderName();
@@ -284,60 +292,73 @@ public class WorkflowLibraryActivity extends Activity {
             List<WorkflowProfile> visible = profilesInCurrentFolder();
             WorkflowStore.sort(visible);
             if (visible.isEmpty()) {
-                TextView empty = text("这个文件夹还是空的。", 14, false);
-                empty.setTextColor(ThemeManager.muted(this));
-                empty.setPadding(dp(8), dp(22), dp(8), dp(22));
-                list.addView(empty);
+                rows.add(new LibraryRow("这个文件夹还是空的", "可导入工作流文件。", null, null));
             } else {
                 for (WorkflowProfile p : visible) addWorkflowRow(p);
             }
         }
         status.setText(importing ? "正在导入，请不要关闭页面…" : "");
+        rowAdapter.notifyDataSetChanged();
+        list.setSelection(0);
     }
 
     private void addVirtualFolder(String name, String id, int count, String description) {
-        LinearLayout row = folderCard();
-        TextView t = text("📁 " + name + "   " + count + " 个", 16, true);
-        TextView sub = text(description, 11, false);
-        sub.setTextColor(ThemeManager.muted(this));
-        row.addView(t);
-        row.addView(sub);
-        row.setOnClickListener(v -> { currentFolderId = id; render(); });
-        list.addView(row, cardLp());
+        rows.add(new LibraryRow("📁 " + name + "   " + count + " 个", description,
+                () -> { currentFolderId = id; renderLoaded(); }, null));
     }
 
     private void addRealFolder(WorkflowFolder folder) {
-        LinearLayout row = folderCard();
-        LinearLayout line = new LinearLayout(this);
-        line.setOrientation(LinearLayout.HORIZONTAL);
-        line.setGravity(Gravity.CENTER_VERTICAL);
-        TextView t = text("📁 " + folder.name + "   " + countInFolder(folder.id) + " 个", 16, true);
-        Button more = button("⋮");
-        line.addView(t, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        line.addView(more, new LinearLayout.LayoutParams(dp(56), dp(42)));
-        row.addView(line);
-        row.setOnClickListener(v -> { currentFolderId = folder.id; render(); });
-        more.setOnClickListener(v -> manageFolder(folder));
-        list.addView(row, cardLp());
+        rows.add(new LibraryRow("📁 " + folder.name + "   " + countInFolder(folder.id) + " 个", "点击打开文件夹",
+                () -> { currentFolderId = folder.id; renderLoaded(); }, () -> manageFolder(folder)));
     }
 
-    private void addWorkflowRow(WorkflowProfile profile) {
-        LinearLayout row = folderCard();
-        LinearLayout line = new LinearLayout(this);
-        line.setOrientation(LinearLayout.HORIZONTAL);
-        line.setGravity(Gravity.CENTER_VERTICAL);
-        String prefix = profile.favorite ? "★ " : "";
-        TextView name = text(prefix + profile.name, 15, true);
-        Button more = button("⋮");
-        line.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        line.addView(more, new LinearLayout.LayoutParams(dp(56), dp(42)));
-        row.addView(line);
-        TextView meta = text("点此使用 · " + folderNameForProfile(profile), 11, false);
-        meta.setTextColor(ThemeManager.muted(this));
-        row.addView(meta);
-        row.setOnClickListener(v -> selectWorkflow(profile));
-        more.setOnClickListener(v -> manageWorkflow(profile));
-        list.addView(row, cardLp());
+    private void addWorkflowRow(WorkflowProfile p) {
+        rows.add(new LibraryRow((p.favorite ? "★ " : "") + p.name, "点此使用 · " + folderNameForProfile(p),
+                () -> selectWorkflow(p), () -> manageWorkflow(p)));
+    }
+
+    private static final class LibraryRow {
+        final String title, detail;
+        final Runnable open, more;
+        LibraryRow(String title, String detail, Runnable open, Runnable more) {
+            this.title = title; this.detail = detail; this.open = open; this.more = more;
+        }
+    }
+
+    private final class RowAdapter extends BaseAdapter {
+        final List<LibraryRow> items;
+        RowAdapter(List<LibraryRow> items) { this.items = items; }
+        @Override public int getCount() { return items.size(); }
+        @Override public LibraryRow getItem(int position) { return items.get(position); }
+        @Override public long getItemId(int position) { return position; }
+        @Override public View getView(int position, View recycled, ViewGroup parent) {
+            LinearLayout card;
+            TextView name, detail;
+            Button more;
+            if (recycled == null) {
+                card = folderCard();
+                LinearLayout line = new LinearLayout(WorkflowLibraryActivity.this);
+                line.setGravity(Gravity.CENTER_VERTICAL);
+                name = text("", 15, true);
+                more = button("⋮");
+                line.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                line.addView(more, new LinearLayout.LayoutParams(dp(56), dp(42)));
+                detail = text("", 11, false);
+                detail.setTextColor(ThemeManager.muted(WorkflowLibraryActivity.this));
+                card.addView(line); card.addView(detail);
+                card.setTag(new View[]{name, detail, more});
+            } else {
+                card = (LinearLayout) recycled;
+                View[] views = (View[]) card.getTag();
+                name = (TextView) views[0]; detail = (TextView) views[1]; more = (Button) views[2];
+            }
+            LibraryRow item = getItem(position);
+            name.setText(item.title); detail.setText(item.detail);
+            more.setVisibility(item.more == null ? View.GONE : View.VISIBLE);
+            more.setOnClickListener(v -> { if (item.more != null) item.more.run(); });
+            card.setOnClickListener(v -> { if (item.open != null) item.open.run(); });
+            return card;
+        }
     }
 
     private void selectWorkflow(WorkflowProfile p) {
@@ -478,7 +499,7 @@ public class WorkflowLibraryActivity extends Activity {
             runOnUiThread(() -> status.setText("正在导入 " + done + " / " + uris.size() + " · " + WorkflowImporter.displayName(this, uri)));
             try {
                 WorkflowProfile profile = WorkflowImporter.importProfile(this, uri, folderId, latest, objectInfo, server);
-                latest.add(profile);
+                latest.add(WorkflowStore.summary(profile));
                 success++;
             } catch (Exception e) {
                 failures.add(WorkflowImporter.displayName(this, uri) + "：" + safe(e.getMessage()));
@@ -489,7 +510,6 @@ public class WorkflowLibraryActivity extends Activity {
 
     private void finishImport(ImportResult result, String successPrefix) {
         importing = false;
-        reload();
         render();
         String prefix = successPrefix == null ? "导入完成" : successPrefix;
         status.setText(prefix + " · 成功 " + result.success + " · 失败 " + result.failures.size());

@@ -1,3 +1,7 @@
+# Current work: V2.7.4
+
+Based on V2.7.3 commit 0bfb60a1401238622393e5ce0d372d8016b1c2f2. Lightweight workflow index, recycled library rows and dependency-aware collection detection. Full Java compile and 27 production-class regressions passed. See V2.7.4_CHANGELOG.md for evidence and remaining device checks.
+
 ## V2.7.3 (2026-10-11)
 
 修复 Qwen Image 2.1 SaveImage 的 `%date:...%` 字面占位符产生同名输出、图库重复引用和 Android 相册同名文件下载失败。新增提交时唯一命名、相册重名改名重试、图库同服务器路径合并；保留 V2.7.2 签名与既有功能。详见 V2.7.3_CHANGELOG.md。

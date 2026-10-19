@@ -38,6 +38,12 @@ public final class WorkflowProfile {
     public JSONArray variants = new JSONArray();
     public String activeVariantId = "";
     public JSONObject variantStates = new JSONObject();
+    public int collectionDetectionVersion = WorkflowVariants.DETECTION_VERSION;
+    // List entries intentionally contain no workflow body. Only WorkflowStore may
+    // turn one into a full profile; metadata updates must merge with the saved file.
+    boolean metadataOnly;
+    java.io.File backingFile;
+    private JSONObject persistedFields;
 
 
     public WorkflowProfile(String id, String name, String promptJson, String uiJson,
@@ -260,8 +266,11 @@ public final class WorkflowProfile {
 
     public JSONObject toJson() {
         rememberActiveVariant();
-        JSONObject o = new JSONObject();
+        JSONObject o;
+        try { o = persistedFields == null ? new JSONObject() : new JSONObject(persistedFields.toString()); }
+        catch (Exception e) { o = new JSONObject(); }
         try {
+            o.put("collection_detection_version", collectionDetectionVersion);
             o.put("id", id);
             o.put("name", name);
             o.put("prompt_json", promptJson);
@@ -299,6 +308,8 @@ public final class WorkflowProfile {
                 overrides == null ? new JSONObject() : overrides
         );
         p.folderId = o.optString("folder_id", "");
+        p.persistedFields = o;
+        p.collectionDetectionVersion = o.optInt("collection_detection_version", 0);
         p.variants = o.optJSONArray("variants") == null ? new JSONArray() : o.optJSONArray("variants");
         p.activeVariantId = o.optString("active_variant_id", "");
         p.variantStates = o.optJSONObject("variant_states") == null ? new JSONObject() : o.optJSONObject("variant_states");
