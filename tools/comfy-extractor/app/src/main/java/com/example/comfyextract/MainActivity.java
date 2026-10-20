@@ -2,10 +2,12 @@ package com.example.comfyextract;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.os.Build;
 import android.content.Intent;
 import android.net.Uri;
 import android.database.Cursor;
 import android.provider.OpenableColumns;
+import android.provider.MediaStore;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.view.View;
@@ -20,7 +22,7 @@ import java.util.Arrays;
 import java.util.zip.InflaterInputStream;
 
 public class MainActivity extends Activity {
-    private static final int PICK = 11, SAVE = 12;
+    private static final int PICK_GALLERY = 11, PICK_FILE = 12, SAVE = 13;
     private TextView status;
     private volatile byte[] exportBytes;
     private String suggestedName = "ComfyUI工作流.json";
@@ -46,10 +48,16 @@ public class MainActivity extends Activity {
         root.addView(subtitle);
 
         Button pick = new Button(this);
-        pick.setText("选择 PNG 图片");
+        pick.setText("从手机相册选择 PNG");
         pick.setAllCaps(false);
         pick.setTextSize(17);
         root.addView(pick);
+
+        Button pickFile = new Button(this);
+        pickFile.setText("从文件管理器选择 PNG");
+        pickFile.setAllCaps(false);
+        pickFile.setTextSize(16);
+        root.addView(pickFile);
 
         status = new TextView(this);
         status.setText("等待选择图片…");
@@ -69,12 +77,41 @@ public class MainActivity extends Activity {
         scroller.addView(root);
         setContentView(scroller);
 
-        pick.setOnClickListener(v -> {
-            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType("image/png");
-            startActivityForResult(intent, PICK);
-        });
+        pick.setOnClickListener(v -> openGallery());
+        pickFile.setOnClickListener(v -> openFiles());
+    }
+
+    private void openGallery() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+: system Photo Picker. Selected URI has temporary read access.
+            try {
+                Intent picker = new Intent(MediaStore.ACTION_PICK_IMAGES);
+                picker.setType("image/png");
+                startActivityForResult(picker, PICK_GALLERY);
+                return;
+            } catch (android.content.ActivityNotFoundException ignored) {
+                // Fall back for OEM devices without a working Photo Picker.
+            }
+        }
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        intent.setType("image/png");
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        try {
+            startActivityForResult(Intent.createChooser(intent, "从相册中选择 ComfyUI PNG"), PICK_GALLERY);
+        } catch (android.content.ActivityNotFoundException e) {
+            status.setText("手机未提供可用的相册选择器，请使用下方的文件管理器入口。");
+        }
+    }
+
+    private void openFiles() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/png");
+        try {
+            startActivityForResult(intent, PICK_FILE);
+        } catch (android.content.ActivityNotFoundException e) {
+            status.setText("手机未提供文件选择器，请改用相册选择。");
+        }
     }
 
     private int dp(int n) {
@@ -96,7 +133,7 @@ public class MainActivity extends Activity {
         super.onActivityResult(req, result, data);
         if(result != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
-        if(req == PICK) {
+        if(req == PICK_GALLERY || req == PICK_FILE) {
             exportBytes = null;
             suggestedName = deriveName(uri);
             status.setText("正在读取 PNG 元数据…");
