@@ -1,3 +1,13 @@
+## V2.8.0（视频图库开发分支）
+
+扩展图库与任务产物为图片+视频：自动识别 ComfyUI history 的 `images`、`videos` 以及嵌套 `filename` 对象（适配原生 SaveVideo，CreateVideo+SaveVideo，常见第三方视频输出），首页和图库可点击播放视频。支持 Android 原生视频播放（保留音轨、暂停/拖动）、视频第一帧缩略图、批量保存图片与视频。
+
+- 图片原图继续保存在 `Pictures/ComfyRemote`。
+- 视频通过 HTTP 流式保存到 `Movies/ComfyRemote`，不将视频整体读入 Java 堆。
+- 识别 MP4、WebM、MKV、MOV、M4V、AVI；播放是否成功仍取决于 Android 设备的原生编解码器，下载保留原始视频。
+- 保留原有分页图库、旧任务记录、V2.7.3 去重/唯一文件名与永久签名的构建配置。
+- **本分支需经过 Android GitHub Actions 构建及真机回归测试，再视为正式稳定版。**
+
 ## V2.7.3 (2026-10-11)
 
 修复 Qwen Image 2.1 SaveImage 的 `%date:...%` 字面占位符产生同名输出、图库重复引用和 Android 相册同名文件下载失败。新增提交时唯一命名、相册重名改名重试、图库同服务器路径合并；保留 V2.7.2 签名与既有功能。详见 V2.7.3_CHANGELOG.md。
