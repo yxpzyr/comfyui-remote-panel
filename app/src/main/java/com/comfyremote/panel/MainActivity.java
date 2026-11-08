@@ -2507,19 +2507,7 @@ public class MainActivity extends Activity {
     }
 
     private JSONObject getObjectInfoCached(String server) throws Exception {
-        String normalized = ComfyApiClient.normalizeBase(server);
-        synchronized (objectInfoLock) {
-            long now = System.currentTimeMillis();
-            if (cachedObjectInfo != null && normalized.equals(cachedObjectInfoServer) &&
-                    now - cachedObjectInfoAt < 5 * 60 * 1000L) {
-                return cachedObjectInfo;
-            }
-            JSONObject fetched = new ComfyApiClient(server).getObjectInfo();
-            cachedObjectInfo = fetched;
-            cachedObjectInfoServer = normalized;
-            cachedObjectInfoAt = now;
-            return fetched;
-        }
+        return WorkflowUiConverter.getObjectInfoCached(server);
     }
 
     private void testConnection() {
