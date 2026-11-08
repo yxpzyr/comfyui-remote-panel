@@ -601,6 +601,7 @@ public class ComfyApiClient {
         Exception last = null;
         for (String path : new String[]{"/view" + query, "/api/view" + query}) {
             HttpURLConnection con = null;
+            boolean responseStarted = false;
             try {
                 con = (HttpURLConnection) new URL(base + path).openConnection();
                 con.setRequestMethod("GET");
@@ -612,14 +613,17 @@ public class ComfyApiClient {
                     last = new Exception("视频下载 HTTP " + code);
                     continue;
                 }
+                responseStarted = true;
                 String mime = MediaSaver.guessMime(ref.filename);
+                long expectedBytes = con.getContentLengthLong();
                 try (InputStream in = con.getInputStream()) {
-                    MediaSaver.saveVideo(context, in, ref.filename, mime);
+                    MediaSaver.saveVideo(context, in, ref.filename, mime, expectedBytes);
                 }
                 return;
             } catch (Exception e) {
-                // A local storage failure must not be treated as a missing remote endpoint.
-                if (con != null && con.getResponseCode() == 200) throw e;
+                // If the server started sending the video, a network/storage/length error
+                // must surface to the user, not be mistaken for a 404 on a fallback URL.
+                if (responseStarted) throw e;
                 last = e;
             } finally {
                 if (con != null) con.disconnect();
