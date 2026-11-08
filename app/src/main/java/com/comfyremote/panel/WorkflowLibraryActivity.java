@@ -58,7 +58,6 @@ public class WorkflowLibraryActivity extends Activity {
         super.onCreate(savedInstanceState);
         ThemeManager.applyWindow(this);
         buildUi();
-        reload();
         render();
 
         String auto = getIntent().getStringExtra(EXTRA_AUTO_ACTION);
@@ -249,7 +248,7 @@ public class WorkflowLibraryActivity extends Activity {
 
     private void reload() {
         folders = WorkflowFolderStore.load(this);
-        profiles = WorkflowStore.load(this);
+        profiles = WorkflowStore.loadSummaries(this);
     }
 
     private void render() {
@@ -489,7 +488,6 @@ public class WorkflowLibraryActivity extends Activity {
 
     private void finishImport(ImportResult result, String successPrefix) {
         importing = false;
-        reload();
         render();
         String prefix = successPrefix == null ? "导入完成" : successPrefix;
         status.setText(prefix + " · 成功 " + result.success + " · 失败 " + result.failures.size());
@@ -565,7 +563,7 @@ public class WorkflowLibraryActivity extends Activity {
                 .setMessage("不会删除工作流。里面的 " + count + " 个工作流会自动移动到“未分类”。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("删除", (d, w) -> {
-                    List<WorkflowProfile> latest = WorkflowStore.load(this);
+                    List<WorkflowProfile> latest = WorkflowStore.loadSummaries(this);
                     for (WorkflowProfile p : latest) {
                         if (!folder.id.equals(safe(p.folderId))) continue;
                         p.folderId = "";
@@ -607,7 +605,7 @@ public class WorkflowLibraryActivity extends Activity {
                     String desired = edit.getText().toString().trim();
                     if (desired.isEmpty()) { toast("名称不能为空"); return; }
                     String folderId = effectiveFolderId(p);
-                    String unique = WorkflowStore.uniqueName(WorkflowStore.load(this), desired, folderId, p.id);
+                    String unique = WorkflowStore.uniqueName(WorkflowStore.loadSummaries(this), desired, folderId, p.id);
                     p.name = unique;
                     WorkflowStore.upsert(this, p);
                     render();
@@ -624,7 +622,7 @@ public class WorkflowLibraryActivity extends Activity {
                 .setTitle("移动到文件夹")
                 .setItems(labels.toArray(new String[0]), (d, which) -> {
                     String target = ids.get(which);
-                    List<WorkflowProfile> latest = WorkflowStore.load(this);
+                    List<WorkflowProfile> latest = WorkflowStore.loadSummaries(this);
                     p.name = WorkflowStore.uniqueName(latest, p.name, target, p.id);
                     p.folderId = target;
                     WorkflowStore.upsert(this, p);
