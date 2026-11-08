@@ -184,6 +184,13 @@ public final class WorkflowStore {
         return full;
     }
 
+    /** Targeted full-profile read, avoiding a second copy of every workflow on the device. */
+    public static WorkflowProfile loadById(Context context, String id) {
+        synchronized (LOCK) {
+            return readFull(dir(context), id);
+        }
+    }
+
     public static void save(Context context, List<WorkflowProfile> profiles) {
         synchronized (LOCK) {
             File dir = dir(context);
