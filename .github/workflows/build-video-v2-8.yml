@@ -26,6 +26,9 @@ jobs:
       - name: Build debug APK to verify Java and Android resources
         run: gradle assembleDebug --stacktrace
 
+      - name: Run SaveVideo and image compatibility unit tests
+        run: gradle testDebugUnitTest --stacktrace
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
