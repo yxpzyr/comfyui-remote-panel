@@ -154,6 +154,11 @@ public final class WorkflowUiConverter {
         return false;
     }
 
+    /** Shared node-schema cache for workflow compilation and UI parameter detection. */
+    public static JSONObject getObjectInfoCached(String serverBase) throws Exception {
+        return fetchObjectInfo(serverBase);
+    }
+
     private static JSONObject fetchObjectInfo(String serverBase) throws Exception {
         String base = ComfyApiClient.normalizeBase(serverBase);
         synchronized (OBJECT_INFO_CACHE_LOCK) {
