@@ -171,7 +171,8 @@ public final class GenerationManager {
             }
         }
 
-        for (int tick = 0; tick < 1800; tick++) {
+        // Video generation/upscaling can run for hours. Duration alone is not an error.
+        for (int tick = 0; tick < 10800; tick++) {
             try { Thread.sleep(2000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
             JobRecord current = JobStore.find(context, localId);
             if (current == null || current.isTerminal()) return;
@@ -206,13 +207,18 @@ public final class GenerationManager {
                     if (api.isHistoryCompleted(history, promptId)) {
                         // Do not finish on the first image. V2.3 waits for ComfyUI to mark the
                         // whole prompt complete, then the newest observed output becomes final.
-                        if (observed.isEmpty()) {
-                            List<ImageRef> fallbackRefs = new ArrayList<>();
+                        if (observed.isEmpty() && completedWithoutImages % 5 == 0) {
+                            // Stream a bounded history listing rather than deserializing 300
+                            // large prompts just to find a video output filename.
                             try {
-                                JSONObject all = api.getAllHistory(300);
-                                fallbackRefs = api.parseAllImagesForPrompt(all, promptId, allowedOutputs);
+                                List<ImageRef> fallbackRefs = api.getGalleryHistoryRefs(60, 160);
+                                List<ImageRef> ours = new ArrayList<>();
+                                for (ImageRef ref : fallbackRefs)
+                                    if (promptId.equals(ref.promptId)
+                                            && (allowedOutputs.isEmpty() || allowedOutputs.contains(ref.sourceNodeId)))
+                                        ours.add(ref);
+                                nextOrder = mergeObserved(promptId, observed, ours, nextOrder);
                             } catch (Exception ignored) {}
-                            nextOrder = mergeObserved(promptId, observed, fallbackRefs, nextOrder);
                         }
 
                         if (!observed.isEmpty()) {
@@ -225,7 +231,7 @@ public final class GenerationManager {
                                 "任务已完成，正在同步图片或视频… " + completedWithoutImages + "/20", -1);
                         if (completedWithoutImages >= 20) {
                             JobStore.complete(context, localId, new ArrayList<>(),
-                                    "ComfyUI 已完成任务，但 history 未提供可下载图片记录");
+                                    "ComfyUI 已执行完成，但 history 未提供可下载的图片或视频；请确认工作流的保存节点实际输出到 output 目录");
                             notifyListeners(JobStore.find(context, localId));
                             return;
                         }
@@ -236,7 +242,7 @@ public final class GenerationManager {
                     if (!observed.isEmpty()) {
                         if (outputsChanged) {
                             JobStore.markStarted(context, localId,
-                                    "已产生 " + observed.size() + " 张输出，等待任务最终完成");
+                                    "已产生 " + observed.size() + " 个媒体输出，等待任务最终完成");
                             notifyListeners(JobStore.find(context, localId));
                         }
                         // Compatibility fallback: some custom ComfyUI history implementations do not
@@ -268,15 +274,21 @@ public final class GenerationManager {
                 consecutiveNetworkErrors = 0;
             } catch (Exception e) {
                 consecutiveNetworkErrors++;
-                if (consecutiveNetworkErrors >= 10) {
-                    update(context, localId, JobRecord.FAILED, "连续读取 ComfyUI 状态失败：" + safeMessage(e), -1);
-                    return;
+                // A monitor-side HTTP timeout is not an execution failure. Do not turn
+                // lengthy video jobs into FAILED just because history/queue is momentarily
+                // unavailable. Only an explicit backend error is terminal.
+                if (consecutiveNetworkErrors == 1 || consecutiveNetworkErrors % 10 == 0) {
+                    update(context, localId, current.status,
+                            "与 ComfyUI 的状态连接暂时中断（第 " + consecutiveNetworkErrors
+                                    + " 次），任务可能仍在生成；正在继续重试：" + safeMessage(e), -1);
                 }
-                update(context, localId, current.status,
-                        "暂时无法读取服务器状态，正在重试（" + consecutiveNetworkErrors + "/10）", -1);
             }
         }
-        update(context, localId, JobRecord.FAILED, "等待 ComfyUI 任务结果超时", -1);
+        // Leave this job non-terminal so reopening the app can resume monitoring.
+        JobRecord latest = JobStore.find(context, localId);
+        if (latest != null && !latest.isTerminal())
+            update(context, localId, latest.status,
+                    "任务监控已暂停，但未收到 ComfyUI 失败信息；重新进入队列可继续同步", -1);
     }
 
     /**
