@@ -2320,7 +2320,7 @@ public class MainActivity extends Activity {
                         currentOutputRefs.clear();
                         currentOutputJob = null;
                         outputList.removeAllViews();
-                        outputList.addView(text("任务已完成，但没有可读取的图片记录。", 13, false));
+                        outputList.addView(text("任务已完成，但没有可读取的图片或视频记录。", 13, false));
                         saveAllButton.setEnabled(false);
                         saveAllButton.setText("全部保存当前输出");
                     });
@@ -2332,8 +2332,10 @@ public class MainActivity extends Activity {
                 // Do not retain the full original PNG on the home screen. Preview is bounded.
                 Bitmap bmp = null;
                 try {
-                    ComfyApiClient.ImageDownload preview = api.fetchImagePreview(finalRef, 76, 7 * 1024 * 1024);
-                    bmp = GalleryThumbnailLoader.decodeThumbnail(preview.bytes, 1200);
+                    if (!finalRef.isVideo()) {
+                        ComfyApiClient.ImageDownload preview = api.fetchImagePreview(finalRef, 76, 7 * 1024 * 1024);
+                        bmp = GalleryThumbnailLoader.decodeThumbnail(preview.bytes, 1200);
+                    }
                 } catch (Exception ignored) {
                     // Older servers may not support previews. Saving the untouched original
                     // must remain available even when the preview cannot be displayed.
@@ -2378,16 +2380,28 @@ public class MainActivity extends Activity {
         LinearLayout box = miniCard();
         String title = (finalOutput.ref.isTemporary() ? "临时预览（不在电脑 output） · " : "最终输出 · ")
                 + finalOutput.ref.filename;
-        if (fullRefs.size() > 1) title += " · 共 " + fullRefs.size() + " 张";
+        if (fullRefs.size() > 1) title += " · 共 " + fullRefs.size() + " 个文件";
         box.addView(text(title, 12, true));
         FrameLayout imageFrame = new FrameLayout(this);
         ImageView image = previewImage();
         image.setImageBitmap(finalOutput.bitmap);
+        if (finalOutput.ref.isVideo()) {
+            VideoThumbnailLoader.load(finalOutput.server, finalOutput.ref, image, 650,
+                    () -> !isFinishing() && !isDestroyed() && currentOutputJob == job);
+        }
         if (finalOutput.bitmap == null) {
             image.setBackgroundColor(ThemeManager.imagePlaceholder(this));
         }
         imageFrame.addView(image, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, dp(235)));
+        if (finalOutput.ref.isVideo()) {
+            Button play = button("▶ 播放视频");
+            FrameLayout.LayoutParams playLp = new FrameLayout.LayoutParams(dp(128), dp(50));
+            playLp.gravity = Gravity.CENTER;
+            imageFrame.addView(play, playLp);
+            play.setOnClickListener(v -> VideoPlayerActivity.open(this, finalOutput.server, finalOutput.ref));
+            image.setOnClickListener(v -> VideoPlayerActivity.open(this, finalOutput.server, finalOutput.ref));
+        }
         if (fullRefs.size() > 1) {
             Button folder = button("📁 " + fullRefs.size());
             FrameLayout.LayoutParams folderLp = new FrameLayout.LayoutParams(dp(92), dp(46));
@@ -2397,14 +2411,15 @@ public class MainActivity extends Activity {
             folder.setOnClickListener(v -> openTaskOutputs(job));
         }
         box.addView(imageFrame, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(235)));
-        if (finalOutput.bitmap == null) box.addView(text("预览暂不可用，仍可保存原始图片", 12, false));
-        box.addView(text("服务器图片位置：" + finalOutput.ref.serverRelativePath(), 11, false));
+        if (finalOutput.bitmap == null && !finalOutput.ref.isVideo())
+            box.addView(text("预览暂不可用，仍可保存原始图片", 12, false));
+        box.addView(text("服务器文件位置：" + finalOutput.ref.serverRelativePath(), 11, false));
         if (finalOutput.ref.isTemporary()) {
             box.addView(text("本次仅找到 temp 临时预览：该文件不会出现在电脑 ComfyUI/output，"
-                    + "请在高级设置中检查是否启用了 SaveImage 等保存节点。", 12, false));
+                    + "请在高级设置中检查是否启用了 SaveImage、SaveVideo 等保存节点。", 12, false));
         }
 
-        Button save = button("保存这张");
+        Button save = button(finalOutput.ref.isVideo() ? "下载原始视频" : "保存这张");
         LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
         saveLp.setMargins(0, dp(6), 0, 0);
         box.addView(save, saveLp);
@@ -2428,28 +2443,26 @@ public class MainActivity extends Activity {
     private void saveOneOutput(OutputBinding o) {
         pool.submit(() -> {
             try {
-                ComfyApiClient.ImageDownload original = new ComfyApiClient(o.server).fetchImage(o.ref);
-                MediaSaver.saveImage(this, original.bytes, o.ref.filename, original.mime);
-                runOnUiThread(() -> toast("已保存到 Pictures/ComfyRemote"));
+                new ComfyApiClient(o.server).saveMedia(this, o.ref);
+                runOnUiThread(() -> toast(o.ref.isVideo() ? "已保存到 Movies/ComfyRemote" : "已保存到 Pictures/ComfyRemote"));
             } catch (Exception e) { runOnUiThread(() -> showError("保存失败", e)); }
         });
     }
 
     private void saveAllOutputs() {
-        if (currentOutputRefs.isEmpty()) { toast("当前没有输出图"); return; }
+        if (currentOutputRefs.isEmpty()) { toast("当前没有输出文件"); return; }
         final List<ImageRef> refs = new ArrayList<>(currentOutputRefs);
         final String serverForJob = currentOutputJob != null && currentOutputJob.server != null && !currentOutputJob.server.isEmpty()
                 ? currentOutputJob.server : currentServer();
         saveAllButton.setEnabled(false);
-        statusText.setText("状态：正在保存当前任务全部 " + refs.size() + " 张输出…");
+        statusText.setText("状态：正在保存当前任务全部 " + refs.size() + " 个文件…");
         pool.submit(() -> {
             ComfyApiClient api = new ComfyApiClient(serverForJob);
             int ok = 0;
             for (int i = 0; i < refs.size(); i++) {
                 ImageRef ref = refs.get(i);
                 try {
-                    ComfyApiClient.ImageDownload dl = api.fetchImage(ref);
-                    MediaSaver.saveImage(this, dl.bytes, ref.filename, dl.mime);
+                    api.saveMedia(this, ref);
                     ok++;
                 } catch (Exception ignored) {}
                 int done = i + 1;
@@ -2460,7 +2473,7 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 saveAllButton.setEnabled(true);
                 statusText.setText("状态：全部保存完成 · " + finalOk + " / " + refs.size());
-                toast("已保存 " + finalOk + " 张到 Pictures/ComfyRemote");
+                toast("已保存 " + finalOk + " 个文件到 ComfyRemote 相册/视频目录");
             });
         });
     }
