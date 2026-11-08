@@ -908,11 +908,52 @@ public class ComfyApiClient {
         for (String p : paths) {
             HttpResult r = request("POST", p, data, "application/json; charset=utf-8", connect, read);
             if (r.code >= 200 && r.code < 300) return r;
-            last = new Exception("HTTP " + r.code + " " + p + ": " + clipped(r.text(), 2800));
+            last = new Exception("HTTP " + r.code + " " + p + ": " + promptErrorSummary(r.text()));
             // Never conceal real prompt-validation errors behind a fallback endpoint's 404.
             if (r.code != 404 && r.code != 405) throw last;
         }
         throw last == null ? new Exception("请求失败") : last;
+    }
+
+    /** Explain ComfyUI prompt-validation failures with the failing node IDs and input details. */
+    static String promptErrorSummary(String response) {
+        if (response == null || response.trim().isEmpty()) return "服务器未提供错误详情";
+        try {
+            JSONObject body = new JSONObject(response);
+            StringBuilder summary = new StringBuilder();
+            JSONObject error = body.optJSONObject("error");
+            if (error != null) {
+                String message = error.optString("message", error.optString("type", ""));
+                if (!message.isEmpty()) summary.append(message);
+                String details = error.optString("details", "");
+                if (!details.isEmpty()) summary.append("：").append(details);
+            }
+            JSONObject nodeErrors = body.optJSONObject("node_errors");
+            if (nodeErrors != null) {
+                Iterator<String> ids = nodeErrors.keys();
+                int shown = 0;
+                while (ids.hasNext() && shown < 5) {
+                    String id = ids.next();
+                    JSONObject node = nodeErrors.optJSONObject(id);
+                    if (node == null) continue;
+                    if (summary.length() > 0) summary.append("\n");
+                    summary.append("节点 ").append(id);
+                    String classType = node.optString("class_type", "");
+                    if (!classType.isEmpty()) summary.append(" (").append(classType).append(")");
+                    JSONArray problems = node.optJSONArray("errors");
+                    if (problems != null) for (int i = 0; i < Math.min(3, problems.length()); i++) {
+                        JSONObject issue = problems.optJSONObject(i);
+                        if (issue == null) continue;
+                        summary.append("：").append(issue.optString("message", issue.optString("type", "校验失败")));
+                        String detail = issue.optString("details", "");
+                        if (!detail.isEmpty()) summary.append(" [").append(detail).append("]");
+                    }
+                    shown++;
+                }
+            }
+            if (summary.length() > 0) return clipped(summary.toString(), 2800);
+        } catch (Exception ignored) {}
+        return clipped(response, 2800);
     }
 
     private static String clipped(String text, int max) {
