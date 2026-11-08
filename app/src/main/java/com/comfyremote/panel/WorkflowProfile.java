@@ -177,6 +177,12 @@ public final class WorkflowProfile {
         return state;
     }
 
+    /** Whether a previously visited subworkflow has an executable prompt saved locally. */
+    public boolean hasSavedVariantPrompt(String variantId) {
+        JSONObject saved = variantStates == null ? null : variantStates.optJSONObject(variantId);
+        return saved != null && saved.optString("prompt_json", "").length() > 2;
+    }
+
     public void rememberActiveVariant() {
         if (!isCollection() || activeVariantId == null || activeVariantId.isEmpty()) return;
         try { variantStates.put(activeVariantId, captureVariantState()); } catch (Exception ignored) {}
