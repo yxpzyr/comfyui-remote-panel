@@ -124,7 +124,7 @@ public class MainActivity extends Activity {
         workflowFolders = WorkflowFolderStore.load(this);
         workflowFolderFilter = prefs.getString(PREF_FOLDER_FILTER, FOLDER_ALL);
         normalizeFolderFilter();
-        profiles = WorkflowStore.load(this);
+        profiles = WorkflowStore.loadSummaries(this);
         resolveActiveProfile();
         buildUi();
         rebuildWorkflowStrip();
@@ -146,7 +146,7 @@ public class MainActivity extends Activity {
             refreshWorkflowsOnResume = false;
             String previousProfileId = activeProfile == null ? "" : activeProfile.id;
             workflowFolders = WorkflowFolderStore.load(this);
-            profiles = WorkflowStore.load(this);
+            profiles = WorkflowStore.loadSummaries(this);
             resolveActiveProfile();
             String resumedProfileId = activeProfile == null ? "" : activeProfile.id;
             if (!previousProfileId.equals(resumedProfileId)) {
@@ -381,17 +381,30 @@ public class MainActivity extends Activity {
 
     private void resolveActiveProfile() {
         String activeId = WorkflowStore.getActiveId(this);
-        activeProfile = WorkflowStore.find(profiles, activeId);
-        if (activeProfile == null && !profiles.isEmpty()) {
-            activeProfile = profiles.get(0);
-            WorkflowStore.setActiveId(this, activeProfile.id);
+        WorkflowProfile selected = WorkflowStore.find(profiles, activeId);
+        if (selected == null && !profiles.isEmpty()) {
+            selected = profiles.get(0);
+            WorkflowStore.setActiveId(this, selected.id);
+        }
+        // Keep only the selected large graph in RAM; strip/library rows remain metadata-only.
+        activeProfile = loadFullProfileOrNull(selected);
+    }
+
+    private WorkflowProfile loadFullProfileOrNull(WorkflowProfile profile) {
+        if (profile == null) return null;
+        if (!profile.metadataOnly) return profile;
+        try {
+            return WorkflowStore.loadById(this, profile.id);
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "无法加载所选工作流 " + profile.id, e);
+            return null;
         }
     }
 
     private void refreshProfiles() {
         workflowFolders = WorkflowFolderStore.load(this);
         normalizeFolderFilter();
-        profiles = WorkflowStore.load(this);
+        profiles = WorkflowStore.loadSummaries(this);
         resolveActiveProfile();
         rebuildWorkflowStrip();
     }
@@ -627,7 +640,7 @@ public class MainActivity extends Activity {
                 .setMessage("不会删除工作流。这个文件夹里的 " + count + " 个工作流会移回“未分类”。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("删除", (d, w) -> {
-                    List<WorkflowProfile> latest = WorkflowStore.load(this);
+                    List<WorkflowProfile> latest = WorkflowStore.loadSummaries(this);
                     for (WorkflowProfile p : latest) {
                         if (!folder.id.equals(safe(p.folderId))) continue;
                         p.folderId = "";
@@ -636,7 +649,7 @@ public class MainActivity extends Activity {
                     }
                     WorkflowFolderStore.delete(this, folder.id);
                     workflowFolders = WorkflowFolderStore.load(this);
-                    profiles = WorkflowStore.load(this);
+                    profiles = WorkflowStore.loadSummaries(this);
                     if (folder.id.equals(workflowFolderFilter)) workflowFolderFilter = "";
                     prefs.edit().putString(PREF_FOLDER_FILTER, workflowFolderFilter).apply();
                     resolveActiveProfile();
@@ -778,8 +791,11 @@ public class MainActivity extends Activity {
     private void switchWorkflowNow(String profileId) {
         captureSessionInputs();
         saveOutputSelection();
-        WorkflowProfile next = WorkflowStore.find(profiles, profileId);
-        if (next == null) return;
+        WorkflowProfile next = loadFullProfileOrNull(WorkflowStore.find(profiles, profileId));
+        if (next == null) {
+            toast("工作流配置读取失败，请检查文件是否完整");
+            return;
+        }
         transientParameterValues.clear();
         expandedParameterNodes.clear();
         parameterObjectInfo = null;
@@ -931,7 +947,7 @@ public class MainActivity extends Activity {
 
             runOnUiThread(() -> {
                 workflowFolders = WorkflowFolderStore.load(this);
-                profiles = WorkflowStore.load(this);
+                profiles = WorkflowStore.loadSummaries(this);
                 resolveActiveProfile();
                 rebuildWorkflowStrip();
                 rebuildDynamicControls();
@@ -1007,7 +1023,7 @@ public class MainActivity extends Activity {
                     String target = ids.get(which);
                     dialog.dismiss();
                     if (target.equals(effectiveFolderId(activeProfile))) return;
-                    List<WorkflowProfile> latest = WorkflowStore.load(this);
+                    List<WorkflowProfile> latest = WorkflowStore.loadSummaries(this);
                     String renamed = WorkflowStore.uniqueName(latest, activeProfile.name, target, activeProfile.id);
                     boolean changedName = !renamed.equals(activeProfile.name);
                     activeProfile.name = renamed;
@@ -1035,7 +1051,7 @@ public class MainActivity extends Activity {
                 .setPositiveButton("保存", (d, w) -> {
                     String name = edit.getText().toString().trim();
                     if (name.isEmpty()) { toast("名称不能为空"); return; }
-                    String unique = WorkflowStore.uniqueName(WorkflowStore.load(this), name, effectiveFolderId(activeProfile), activeProfile.id);
+                    String unique = WorkflowStore.uniqueName(WorkflowStore.loadSummaries(this), name, effectiveFolderId(activeProfile), activeProfile.id);
                     activeProfile.name = unique;
                     WorkflowStore.upsert(this, activeProfile);
                     refreshProfiles();
@@ -1066,7 +1082,7 @@ public class MainActivity extends Activity {
                         for (File f : maskFiles) if (f.getName().startsWith(prefix)) f.delete();
                     }
                     WorkflowStore.delete(this, deleting.id);
-                    profiles = WorkflowStore.load(this);
+                    profiles = WorkflowStore.loadSummaries(this);
                     resolveActiveProfile();
                     rebuildWorkflowStrip();
                     rebuildDynamicControls();
