@@ -6,6 +6,7 @@ import android.content.ClipData;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
+import android.media.MediaMetadataRetriever;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.drawable.BitmapDrawable;
@@ -1105,7 +1106,7 @@ public class MainActivity extends Activity {
             return;
         }
         try {
-            List<WorkflowUtils.NodeChoice> nodes = WorkflowUtils.findLoadImageNodes(activeProfile.promptObject());
+            List<WorkflowUtils.NodeChoice> nodes = WorkflowUtils.findLoadMediaNodes(activeProfile.promptObject());
             Set<String> optionalImageIds = new HashSet<>();
             if (activeProfile.isCollection()) {
                 for (WorkflowUtils.NodeChoice opt : WorkflowVariants.optionalImageInputs(
@@ -1117,7 +1118,7 @@ public class MainActivity extends Activity {
                 }
             }
             if (nodes.isEmpty()) {
-                inputList.addView(text("这个工作流没有需要从手机替换的文件型图片输入。", 13, false));
+                inputList.addView(text("这个工作流没有检测到可从手机替换的图片或视频文件输入；绝对路径型视频加载器需要在电脑端配置。", 13, false));
                 refreshSubmitEnabled();
                 return;
             }
@@ -1142,7 +1143,7 @@ public class MainActivity extends Activity {
                 imageBindings.add(b);
 
                 LinearLayout box = miniCard();
-                TextView label = text((optionalImage ? "可选参考图 " : "输入图 ") + (i + 1) + " · " + n.title + " · 节点 " + n.id, 13, true);
+                TextView label = text((optionalImage ? "可选参考图 " : n.videoInput ? "输入视频 " : "输入图 ") + (i + 1) + " · " + n.title + " · 节点 " + n.id, 13, true);
                 box.addView(label);
                 if (optionalImage) {
                     Switch enableBranch = new Switch(this);
@@ -1171,11 +1172,16 @@ public class MainActivity extends Activity {
                 box.addView(b.replaceSwitch);
                 b.preview = previewImage();
                 box.addView(b.preview, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(178)));
+                if (n.videoInput) {
+                    b.videoInfo = text("▶ 视频输入 · 支持 MP4 / WebM / MKV / MOV / M4V / AVI", 11, false);
+                    b.videoInfo.setTextColor(ThemeManager.muted(this));
+                    box.addView(b.videoInfo);
+                }
 
                 LinearLayout pickRow = new LinearLayout(this);
                 pickRow.setOrientation(LinearLayout.HORIZONTAL);
-                b.selectButton = button(b.uri == null ? "选择单张" : "单张：" + getDisplayName(b.uri));
-                b.batchButton = button("批量选择");
+                b.selectButton = button(b.uri == null ? (n.videoInput ? "选择视频" : "选择单张") : "文件：" + getDisplayName(b.uri));
+                b.batchButton = button(n.videoInput ? "批量视频" : "批量选择");
                 pickRow.addView(b.selectButton, weightedButton());
                 LinearLayout.LayoutParams batchLp = weightedButton();
                 batchLp.setMargins(dp(8), 0, 0, 0);
@@ -1204,7 +1210,7 @@ public class MainActivity extends Activity {
                 b.clearMaskButton.setOnClickListener(v -> clearMaskForBinding(b, true));
                 updateMaskUi(b);
 
-                b.uploadState = text(b.uri == null ? "等待选择图片" : (b.replaceSwitch.isChecked() ? "准备上传…" : "已记住图片，但当前保留工作流原输入"), 11, false);
+                b.uploadState = text(b.uri == null ? (n.videoInput ? "等待选择视频" : "等待选择图片") : (b.replaceSwitch.isChecked() ? "准备上传…" : "已记住文件，但当前保留工作流原输入"), 11, false);
                 b.uploadState.setTextColor(ThemeManager.muted(this));
                 b.uploadState.setPadding(0, dp(5), 0, 0);
                 box.addView(b.uploadState);
@@ -1220,7 +1226,7 @@ public class MainActivity extends Activity {
                     if (isChecked && b.uri != null && (b.remoteFilename == null || b.remoteFilename.isEmpty()) && !b.uploading) {
                         startInputUpload(b, b.uri);
                     } else if (!isChecked && b.uploadState != null) {
-                        b.uploadState.setText(b.uri == null ? "保留工作流原输入" : "已记住图片，但当前保留工作流原输入");
+                        b.uploadState.setText(b.uri == null ? "保留工作流原输入" : "已记住文件，但当前保留工作流原输入");
                         b.uploadState.setTextColor(ThemeManager.muted(this));
                     }
                     refreshSubmitEnabled();
@@ -1291,7 +1297,7 @@ public class MainActivity extends Activity {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-        i.setType("image/*");
+        i.setType(binding.choice.videoInput ? "video/*" : "image/*");
         startActivityForResult(i, REQ_IMAGE_BASE + binding.index);
     }
 
@@ -1299,7 +1305,7 @@ public class MainActivity extends Activity {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-        i.setType("image/*");
+        i.setType(binding.choice.videoInput ? "video/*" : "image/*");
         i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         startActivityForResult(i, REQ_MULTI_IMAGE_BASE + binding.index);
     }
@@ -1311,7 +1317,7 @@ public class MainActivity extends Activity {
         binding.remoteFilename = "";
         binding.uploadError = "";
         binding.replaceSwitch.setChecked(true);
-        binding.selectButton.setText("单张：" + getDisplayName(uri));
+        binding.selectButton.setText("文件：" + getDisplayName(uri));
         if (activeProfile != null) {
             String key = inputKey(binding.choice);
             sessionInputUris.computeIfAbsent(activeProfile.id, x -> new HashMap<>()).put(key, uri);
@@ -1319,7 +1325,7 @@ public class MainActivity extends Activity {
             activeProfile.setSavedReplaceEnabled(key, true);
             WorkflowStore.upsert(this, activeProfile);
         }
-        statusText.setText("状态：已选择输入图 " + (binding.index + 1) + "，正在上传到 ComfyUI…");
+        statusText.setText("状态：已选择" + (binding.choice.videoInput ? "输入视频 " : "输入图 ") + (binding.index + 1) + "，正在上传到 ComfyUI…");
         loadPreviewOnly(binding, uri);
         startInputUpload(binding, uri);
     }
@@ -1331,7 +1337,7 @@ public class MainActivity extends Activity {
         binding.remoteFilename = "";
         binding.uploadError = "";
         if (binding.uploadState != null) {
-            binding.uploadState.setText("上传中…");
+            binding.uploadState.setText(binding.choice.videoInput ? "正在上传视频…（文件较大时请保持网络连接）" : "上传中…");
             binding.uploadState.setTextColor(ThemeManager.warning(this));
         }
         refreshSubmitEnabled();
@@ -1340,17 +1346,26 @@ public class MainActivity extends Activity {
             try {
                 ComfyApiClient api = new ComfyApiClient(server);
                 File masked = binding.maskPath == null || binding.maskPath.isEmpty() ? null : new File(binding.maskPath);
-                ComfyApiClient.UploadResult uploaded = masked != null && masked.isFile()
-                        ? api.uploadImageFile(masked) : api.uploadImage(this, uri);
+                ComfyApiClient.UploadResult uploaded;
+                if (binding.choice.videoInput) {
+                    uploaded = api.uploadVideo(this, uri, sent -> runOnUiThread(() -> {
+                        if (token != binding.uploadToken || binding.uploadState == null) return;
+                        binding.uploadState.setText("视频上传中 · " + (sent / (1024 * 1024)) + " MB 已发送");
+                    }));
+                } else {
+                    uploaded = masked != null && masked.isFile()
+                            ? api.uploadImageFile(masked) : api.uploadImage(this, uri);
+                }
                 runOnUiThread(() -> {
                     if (token != binding.uploadToken || binding.uri == null || !binding.uri.equals(uri)) return;
                     binding.uploading = false;
                     binding.remoteFilename = uploaded.workflowFilename();
                     if (binding.uploadState != null) {
-                        binding.uploadState.setText(binding.maskPath == null || binding.maskPath.isEmpty() ? "✓ 已上传，可开始生成" : "✓ 原图 + 蒙版已上传，可开始生成");
+                        binding.uploadState.setText(binding.choice.videoInput ? "✓ 视频已上传到 ComfyUI/input，可开始处理"
+                                : binding.maskPath == null || binding.maskPath.isEmpty() ? "✓ 已上传，可开始生成" : "✓ 原图 + 蒙版已上传，可开始生成");
                         binding.uploadState.setTextColor(ThemeManager.success(this));
                     }
-                    statusText.setText("状态：输入图 " + (binding.index + 1) + " 已上传，可直接开始生成");
+                    statusText.setText("状态：" + (binding.choice.videoInput ? "输入视频 " : "输入图 ") + (binding.index + 1) + " 已上传，可开始执行");
                     refreshSubmitEnabled();
                 });
             } catch (Exception e) {
@@ -1359,10 +1374,10 @@ public class MainActivity extends Activity {
                     binding.uploading = false;
                     binding.uploadError = e.getMessage() == null ? e.toString() : e.getMessage();
                     if (binding.uploadState != null) {
-                        binding.uploadState.setText("上传失败 · 点“选择图片”重试");
+                        binding.uploadState.setText("上传失败 · 请重新选择" + (binding.choice.videoInput ? "视频" : "图片") + "重试");
                         binding.uploadState.setTextColor(ThemeManager.error(this));
                     }
-                    statusText.setText("状态：输入图片上传失败");
+                    statusText.setText("状态：输入" + (binding.choice.videoInput ? "视频" : "图片") + "上传失败");
                     refreshSubmitEnabled();
                 });
             }
@@ -1372,12 +1387,41 @@ public class MainActivity extends Activity {
     private void loadPreviewOnly(ImageBinding binding, Uri uri) {
         pool.submit(() -> {
             try {
-                Bitmap b = decodeScaled(uri, 1200, 1200);
+                Bitmap bitmap;
+                String videoDuration = "";
+                if (binding.choice.videoInput) {
+                    MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+                    try {
+                        retriever.setDataSource(this, uri);
+                        bitmap = retriever.getScaledFrameAtTime(0L,
+                                MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 640, 640);
+                        String duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+                        if (duration != null) {
+                            long seconds = Long.parseLong(duration) / 1000L;
+                            videoDuration = String.format(java.util.Locale.ROOT,
+                                    "%02d:%02d:%02d", seconds / 3600L, (seconds / 60L) % 60L, seconds % 60L);
+                        }
+                    } finally {
+                        retriever.release();
+                    }
+                } else {
+                    bitmap = decodeScaled(uri, 1200, 1200);
+                }
+                final String displayDuration = videoDuration;
                 runOnUiThread(() -> {
-                    if (binding.preview != null) binding.preview.setImageBitmap(b);
+                    if (binding.uri == null || !binding.uri.equals(uri)) return;
+                    if (binding.preview != null && bitmap != null) binding.preview.setImageBitmap(bitmap);
+                    if (binding.videoInfo != null)
+                        binding.videoInfo.setText("▶ 已选视频" + (displayDuration.isEmpty() ? "" : " · 时长 " + displayDuration));
                 });
             } catch (Exception e) {
-                runOnUiThread(() -> toast("图片预览失败：" + e.getMessage()));
+                // Thumbnail extraction is best-effort. An unsupported codec must not stop upload.
+                if (binding.choice.videoInput) {
+                    runOnUiThread(() -> {
+                        if (binding.videoInfo != null && uri.equals(binding.uri))
+                            binding.videoInfo.setText("▶ 已选视频 · 当前编码无法提取封面，仍可上传");
+                    });
+                } else runOnUiThread(() -> toast("图片预览失败：" + e.getMessage()));
             }
         });
     }
@@ -2766,6 +2810,7 @@ public class MainActivity extends Activity {
         Uri uri;
         Switch replaceSwitch;
         ImageView preview;
+        TextView videoInfo;
         Button selectButton;
         Button batchButton;
         LinearLayout maskRow;
