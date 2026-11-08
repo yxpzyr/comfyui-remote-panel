@@ -58,7 +58,7 @@ public class TaskOutputActivity extends Activity {
     private String localId = "";
     private String promptId = "";
     private String server = "8188";
-    private String title = "任务全部图片";
+    private String title = "任务全部文件";
     private int renderGeneration = 0;
     private volatile boolean loading = false;
     private volatile boolean downloading = false;
@@ -72,7 +72,7 @@ public class TaskOutputActivity extends Activity {
         server = safe(getIntent().getStringExtra(EXTRA_SERVER));
         if (server.isEmpty()) server = getSharedPreferences("comfy_remote", MODE_PRIVATE).getString("server", "8188");
         title = safe(getIntent().getStringExtra(EXTRA_TITLE));
-        if (title.isEmpty()) title = "任务全部图片";
+        if (title.isEmpty()) title = "任务全部文件";
         buildUi();
         loadOutputs();
     }
@@ -232,11 +232,11 @@ public class TaskOutputActivity extends Activity {
         ImageRef finalRef = ImageRef.chooseFinalSaved(refs);
         finalKey = finalRef == null ? "" : finalRef.key();
         if (refs.isEmpty()) {
-            state.setText("没有可读取的图片输出");
+            state.setText("没有可读取的图片或视频输出");
             updateSelectionControls();
             return;
         }
-        state.setText("共 " + refs.size() + " 张 · 最后一张标记为最终图 · 长按进入多选");
+        state.setText("共 " + refs.size() + " 个文件 · 最终文件已标记 · 长按进入多选");
         appendMoreTiles();
         updateSelectionControls();
     }
@@ -247,7 +247,7 @@ public class TaskOutputActivity extends Activity {
         tile.setPadding(dp(6), dp(6), dp(6), dp(8));
         setTileBackground(tile, selectedKeys.contains(ref.key()));
 
-        TextView label = text((ref.key().equals(finalKey) ? "★ 最终图" : "过程图 " + index) + " · " + ref.filename, 11, true);
+        TextView label = text((ref.key().equals(finalKey) ? "★ 最终" + ref.kindLabel() : "过程" + ref.kindLabel() + " " + index) + " · " + ref.filename, 11, true);
         label.setMaxLines(2);
         tile.addView(label);
 
@@ -255,6 +255,11 @@ public class TaskOutputActivity extends Activity {
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
         image.setBackgroundColor(ThemeManager.imagePlaceholder(this));
         tile.addView(image, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(168)));
+        if (ref.isVideo()) {
+            TextView videoMark = text("▶ 视频 · 点击播放", 12, true);
+            videoMark.setTextColor(ThemeManager.accent(this));
+            tile.addView(videoMark);
+        }
 
         if (ref.generatedAt > 0 || ref.timestamp > 0) {
             long t = ref.generatedAt > 0 ? ref.generatedAt : ref.timestamp;
@@ -320,6 +325,15 @@ public class TaskOutputActivity extends Activity {
     }
 
     private void showPreview(ImageRef ref, boolean isFinal) {
+        if (ref.isVideo()) {
+            new AlertDialog.Builder(this)
+                    .setTitle((isFinal ? "最终视频 · " : "") + ref.filename)
+                    .setMessage("可以直接在线播放带声音的视频，也可以下载原始视频。")
+                    .setPositiveButton("▶ 播放", (d, w) -> VideoPlayerActivity.open(this, server, ref))
+                    .setNegativeButton("下载视频", (d, w) -> saveOne(ref))
+                    .show();
+            return;
+        }
         LinearLayout holder = new LinearLayout(this);
         holder.setGravity(Gravity.CENTER);
         holder.setPadding(dp(8), dp(8), dp(8), dp(8));
@@ -382,7 +396,7 @@ public class TaskOutputActivity extends Activity {
 
     private void downloadSelected() {
         if (selectedKeys.isEmpty()) {
-            Toast.makeText(this, "先长按图片进行选择", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "先长按文件进行选择", Toast.LENGTH_SHORT).show();
             return;
         }
         List<ImageRef> selected = new ArrayList<>();
@@ -395,8 +409,7 @@ public class TaskOutputActivity extends Activity {
             for (int i = 0; i < selected.size(); i++) {
                 try {
                     ImageRef ref = selected.get(i);
-                    ComfyApiClient.ImageDownload dl = api.fetchImage(ref);
-                    MediaSaver.saveImage(this, dl.bytes, ref.filename, dl.mime);
+                    api.saveMedia(this, ref);
                     ok++;
                 } catch (Exception ignored) {}
                 int done = i + 1;
@@ -417,11 +430,10 @@ public class TaskOutputActivity extends Activity {
     private void saveOne(ImageRef ref) {
         downloadPool.submit(() -> {
             try {
-                ComfyApiClient.ImageDownload dl = new ComfyApiClient(server).fetchImage(ref);
-                MediaSaver.saveImage(getApplicationContext(), dl.bytes, ref.filename, dl.mime);
+                new ComfyApiClient(server).saveMedia(getApplicationContext(), ref);
                 runOnUiThread(() -> {
                     if (!isFinishing() && !isDestroyed())
-                        Toast.makeText(this, "已保存原图到 Pictures/ComfyRemote", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, ref.isVideo() ? "已保存到 Movies/ComfyRemote" : "已保存原图到 Pictures/ComfyRemote", Toast.LENGTH_SHORT).show();
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
