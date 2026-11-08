@@ -155,7 +155,7 @@ public class GalleryActivity extends Activity {
         LinearLayout selection = new LinearLayout(this);
         selection.setOrientation(LinearLayout.HORIZONTAL);
         selectAllButton = button("全选本页");
-        downloadButton = button("下载最终图 0");
+        downloadButton = button("下载最终文件 0");
         clearSelectButton = button("取消选择");
         selection.addView(selectAllButton, weightedButton());
         LinearLayout.LayoutParams middle = weightedButton(); middle.setMargins(dp(6), dp(6), dp(6), 0);
@@ -384,13 +384,18 @@ public class GalleryActivity extends Activity {
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
         image.setBackgroundColor(ThemeManager.imagePlaceholder(this));
         tile.addView(image, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(168)));
+        if (ref.isVideo()) {
+            TextView videoMark = text("▶ 视频 · 点击播放", 12, true);
+            videoMark.setTextColor(ThemeManager.accent(this));
+            tile.addView(videoMark);
+        }
 
         TextView name = text(task.displayName(), 11, true);
         name.setMaxLines(2);
         name.setPadding(dp(2), dp(6), dp(2), 0);
         tile.addView(name);
 
-        TextView meta = text(formatTime(task.time) + (task.refs.size() > 1 ? " · 📁 " + task.refs.size() + " 张" : ""), 10, false);
+        TextView meta = text(formatTime(task.time) + (task.refs.size() > 1 ? " · 📁 " + task.refs.size() + " 个文件" : ""), 10, false);
         meta.setTextColor(ThemeManager.muted(this));
         meta.setPadding(dp(2), dp(2), dp(2), 0);
         tile.addView(meta);
@@ -409,7 +414,7 @@ public class GalleryActivity extends Activity {
 
         tile.setOnLongClickListener(v -> {
             toggleSelected(task);
-            Toast.makeText(this, "已进入多选模式；这里仅选择各任务最终图", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "已进入多选模式；选择各任务最终文件", Toast.LENGTH_SHORT).show();
             return true;
         });
         tile.setOnClickListener(v -> {
@@ -447,6 +452,17 @@ public class GalleryActivity extends Activity {
     private void showPreview(GalleryTask task) {
         ImageRef ref = task.finalRef();
         if (ref == null) return;
+        if (ref.isVideo()) {
+            AlertDialog.Builder videoDialog = new AlertDialog.Builder(this)
+                    .setTitle(task.displayName())
+                    .setMessage("▶ 视频 · " + ref.filename)
+                    .setPositiveButton("播放视频", (d, w) -> VideoPlayerActivity.open(this, task.server, ref))
+                    .setNegativeButton("下载视频", (d, w) -> saveOne(ref, task.server));
+            if (task.refs.size() > 1)
+                videoDialog.setNeutralButton("查看全部文件", (d, w) -> openTaskOutputs(task));
+            videoDialog.show();
+            return;
+        }
         LinearLayout holder = new LinearLayout(this);
         holder.setGravity(Gravity.CENTER);
         holder.setPadding(dp(8), dp(8), dp(8), dp(8));
@@ -530,26 +546,25 @@ public class GalleryActivity extends Activity {
         for (GalleryTask task : allTasks) if (selectedTaskKeys.contains(task.key) && task.finalRef() != null) selected.add(task);
         batchDownloading = true;
         downloadButton.setEnabled(false);
-        state.setText("准备下载 " + selected.size() + " 个任务的最终图…");
+        state.setText("准备下载 " + selected.size() + " 个任务的最终文件…");
         downloadPool.submit(() -> {
             int ok = 0;
             for (int i = 0; i < selected.size(); i++) {
                 GalleryTask task = selected.get(i);
                 ImageRef ref = task.finalRef();
                 try {
-                    ComfyApiClient.ImageDownload dl = new ComfyApiClient(task.server).fetchImage(ref);
-                    MediaSaver.saveImage(this, dl.bytes, ref.filename, dl.mime);
+                    new ComfyApiClient(task.server).saveMedia(this, ref);
                     ok++;
                 } catch (Exception ignored) {}
                 int done = i + 1;
                 int good = ok;
-                runOnUiThread(() -> { if (!isFinishing() && !isDestroyed()) state.setText("下载最终图：" + done + " / " + selected.size() + " · 成功 " + good); });
+                runOnUiThread(() -> { if (!isFinishing() && !isDestroyed()) state.setText("下载最终文件：" + done + " / " + selected.size() + " · 成功 " + good); });
             }
             int finalOk = ok;
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed()) return;
                 batchDownloading = false;
-                Toast.makeText(this, "最终图下载完成：" + finalOk + " / " + selected.size(), Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "最终文件下载完成：" + finalOk + " / " + selected.size(), Toast.LENGTH_LONG).show();
                 clearSelection();
                 updateState("");
             });
@@ -560,11 +575,10 @@ public class GalleryActivity extends Activity {
         downloadPool.submit(() -> {
             try {
                 // Saving is deliberate: fetch untouched original, never the lossy gallery preview.
-                ComfyApiClient.ImageDownload dl = new ComfyApiClient(sourceServer).fetchImage(ref);
-                MediaSaver.saveImage(getApplicationContext(), dl.bytes, ref.filename, dl.mime);
+                new ComfyApiClient(sourceServer).saveMedia(getApplicationContext(), ref);
                 runOnUiThread(() -> {
                     if (!isFinishing() && !isDestroyed())
-                        Toast.makeText(this, "已保存原图到 Pictures/ComfyRemote", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, ref.isVideo() ? "已保存到 Movies/ComfyRemote" : "已保存原图到 Pictures/ComfyRemote", Toast.LENGTH_SHORT).show();
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
@@ -652,7 +666,7 @@ public class GalleryActivity extends Activity {
 
     private void updateSelectionControls() {
         int n = selectedTaskKeys.size();
-        downloadButton.setText("下载最终图 " + n);
+        downloadButton.setText("下载最终文件 " + n);
         downloadButton.setEnabled(n > 0 && !batchDownloading);
         clearSelectButton.setEnabled(n > 0 && !batchDownloading);
         selectAllButton.setEnabled(!visibleTasks().isEmpty() && !batchDownloading);
