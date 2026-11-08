@@ -105,6 +105,110 @@ public class ComfyApiClient {
         throw last == null ? new Exception("上传图片失败") : last;
     }
 
+    /**
+     * Upload a local video to ComfyUI/input using the standard /upload/image multipart endpoint.
+     * The server accepts arbitrary file bytes under multipart field "image" (not only bitmaps).
+     * Chunked HTTP upload keeps even multi-GB videos outside the Android Java heap.
+     */
+    public UploadResult uploadVideo(Context context, Uri uri,
+                                    java.util.function.LongConsumer onProgress) throws Exception {
+        String filename = getDisplayName(context, uri);
+        if (filename == null || filename.trim().isEmpty()) throw new Exception("无法识别视频文件名");
+        filename = sanitize(filename);
+        String lower = filename.toLowerCase(java.util.Locale.ROOT);
+        if (!(lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mov")
+                || lower.endsWith(".mkv") || lower.endsWith(".m4v") || lower.endsWith(".avi"))) {
+            throw new Exception("不支持的视频文件扩展名：" + filename + "，请使用 MP4、WebM、MOV、MKV、M4V 或 AVI");
+        }
+        String display = "mobile_video_" + UUID.randomUUID().toString().substring(0, 12) + "_" + filename;
+        String mime = context.getContentResolver().getType(uri);
+        if (mime == null || !mime.startsWith("video/")) mime = videoMimeForFilename(lower);
+        long expectedSize = -1L;
+        try (Cursor c = context.getContentResolver().query(uri,
+                new String[]{OpenableColumns.SIZE}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) expectedSize = c.getLong(0);
+        } catch (Exception ignored) {}
+        final long knownSize = expectedSize;
+        String boundary = "----ComfyRemoteVideo" + UUID.randomUUID();
+        Exception last = null;
+        for (String endpoint : new String[]{"/upload/image", "/api/upload/image"}) {
+            HttpURLConnection con = null;
+            boolean uploadStarted = false;
+            try {
+                con = (HttpURLConnection) new URL(base + endpoint).openConnection();
+                con.setRequestMethod("POST");
+                con.setConnectTimeout(12000);
+                con.setReadTimeout(120000);
+                con.setUseCaches(false);
+                con.setDoOutput(true);
+                con.setChunkedStreamingMode(64 * 1024);
+                con.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+                try (InputStream in = context.getContentResolver().openInputStream(uri)) {
+                    if (in == null) throw new Exception("无法读取手机视频，请检查相册权限");
+                    try (OutputStream out = con.getOutputStream()) {
+                        uploadStarted = true;
+                        writePartHeader(out, boundary, "image", display, mime);
+                        byte[] buf = new byte[64 * 1024];
+                        long sent = 0L, lastReported = 0L;
+                        int n;
+                        while ((n = in.read(buf)) != -1) {
+                            if (Thread.currentThread().isInterrupted())
+                                throw new java.io.InterruptedIOException("视频上传已取消");
+                            out.write(buf, 0, n);
+                            sent += n;
+                            if (onProgress != null && sent - lastReported >= 1024 * 1024) {
+                                onProgress.accept(sent);
+                                lastReported = sent;
+                            }
+                        }
+                        if (sent <= 0) throw new Exception("视频文件为空");
+                        if (knownSize >= 0 && sent != knownSize)
+                            throw new Exception("读取的视频不完整：" + sent + "/" + knownSize + " 字节");
+                        out.write("\r\n".getBytes(StandardCharsets.UTF_8));
+                        writeField(out, boundary, "type", "input");
+                        writeField(out, boundary, "overwrite", "true");
+                        out.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+                        if (onProgress != null) onProgress.accept(sent);
+                    }
+                }
+                int status = con.getResponseCode();
+                byte[] response = readAll(status >= 400 ? con.getErrorStream() : con.getInputStream());
+                if (status >= 200 && status < 300) {
+                    JSONObject obj = new JSONObject(new String(response, StandardCharsets.UTF_8));
+                    String storedName = obj.optString("name", "");
+                    if (storedName.isEmpty()) throw new Exception("上传接口未返回视频文件名");
+                    return new UploadResult(storedName, obj.optString("subfolder", ""),
+                            obj.optString("type", "input"));
+                }
+                // Only fall back for a nonexistent endpoint, never silently repeat a large upload
+                // on a validation or storage error.
+                last = new Exception("视频上传失败 HTTP " + status + ": " +
+                        new String(response, StandardCharsets.UTF_8));
+                if (status != 404) break;
+                uploadStarted = false;
+            } catch (Exception e) {
+                last = e;
+                if (uploadStarted) break;
+            } finally {
+                if (con != null) con.disconnect();
+            }
+        }
+        throw last == null ? new Exception("视频上传失败") : last;
+    }
+
+    public UploadResult uploadVideo(Context context, Uri uri) throws Exception {
+        return uploadVideo(context, uri, null);
+    }
+
+    private static String videoMimeForFilename(String lower) {
+        if (lower.endsWith(".mp4") || lower.endsWith(".m4v")) return "video/mp4";
+        if (lower.endsWith(".webm")) return "video/webm";
+        if (lower.endsWith(".mov")) return "video/quicktime";
+        if (lower.endsWith(".mkv")) return "video/x-matroska";
+        if (lower.endsWith(".avi")) return "video/x-msvideo";
+        return "application/octet-stream";
+    }
+
     /** Upload an app-private PNG/JPEG file. Used by V2.2 masked RGBA inputs. */
     public UploadResult uploadImageFile(File file) throws Exception {
         if (file == null || !file.isFile()) throw new Exception("蒙版图片文件不存在");
