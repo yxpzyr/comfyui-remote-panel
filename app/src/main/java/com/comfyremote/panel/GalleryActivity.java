@@ -478,7 +478,7 @@ public class GalleryActivity extends Activity {
                 .setView(holder)
                 .setNegativeButton("关闭", null)
                 .setPositiveButton("保存最终图", null);
-        if (task.refs.size() > 1) builder.setNeutralButton("查看全部图", null);
+        if (task.refs.size() > 1) builder.setNeutralButton("查看全部文件", null);
         AlertDialog dialog = builder.create();
         dialog.setOnShowListener(x -> {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
