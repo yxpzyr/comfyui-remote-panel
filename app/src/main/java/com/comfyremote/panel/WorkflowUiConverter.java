@@ -35,6 +35,21 @@ import java.util.Set;
 public final class WorkflowUiConverter {
     private WorkflowUiConverter() {}
 
+    private static final Object OBJECT_INFO_CACHE_LOCK = new Object();
+    private static final long OBJECT_INFO_CACHE_TTL_MS = 300_000L;
+    private static String objectInfoServer = "";
+    private static JSONObject objectInfoCache;
+    private static long objectInfoCachedAt = 0L;
+
+    /** Manual refresh (or server change) invalidates potentially outdated schemas. */
+    public static void clearObjectInfoCache() {
+        synchronized (OBJECT_INFO_CACHE_LOCK) {
+            objectInfoCache = null;
+            objectInfoServer = "";
+            objectInfoCachedAt = 0L;
+        }
+    }
+
     public static JSONObject toApiPrompt(JSONObject raw, String serverBase) throws Exception {
         JSONObject root = unwrap(raw);
         if (isApiFormat(root)) return new JSONObject(root.toString());
@@ -141,6 +156,11 @@ public final class WorkflowUiConverter {
 
     private static JSONObject fetchObjectInfo(String serverBase) throws Exception {
         String base = ComfyApiClient.normalizeBase(serverBase);
+        synchronized (OBJECT_INFO_CACHE_LOCK) {
+            if (objectInfoCache != null && base.equals(objectInfoServer)
+                    && System.currentTimeMillis() - objectInfoCachedAt < OBJECT_INFO_CACHE_TTL_MS)
+                return objectInfoCache;
+        }
         Exception last = null;
         for (String path : new String[]{"/object_info", "/api/object_info"}) {
             HttpURLConnection con = null;
@@ -152,7 +172,15 @@ public final class WorkflowUiConverter {
                 con.setUseCaches(false);
                 int code = con.getResponseCode();
                 byte[] data = readAll(code >= 400 ? con.getErrorStream() : con.getInputStream());
-                if (code >= 200 && code < 300) return new JSONObject(new String(data, StandardCharsets.UTF_8));
+                if (code >= 200 && code < 300) {
+                    JSONObject parsed = new JSONObject(new String(data, StandardCharsets.UTF_8));
+                    synchronized (OBJECT_INFO_CACHE_LOCK) {
+                        objectInfoCache = parsed;
+                        objectInfoServer = base;
+                        objectInfoCachedAt = System.currentTimeMillis();
+                    }
+                    return parsed;
+                }
                 last = new Exception("HTTP " + code + " " + path);
             } catch (Exception e) { last = e; }
             finally { if (con != null) con.disconnect(); }
