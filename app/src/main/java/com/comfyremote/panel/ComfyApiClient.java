@@ -445,16 +445,18 @@ public class ComfyApiClient {
             if (allowedOutputNodes != null && !allowedOutputNodes.isEmpty() && !allowedOutputNodes.contains(nodeId)) continue;
             JSONObject node = outputs.optJSONObject(nodeId);
             if (node == null) continue;
-            JSONArray images = node.optJSONArray("images");
-            if (images == null) continue;
-            for (int i = 0; i < images.length(); i++) {
-                JSONObject img = images.optJSONObject(i);
-                if (img != null && !img.optString("filename", "").isEmpty()) {
-                    ImageRef ref = ImageRef.fromJson(img, timestamp, promptId, nodeId);
-                    // V2.3 only uses this parser order as a legacy/fallback order. Live tasks are
-                    // overwritten with first-seen generatedAt/outputOrder by GenerationManager.
-                    refs.add(new ImageRef(ref.filename, ref.subfolder, ref.type, ref.timestamp, ref.promptId,
-                            ref.sourceNodeId, ref.generatedAt, ref.outputOrder > 0 ? ref.outputOrder : ++fallbackOrder));
+            // SaveVideo's UI result uses "videos"; legacy image workflows use "images".
+            // Some custom video savers expose "gifs". Preserve the actual extension.
+            for (String mediaKey : new String[]{"images", "videos", "gifs"}) {
+                JSONArray items = node.optJSONArray(mediaKey);
+                if (items == null) continue;
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject item = items.optJSONObject(i);
+                    if (item != null && !item.optString("filename", "").isEmpty()) {
+                        ImageRef ref = ImageRef.fromJson(item, timestamp, promptId, nodeId);
+                        refs.add(new ImageRef(ref.filename, ref.subfolder, ref.type, ref.timestamp, ref.promptId,
+                                ref.sourceNodeId, ref.generatedAt, ref.outputOrder > 0 ? ref.outputOrder : ++fallbackOrder));
+                    }
                 }
             }
         }
@@ -577,6 +579,53 @@ public class ComfyApiClient {
         JSONObject body = new JSONObject();
         body.put("delete", new JSONArray().put(promptId));
         postJsonAny(new String[]{"/queue", "/api/queue"}, body, 8000, 15000);
+    }
+
+    /** Absolute URL for native streaming playback; never request a JPEG preview for video. */
+    public String videoUrl(ImageRef ref) throws Exception {
+        return base + "/view?filename=" + enc(ref.filename)
+                + "&subfolder=" + enc(ref.subfolder) + "&type=" + enc(ref.type);
+    }
+
+    /** Download the original output to the correct Android media collection.
+     * Images preserve existing behavior; videos are copied a chunk at a time.
+     */
+    public void saveMedia(Context context, ImageRef ref) throws Exception {
+        if (!ref.isVideo()) {
+            ImageDownload original = fetchImage(ref);
+            MediaSaver.saveImage(context, original.bytes, ref.filename, original.mime);
+            return;
+        }
+        String query = "?filename=" + enc(ref.filename) + "&subfolder=" + enc(ref.subfolder)
+                + "&type=" + enc(ref.type);
+        Exception last = null;
+        for (String path : new String[]{"/view" + query, "/api/view" + query}) {
+            HttpURLConnection con = null;
+            try {
+                con = (HttpURLConnection) new URL(base + path).openConnection();
+                con.setRequestMethod("GET");
+                con.setConnectTimeout(12000);
+                con.setReadTimeout(90000);
+                con.setUseCaches(false);
+                int code = con.getResponseCode();
+                if (code != 200) {
+                    last = new Exception("视频下载 HTTP " + code);
+                    continue;
+                }
+                String mime = MediaSaver.guessMime(ref.filename);
+                try (InputStream in = con.getInputStream()) {
+                    MediaSaver.saveVideo(context, in, ref.filename, mime);
+                }
+                return;
+            } catch (Exception e) {
+                // A local storage failure must not be treated as a missing remote endpoint.
+                if (con != null && con.getResponseCode() == 200) throw e;
+                last = e;
+            } finally {
+                if (con != null) con.disconnect();
+            }
+        }
+        throw last == null ? new Exception("无法下载视频") : last;
     }
 
     public ImageDownload fetchImage(ImageRef ref) throws Exception {
