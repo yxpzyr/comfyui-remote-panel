@@ -227,7 +227,10 @@ public final class WorkflowUtils {
     }
 
     private static boolean looksLikeOutputNode(String classType, String title) {
-        String c = ((classType == null ? "" : classType) + " " + (title == null ? "" : title))
+        // Never infer an executable output node from a user-edited title.
+        // A decoder/loader renamed to "SaveVideo" is NOT a save sink; treating
+        // it as one can remove necessary nodes during prompt submission.
+        String c = (classType == null ? "" : classType)
                 .toLowerCase(Locale.ROOT).replace("_", "").replace("-", "").replace(" ", "");
         return c.contains("saveimage") || c.contains("previewimage") || c.contains("imagesave") ||
                 c.contains("imageoutput") || c.contains("outputimage") || c.contains("saveanimated") ||
