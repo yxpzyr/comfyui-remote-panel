@@ -15,6 +15,8 @@ public final class WorkflowProfile {
     public String name;
     public String promptJson;
     public String uiJson;
+    /** Library summaries do not contain a workflow graph and must never be written directly. */
+    public boolean metadataOnly = false;
     public boolean favorite;
     // V2.4: logical workflow-folder UUID; empty means system "未分类".
     public String folderId = "";
