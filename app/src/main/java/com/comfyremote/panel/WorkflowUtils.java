@@ -55,7 +55,7 @@ public final class WorkflowUtils {
             if (node == null) continue;
             String classType = node.optString("class_type", "");
             JSONObject inputs = node.optJSONObject("inputs");
-            if (inputs == null) continue;
+            if (inputs == null || isVideoLoaderType(classType)) continue;
 
             String inputName = findImageFilenameInput(classType, inputs);
             if (inputName == null) continue;
@@ -63,6 +63,70 @@ public final class WorkflowUtils {
             result.add(new NodeChoice(id, nodeTitle(node, classType), inputName, classType, maskCapable));
         }
         return result;
+    }
+
+    /** Discover file-selectable IMAGE and VIDEO nodes without interpreting tensor/URL widgets as files. */
+    public static List<NodeChoice> findLoadMediaNodes(JSONObject prompt) {
+        return findLoadMediaNodes(prompt, null);
+    }
+
+    public static List<NodeChoice> findLoadMediaNodes(JSONObject prompt, JSONObject objectInfo) {
+        List<NodeChoice> out = findLoadImageNodes(prompt, objectInfo);
+        out.addAll(findLoadVideoNodes(prompt, objectInfo));
+        return out;
+    }
+
+    public static List<NodeChoice> findLoadVideoNodes(JSONObject prompt) {
+        return findLoadVideoNodes(prompt, null);
+    }
+
+    public static List<NodeChoice> findLoadVideoNodes(JSONObject prompt, JSONObject objectInfo) {
+        List<NodeChoice> out = new ArrayList<>();
+        if (prompt == null) return out;
+        Iterator<String> ids = prompt.keys();
+        while (ids.hasNext()) {
+            String id = ids.next();
+            JSONObject node = prompt.optJSONObject(id);
+            if (node == null) continue;
+            String classType = node.optString("class_type", "");
+            if (!isVideoLoaderType(classType)) continue;
+            JSONObject inputs = node.optJSONObject("inputs");
+            if (inputs == null) continue;
+            String field = videoFileInput(classType, inputs);
+            if (field == null) continue;
+            out.add(new NodeChoice(id, nodeTitle(node, classType), field, classType, false, true));
+        }
+        return out;
+    }
+
+    private static boolean isVideoLoaderType(String classType) {
+        String name = classType == null ? "" :
+                classType.toLowerCase(Locale.ROOT).replace("_", "").replace("-", "").replace(" ", "");
+        if (name.contains("url") || name.contains("youtube") || name.contains("http")
+                || name.startsWith("save") || name.contains("download")) return false;
+        // A path-only loader may require an absolute path rather than a ComfyUI/input filename;
+        // do not falsely advertise those as compatible with the standard upload endpoint.
+        if (name.contains("loadvideopath") || name.contains("videoloadpath")) return false;
+        return name.contains("loadvideo") || name.contains("videoloader")
+                || name.contains("videoinput") || name.contains("readvideo")
+                || name.contains("videofromfile");
+    }
+
+    private static String videoFileInput(String classType, JSONObject inputs) {
+        for (String name : new String[]{"video", "video_file", "filename", "file", "video_path", "path"}) {
+            Object value = inputs.opt(name);
+            if (!(value instanceof String)) continue;
+            String path = ((String) value).trim().toLowerCase(Locale.ROOT);
+            if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("rtsp://")
+                    || path.startsWith("/") || path.matches("^[a-z]:.*")) continue;
+            // A generic loader's path string might instead be a filesystem path or an URL;
+            // video / video_file widgets of known LoadVideo classes are safely replaceable.
+            if (!name.equals("video") && !name.equals("video_file") && !path.isEmpty()
+                    && !(path.endsWith(".mp4") || path.endsWith(".webm") || path.endsWith(".mov")
+                    || path.endsWith(".mkv") || path.endsWith(".avi") || path.endsWith(".m4v"))) continue;
+            return name;
+        }
+        return null;
     }
 
     private static boolean loaderCanProvideMask(String classType, String inputName, JSONObject inputs, JSONObject objectInfo) {
@@ -370,15 +434,21 @@ public final class WorkflowUtils {
         public final String inputName;
         public final String classType;
         public final boolean maskCapable;
+        public final boolean videoInput;
         public NodeChoice(String id, String title, String inputName) {
-            this(id, title, inputName, "", false);
+            this(id, title, inputName, "", false, false);
         }
         public NodeChoice(String id, String title, String inputName, String classType, boolean maskCapable) {
+            this(id, title, inputName, classType, maskCapable, false);
+        }
+        public NodeChoice(String id, String title, String inputName, String classType,
+                          boolean maskCapable, boolean videoInput) {
             this.id = id;
             this.title = title;
             this.inputName = inputName;
             this.classType = classType == null ? "" : classType;
-            this.maskCapable = maskCapable;
+            this.maskCapable = maskCapable && !videoInput;
+            this.videoInput = videoInput;
         }
         @Override public String toString() { return title + " · 节点 " + id; }
     }
