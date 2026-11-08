@@ -111,6 +111,15 @@ public class ImageRef {
         return chooseFinal(refs);
     }
 
+    /** Media type is inferred from the saved filename, not from the ComfyUI storage folder. */
+    public boolean isVideo() {
+        String lower = filename.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mkv")
+                || lower.endsWith(".mov") || lower.endsWith(".m4v") || lower.endsWith(".avi");
+    }
+
+    public String kindLabel() { return isVideo() ? "视频" : "图片"; }
+
     public boolean isSavedOutput() { return "output".equalsIgnoreCase(type); }
     public boolean isTemporary() { return "temp".equalsIgnoreCase(type); }
 
