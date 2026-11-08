@@ -1,8 +1,8 @@
-name: Validate and sign video gallery V2.8.1 repairs
+name: Validate and sign V2.8.2 Video Input Upload
 
 on:
   push:
-    branches: [ "fix/v2-8-1-workflow-library-variants" ]
+    branches: [ "feature/v2-8-2-video-input-upload" ]
   workflow_dispatch:
 
 jobs:
@@ -32,7 +32,7 @@ jobs:
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: ComfyRemote-V2.8.1-debug-test
+          name: ComfyRemote-V2.8.2-debug-test
           path: app/build/outputs/apk/debug/app-debug.apk
 
       - name: Restore permanent signing keystore
@@ -53,5 +53,5 @@ jobs:
       - name: Upload signed release APK
         uses: actions/upload-artifact@v4
         with:
-          name: ComfyRemote-V2.8.1-signed
+          name: ComfyRemote-V2.8.2-signed
           path: app/build/outputs/apk/release/app-release.apk
