@@ -235,6 +235,52 @@ public class QueueActivity extends Activity {
             });
         }
 
+        // Recover previously misclassified video jobs without repeating GPU generation.
+        if (JobRecord.FAILED.equals(job.status) && job.promptId != null && !job.promptId.isEmpty()) {
+            Button resync = button("重新同步服务器结果（不重新生成）");
+            card.addView(resync, new LinearLayout.LayoutParams(-1, dp(48)));
+            resync.setOnClickListener(v -> {
+                resync.setEnabled(false);
+                imagePool.submit(() -> {
+                    try {
+                        String targetServer = job.server == null || job.server.isEmpty() ? server : job.server;
+                        ComfyApiClient api = new ComfyApiClient(targetServer);
+                        org.json.JSONObject history = null;
+                        try { history = api.getHistoryForPrompt(job.promptId); }
+                        catch (java.io.FileNotFoundException ignored) {}
+                        String backendError = history == null ? "" : api.historyError(history, job.promptId);
+                        if (!backendError.isEmpty()) {
+                            JobStore.updateStatus(this, job.localId, JobRecord.FAILED,
+                                    "ComfyUI 执行失败：" + backendError, -1);
+                            runOnUiThread(() -> {
+                                renderJobs();
+                                Toast.makeText(this, "服务器确认该任务执行失败，已显示具体错误", Toast.LENGTH_LONG).show();
+                            });
+                            return;
+                        }
+                        if (history == null || history.length() == 0) {
+                            String state = api.getQueueState(job.promptId);
+                            if (ComfyApiClient.QUEUE_UNKNOWN.equals(state)) {
+                                runOnUiThread(() -> Toast.makeText(this,
+                                        "服务器没有该任务的历史记录或运行队列，无法恢复", Toast.LENGTH_LONG).show());
+                                return;
+                            }
+                        }
+                        JobStore.updateStatus(this, job.localId, JobRecord.SYNCING,
+                                "正在从 ComfyUI 重新同步原有任务，不会重新生成", -1);
+                        GenerationManager.monitorPrompt(this, targetServer, job.localId, job.promptId);
+                        runOnUiThread(() -> { renderJobs(); Toast.makeText(this,
+                                "重新同步已开始，无需重新运行工作流", Toast.LENGTH_LONG).show(); });
+                    } catch (Exception e) {
+                        runOnUiThread(() -> Toast.makeText(this,
+                                "重新同步失败：" + e.getMessage(), Toast.LENGTH_LONG).show());
+                    } finally {
+                        runOnUiThread(() -> { if (resync.getParent() != null) resync.setEnabled(true); });
+                    }
+                });
+            });
+        }
+
         loadJobThumbnail(job, thumb);
 
         List<ImageRef> outputs = job.outputRefs();
