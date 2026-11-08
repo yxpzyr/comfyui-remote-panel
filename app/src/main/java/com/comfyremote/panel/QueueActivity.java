@@ -215,6 +215,26 @@ public class QueueActivity extends Activity {
         progressText.setTextColor(ThemeManager.secondary(this));
         card.addView(progressText);
 
+        if (JobRecord.FAILED.equals(job.status)) {
+            Button reason = button("查看 / 复制完整失败原因");
+            card.addView(reason, new LinearLayout.LayoutParams(-1, dp(48)));
+            reason.setOnClickListener(v -> {
+                String detail = "工作流：" + job.workflowName + "\nPrompt ID：" + job.promptId
+                        + "\n服务器：" + job.server + "\n\n" + job.message;
+                new AlertDialog.Builder(this)
+                        .setTitle("ComfyUI 任务失败详情")
+                        .setMessage(detail)
+                        .setNegativeButton("关闭", null)
+                        .setPositiveButton("复制错误", (d, which) -> {
+                            android.content.ClipboardManager clipboard = (android.content.ClipboardManager)
+                                    getSystemService(CLIPBOARD_SERVICE);
+                            if (clipboard != null) clipboard.setPrimaryClip(
+                                    android.content.ClipData.newPlainText("ComfyUI 错误详情", detail));
+                            Toast.makeText(this, "错误详情已复制", Toast.LENGTH_SHORT).show();
+                        }).show();
+            });
+        }
+
         loadJobThumbnail(job, thumb);
 
         List<ImageRef> outputs = job.outputRefs();
@@ -226,7 +246,9 @@ public class QueueActivity extends Activity {
                 saveRef(job, finalOutput);
                 return true;
             });
-            TextView hint = text("点任务/缩略图查看原图 · 长按缩略图保存", 11, false);
+            TextView hint = text(finalOutput.isVideo()
+                    ? "点任务/封面播放视频 · 长按封面下载原视频"
+                    : "点任务/缩略图查看原图 · 长按缩略图保存", 11, false);
             hint.setTextColor(ThemeManager.accent(this));
             hint.setPadding(0, dp(5), 0, 0);
             card.addView(hint);
@@ -286,6 +308,11 @@ public class QueueActivity extends Activity {
         ImageRef finalRef = ImageRef.chooseFinal(refs);
         if (JobRecord.COMPLETED.equals(job.status) && finalRef != null) {
             ImageRef ref = finalRef;
+            if (ref.isVideo()) {
+                VideoThumbnailLoader.load(job.server == null || job.server.isEmpty() ? server : job.server,
+                        ref, target, 520, () -> !isFinishing() && !isDestroyed());
+                return;
+            }
             String key = "out|" + ref.key();
             Bitmap cached = thumbCache.get(key);
             if (cached != null) { target.setImageBitmap(cached); return; }
@@ -333,6 +360,10 @@ public class QueueActivity extends Activity {
     }
 
     private void showOutput(JobRecord job, ImageRef ref) {
+        if (ref.isVideo()) {
+            VideoPlayerActivity.open(this, job.server == null || job.server.isEmpty() ? server : job.server, ref);
+            return;
+        }
         LinearLayout holder = new LinearLayout(this);
         holder.setGravity(Gravity.CENTER);
         holder.setPadding(dp(8), dp(8), dp(8), dp(8));
@@ -377,9 +408,10 @@ public class QueueActivity extends Activity {
         imagePool.submit(() -> {
             try {
                 String targetServer = job.server == null || job.server.isEmpty() ? server : job.server;
-                ComfyApiClient.ImageDownload dl = new ComfyApiClient(targetServer).fetchImage(ref);
-                MediaSaver.saveImage(this, dl.bytes, ref.filename, dl.mime);
-                runOnUiThread(() -> Toast.makeText(this, "已保存到 Pictures/ComfyRemote", Toast.LENGTH_SHORT).show());
+                new ComfyApiClient(targetServer).saveMedia(this, ref);
+                runOnUiThread(() -> Toast.makeText(this,
+                        ref.isVideo() ? "已保存到 Movies/ComfyRemote" : "已保存到 Pictures/ComfyRemote",
+                        Toast.LENGTH_SHORT).show());
             } catch (Exception e) {
                 runOnUiThread(() -> Toast.makeText(this, "保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show());
             }
