@@ -2139,11 +2139,13 @@ public class MainActivity extends Activity {
         for (ImageJob j : imageJobs) {
             if (!j.replace) continue;
             if (j.uri == null) {
-                showError("缺少输入图片", new Exception("输入图 " + (j.index + 1) + " 已开启“替换此输入”，请先选择图片；如果想保留工作流原图，请关闭该开关。"));
+                showError("缺少输入文件", new Exception("输入" + (j.choice.videoInput ? "视频 " : "图 ") + (j.index + 1)
+                        + " 已开启“替换此输入”，请先选择文件；如果想保留工作流原输入，请关闭该开关。"));
                 return;
             }
             if (j.uploading || j.remoteFilename == null || j.remoteFilename.isEmpty()) {
-                toast(j.uploadError == null || j.uploadError.isEmpty() ? "图片还在上传，请稍候" : "图片上传失败，请重新选择后再试");
+                toast(j.uploadError == null || j.uploadError.isEmpty() ? "输入文件还在上传，请完成上传后再执行"
+                        : "输入文件上传失败：" + j.uploadError);
                 return;
             }
         }
@@ -2173,7 +2175,7 @@ public class MainActivity extends Activity {
             GenerationManager.enqueueSubmission(this, record.localId);
 
             // V2.1: keep the chosen input image visible and persisted for this workflow.
-            statusText.setText("状态：已加入提交队列 · 当前输入图已保留，可再次生成或更换图片");
+            statusText.setText("状态：已加入提交队列 · 当前图片/视频输入已保留，可再次处理或更换文件");
             refreshQueueButton();
             refreshSubmitEnabled();
             toast("已加入队列");
@@ -2186,8 +2188,10 @@ public class MainActivity extends Activity {
         if (target == null || uris == null || uris.isEmpty()) return;
         if (activeProfile == null) { toast("请先选择工作流"); return; }
         new AlertDialog.Builder(this)
-                .setTitle("批量生成 " + uris.size() + " 张？")
-                .setMessage("这些图片将替换“输入图 " + (target.index + 1) + "”，并按安卓文件选择器返回的顺序逐张上传、逐张加入队列。批量目标图不会复用当前蒙版（避免蒙版与不同图片错位）；其他输入图沿用当前设置。")
+                .setTitle("批量处理 " + uris.size() + (target.choice.videoInput ? " 段视频？" : " 张图片？"))
+                .setMessage("这些" + (target.choice.videoInput ? "视频" : "图片") + "将替换“输入"
+                        + (target.choice.videoInput ? "视频 " : "图 ") + (target.index + 1)
+                        + "”，并逐个上传到 ComfyUI、逐个加入队列；不会复用图片蒙版。其他输入文件沿用当前设置。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("按顺序加入队列", (d, w) -> startBatchGeneration(target, new ArrayList<>(uris)))
                 .show();
@@ -2216,7 +2220,8 @@ public class MainActivity extends Activity {
         for (ImageJob j : baseJobs) {
             if (!j.replace || j.index == targetIndex) continue;
             if (j.uri == null || j.uploading || j.remoteFilename == null || j.remoteFilename.isEmpty()) {
-                showError("批量生成前还有输入图未就绪", new Exception("输入图 " + (j.index + 1) + " 仍未上传完成。请先让其他启用的输入图显示“已上传”，再批量选择。"));
+                showError("批量处理前还有输入未就绪", new Exception("输入文件 " + (j.index + 1)
+                        + " 尚未上传完成，请先完成其他启用的输入上传。"));
                 return;
             }
         }
@@ -2225,8 +2230,8 @@ public class MainActivity extends Activity {
             return;
         }
 
-        statusText.setText("状态：准备批量处理 " + uris.size() + " 张图片…");
-        toast("已开始按顺序处理 " + uris.size() + " 张");
+        statusText.setText("状态：准备批量处理 " + uris.size() + (target.choice.videoInput ? " 段视频…" : " 张图片…"));
+        toast("已开始按顺序上传并提交 " + uris.size() + " 个文件");
 
         batchPool.submit(() -> {
             int ok = 0;
@@ -2239,7 +2244,8 @@ public class MainActivity extends Activity {
                 int displayIndex = i + 1;
                 runOnUiThread(() -> statusText.setText("状态：批量 " + displayIndex + "/" + uris.size() + " · 正在上传 " + getDisplayName(uri)));
                 try {
-                    ComfyApiClient.UploadResult uploaded = api.uploadImage(this, uri);
+                    ComfyApiClient.UploadResult uploaded = target.choice.videoInput
+                            ? api.uploadVideo(this, uri) : api.uploadImage(this, uri);
                     List<ImageJob> jobs = new ArrayList<>();
                     for (ImageJob base : baseJobs) {
                         if (base.index == targetIndex) {
@@ -2273,7 +2279,7 @@ public class MainActivity extends Activity {
                     int currentOk = ok;
                     runOnUiThread(() -> {
                         refreshQueueButton();
-                        statusText.setText("状态：批量 " + displayIndex + "/" + uris.size() + " 已加入队列 · 已成功 " + currentOk + " 张");
+                        statusText.setText("状态：批量 " + displayIndex + "/" + uris.size() + " 已加入队列 · 已成功 " + currentOk + " 个");
                     });
                 } catch (Exception e) {
                     failed++;
@@ -2283,7 +2289,7 @@ public class MainActivity extends Activity {
             }
 
             if (lastOkUri != null) {
-                WorkflowProfile latest = WorkflowStore.find(WorkflowStore.load(this), profileId);
+                WorkflowProfile latest = WorkflowStore.loadById(this, profileId);
                 if (latest != null) {
                     latest.setSavedInputUri(targetKey, lastOkUri.toString());
                     latest.setSavedReplaceEnabled(targetKey, true);
@@ -2303,17 +2309,17 @@ public class MainActivity extends Activity {
                     current.uploading = false;
                     current.uploadError = "";
                     current.replaceSwitch.setChecked(true);
-                    current.selectButton.setText("单张：" + getDisplayName(finalLastUri));
+                    current.selectButton.setText("文件：" + getDisplayName(finalLastUri));
                     current.uploadState.setText("✓ 批量最后一张已上传，可继续单张生成");
                     current.uploadState.setTextColor(ThemeManager.success(this));
                     sessionInputUris.computeIfAbsent(profileId, x -> new HashMap<>()).put(targetKey, finalLastUri);
                     loadPreviewOnly(current, finalLastUri);
-                    activeProfile = WorkflowStore.find(WorkflowStore.load(this), profileId);
+                    activeProfile = WorkflowStore.loadById(this, profileId);
                 }
                 refreshQueueButton();
                 refreshSubmitEnabled();
-                statusText.setText("状态：批量处理完成 · 成功 " + finalOk + " 张" + (finalFailed > 0 ? " · 失败 " + finalFailed + " 张" : ""));
-                toast("批量完成：成功 " + finalOk + " 张" + (finalFailed > 0 ? "，失败 " + finalFailed + " 张" : ""));
+                statusText.setText("状态：批量处理完成 · 成功 " + finalOk + " 个" + (finalFailed > 0 ? " · 失败 " + finalFailed + " 个" : ""));
+                toast("批量完成：成功 " + finalOk + " 个文件" + (finalFailed > 0 ? "，失败 " + finalFailed + " 个" : ""));
             });
         });
     }
