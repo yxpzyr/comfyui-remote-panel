@@ -261,10 +261,94 @@ public class ComfyApiClient {
         return id;
     }
 
+    /** Stream only status + output descriptors, not the original enormous prompt graph. */
     public JSONObject getHistoryForPrompt(String promptId) throws Exception {
-        String enc = URLEncoder.encode(promptId, "UTF-8");
-        HttpResult r = getAny(new String[]{"/history/" + enc, "/api/history_v2/" + enc}, 8000, 15000);
-        return new JSONObject(r.text());
+        String encoded = enc(promptId);
+        Exception last = null;
+        for (String path : new String[]{"/history/" + encoded, "/api/history_v2/" + encoded}) {
+            HttpURLConnection con = null;
+            try {
+                con = (HttpURLConnection) new URL(base + path).openConnection();
+                con.setConnectTimeout(10000);
+                con.setReadTimeout(45000);
+                con.setUseCaches(false);
+                con.setRequestProperty("Accept", "application/json");
+                int code = con.getResponseCode();
+                if (code == 404 || code == 405) {
+                    last = new FileNotFoundException("history HTTP " + code + " " + path);
+                    continue;
+                }
+                if (code < 200 || code >= 300)
+                    throw new Exception("读取任务历史失败 HTTP " + code + " " + path);
+                try (InputStream in = con.getInputStream();
+                     JsonReader reader = new JsonReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+                    return parseSingleHistorySummary(reader, promptId);
+                }
+            } catch (FileNotFoundException e) {
+                last = e;
+            } finally {
+                if (con != null) con.disconnect();
+            }
+        }
+        throw last == null ? new FileNotFoundException("服务器还没有此任务的历史记录") : last;
+    }
+
+    static JSONObject parseSingleHistorySummary(JsonReader reader, String promptId) throws Exception {
+        JSONObject result = new JSONObject();
+        if (reader.peek() != JsonToken.BEGIN_OBJECT) {
+            reader.skipValue();
+            return result;
+        }
+        JSONObject direct = new JSONObject();
+        reader.beginObject();
+        while (reader.hasNext()) {
+            String name = reader.nextName();
+            if (name.equals(promptId) && reader.peek() == JsonToken.BEGIN_OBJECT) {
+                result.put(name, readHistorySummaryEntry(reader, promptId));
+            } else if ("history".equals(name) && reader.peek() == JsonToken.BEGIN_ARRAY) {
+                reader.beginArray();
+                while (reader.hasNext()) {
+                    JSONObject item = readHistorySummaryEntry(reader, promptId);
+                    if (promptId.equals(item.optString("prompt_id", ""))) result.put(promptId, item);
+                }
+                reader.endArray();
+            } else if ("outputs".equals(name) || "status".equals(name)
+                    || "timestamp".equals(name) || "prompt_id".equals(name)) {
+                Object value = readGalleryJson(reader, 0);
+                if (value != null) direct.put(name, value);
+            } else reader.skipValue();
+        }
+        reader.endObject();
+        if (result.length() == 0 && (direct.has("outputs") || direct.has("status")))
+            result.put(promptId, direct);
+        return result;
+    }
+
+    private static JSONObject readHistorySummaryEntry(JsonReader r, String fallbackId) throws Exception {
+        JSONObject out = new JSONObject();
+        if (r.peek() != JsonToken.BEGIN_OBJECT) { r.skipValue(); return out; }
+        r.beginObject();
+        while (r.hasNext()) {
+            String name = r.nextName();
+            if ("outputs".equals(name) || "status".equals(name)
+                    || "timestamp".equals(name) || "prompt_id".equals(name)) {
+                Object value = readGalleryJson(r, 0);
+                if (value != null) out.put(name, value);
+            } else if ("prompt".equals(name) && r.peek() == JsonToken.BEGIN_ARRAY) {
+                // Only read ID from [number, promptId, huge prompt graph, ...].
+                r.beginArray();
+                if (r.hasNext()) r.skipValue();
+                if (r.hasNext()) {
+                    if (r.peek() == JsonToken.STRING) out.put("prompt_id", r.nextString());
+                    else r.skipValue();
+                }
+                while (r.hasNext()) r.skipValue();
+                r.endArray();
+            } else r.skipValue();
+        }
+        r.endObject();
+        if (!out.has("prompt_id")) out.put("prompt_id", fallbackId);
+        return out;
     }
 
     public JSONObject getObjectInfo() throws Exception {
@@ -648,7 +732,20 @@ public class ComfyApiClient {
         if (status == null) return "";
         String s = status.optString("status_str", "").toLowerCase();
         if (!s.equals("error")) return "";
-        return status.toString();
+        JSONArray messages = status.optJSONArray("messages");
+        if (messages != null) for (int i = messages.length() - 1; i >= 0; i--) {
+            JSONArray msg = messages.optJSONArray(i);
+            if (msg == null || msg.length() < 2 || !msg.optString(0, "").contains("error")) continue;
+            JSONObject detail = msg.optJSONObject(1);
+            if (detail == null) continue;
+            String node = detail.optString("node_id", detail.optString("node", ""));
+            String kind = detail.optString("exception_type", "");
+            String cause = detail.optString("exception_message", detail.optString("message", ""));
+            String summary = (node.isEmpty() ? "" : "节点 " + node + " · ")
+                    + (kind.isEmpty() ? "" : kind + " · ") + cause;
+            if (!summary.trim().isEmpty()) return clipped(summary, 1600);
+        }
+        return clipped(status.toString(), 1600);
     }
 
     public String getQueueState(String promptId) throws Exception {
@@ -809,13 +906,18 @@ public class ComfyApiClient {
         byte[] data = body.toString().getBytes(StandardCharsets.UTF_8);
         Exception last = null;
         for (String p : paths) {
-            try {
-                HttpResult r = request("POST", p, data, "application/json; charset=utf-8", connect, read);
-                if (r.code >= 200 && r.code < 300) return r;
-                last = new Exception("HTTP " + r.code + " " + p + ": " + r.text());
-            } catch (Exception e) { last = e; }
+            HttpResult r = request("POST", p, data, "application/json; charset=utf-8", connect, read);
+            if (r.code >= 200 && r.code < 300) return r;
+            last = new Exception("HTTP " + r.code + " " + p + ": " + clipped(r.text(), 2800));
+            // Never conceal real prompt-validation errors behind a fallback endpoint's 404.
+            if (r.code != 404 && r.code != 405) throw last;
         }
         throw last == null ? new Exception("请求失败") : last;
+    }
+
+    private static String clipped(String text, int max) {
+        if (text == null) return "";
+        return text.length() <= max ? text : text.substring(0, max) + "…";
     }
 
     private void postEmptyAny(String[] paths, int connect, int read) throws Exception {
