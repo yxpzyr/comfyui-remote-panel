@@ -734,7 +734,12 @@ public class MainActivity extends Activity {
         final String server = currentServer();
         pool.submit(() -> {
             try {
-                JSONObject compiled = WorkflowVariants.compile(profile.uiObjectOrNull(), profile.variants, selectedId, server);
+                // Reopening an already configured subworkflow needs no network round-trip.
+                // activateVariant() restores its persisted prompt and parameters from variantStates.
+                JSONObject saved = profile.variantStates.optJSONObject(selectedId);
+                boolean hasSavedPrompt = saved != null && saved.optString("prompt_json", "").length() > 2;
+                JSONObject compiled = hasSavedPrompt ? new JSONObject()
+                        : WorkflowVariants.compile(profile.uiObjectOrNull(), profile.variants, selectedId, server);
                 runOnUiThread(() -> {
                     variantSwitching = false;
                     if (activeProfile == null || !profile.id.equals(activeProfile.id) ||
@@ -1805,6 +1810,7 @@ public class MainActivity extends Activity {
         final String profileId = activeProfile.id;
         final String server = currentServer();
         if (userInitiated) {
+            WorkflowUiConverter.clearObjectInfoCache();
             synchronized (objectInfoLock) {
                 cachedObjectInfo = null;
                 cachedObjectInfoServer = "";
@@ -1817,7 +1823,7 @@ public class MainActivity extends Activity {
         pool.submit(() -> {
             try {
                 JSONObject objectInfo = getObjectInfoCached(server);
-                WorkflowProfile p = WorkflowStore.find(WorkflowStore.load(this), profileId);
+                WorkflowProfile p = WorkflowStore.loadById(this, profileId);
                 if (p == null) return;
                 final int count = WorkflowUtils.findEditableFields(p.promptObject(), objectInfo).size();
                 runOnUiThread(() -> {
@@ -1929,7 +1935,7 @@ public class MainActivity extends Activity {
         final String server = currentServer();
         pool.submit(() -> {
             try {
-                WorkflowProfile profile = WorkflowStore.find(WorkflowStore.load(this), profileId);
+                WorkflowProfile profile = WorkflowStore.loadById(this, profileId);
                 if (profile == null || !variantAtStart.equals(profile.activeVariantId)) return;
                 JSONObject objectInfo = getObjectInfoCached(server);
                 List<WorkflowUtils.OutputChoice> detectedTmp = WorkflowUtils.findOutputNodes(profile.promptObject(), objectInfo);
@@ -1937,14 +1943,15 @@ public class MainActivity extends Activity {
                 if (profile.isCollection()) detectedTmp = WorkflowVariants.finalOutputs(
                         profile.promptObject(), profile.variants, variantAtStart, objectInfo);
                 final List<WorkflowUtils.OutputChoice> detected = detectedTmp;
-                WorkflowProfile newest = WorkflowStore.find(WorkflowStore.load(this), profileId);
+                WorkflowProfile newest = WorkflowStore.loadById(this, profileId);
                 if (newest == null || !variantAtStart.equals(newest.activeVariantId)) return;
                 newest.setOutputChoices(detected, true, true);
                 WorkflowStore.upsert(this, newest);
                 runOnUiThread(() -> {
-                    profiles = WorkflowStore.load(this);
-                    if (activeProfile != null && profileId.equals(activeProfile.id)) {
-                        activeProfile = WorkflowStore.find(profiles, profileId);
+                    if (activeProfile != null && profileId.equals(activeProfile.id)
+                            && variantAtStart.equals(activeProfile.activeVariantId)) {
+                        // Avoid reloading the entire library for one node-schema refresh.
+                        activeProfile.setOutputChoices(detected, true, true);
                         rebuildOutputNodeControls();
                         refreshSubmitEnabled();
                     }
