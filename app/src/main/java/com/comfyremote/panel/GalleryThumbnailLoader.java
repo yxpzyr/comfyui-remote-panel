@@ -41,6 +41,10 @@ final class GalleryThumbnailLoader {
     static void load(Context context, String server, ImageRef ref, ImageView target,
                      int maxSide, BooleanSupplier stillVisible) {
         if (ref == null || !stillVisible.getAsBoolean()) return;
+        if (ref.isVideo()) {
+            VideoThumbnailLoader.load(server, ref, target, maxSide, stillVisible);
+            return;
+        }
         Context app = context.getApplicationContext();
         String key = cacheKey(server, ref, maxSide);
         Bitmap cached = MEMORY.get(key);
