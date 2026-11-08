@@ -749,9 +749,7 @@ public class MainActivity extends Activity {
             try {
                 // Reopening an already configured subworkflow needs no network round-trip.
                 // activateVariant() restores its persisted prompt and parameters from variantStates.
-                JSONObject saved = profile.variantStates.optJSONObject(selectedId);
-                boolean hasSavedPrompt = saved != null && saved.optString("prompt_json", "").length() > 2;
-                JSONObject compiled = hasSavedPrompt ? new JSONObject()
+                JSONObject compiled = profile.hasSavedVariantPrompt(selectedId) ? new JSONObject()
                         : WorkflowVariants.compile(profile.uiObjectOrNull(), profile.variants, selectedId, server);
                 runOnUiThread(() -> {
                     variantSwitching = false;
