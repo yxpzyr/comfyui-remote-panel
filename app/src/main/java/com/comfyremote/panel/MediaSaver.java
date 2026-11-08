@@ -57,7 +57,8 @@ public final class MediaSaver {
     }
 
     /** Stream large video files into MediaStore without buffering the complete video in RAM. */
-    public static Uri saveVideo(Context context, InputStream input, String filename, String mime) throws Exception {
+    public static Uri saveVideo(Context context, InputStream input, String filename, String mime,
+                                long expectedBytes) throws Exception {
         if (filename == null || filename.trim().isEmpty()) filename = "comfy_" + System.currentTimeMillis() + ".mp4";
         if (mime == null || mime.trim().isEmpty()) mime = guessMime(filename);
         String original = safeName(SubmissionFilenamePolicy.forLegacyDownload(filename, System.currentTimeMillis()));
@@ -92,6 +93,8 @@ public final class MediaSaver {
                     written += n;
                 }
                 if (written <= 0) throw new Exception("服务器返回了空视频文件");
+                if (expectedBytes >= 0 && written != expectedBytes)
+                    throw new Exception("视频未下载完整：已接收 " + written + " 字节，预期 " + expectedBytes + " 字节");
             }
             ContentValues ready = new ContentValues();
             ready.put(MediaStore.Video.Media.IS_PENDING, 0);
