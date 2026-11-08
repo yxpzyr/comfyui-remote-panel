@@ -222,7 +222,7 @@ public final class GenerationManager {
 
                         completedWithoutImages++;
                         update(context, localId, JobRecord.SYNCING,
-                                "任务已完成，正在同步输出图片… " + completedWithoutImages + "/20", -1);
+                                "任务已完成，正在同步图片或视频… " + completedWithoutImages + "/20", -1);
                         if (completedWithoutImages >= 20) {
                             JobStore.complete(context, localId, new ArrayList<>(),
                                     "ComfyUI 已完成任务，但 history 未提供可下载图片记录");
@@ -327,8 +327,8 @@ public final class GenerationManager {
     private static void complete(Context context, String localId, List<ImageRef> refs) {
         boolean savedToOutput = false;
         for (ImageRef ref : refs) if (ref != null && ref.isSavedOutput()) { savedToOutput = true; break; }
-        String message = savedToOutput ? "生成完成，共 " + refs.size() + " 张图片记录"
-                : "生成完成，但仅发现临时预览/非 output 图片；请确认工作流已启用 SaveImage 保存节点";
+        String message = savedToOutput ? "生成完成，共 " + refs.size() + " 个媒体文件记录"
+                : "生成完成，但仅发现临时预览/非 output 临时媒体文件；请确认工作流已启用 SaveImage/SaveVideo 保存节点";
         JobStore.complete(context, localId, refs, message);
         notifyListeners(JobStore.find(context, localId));
     }
