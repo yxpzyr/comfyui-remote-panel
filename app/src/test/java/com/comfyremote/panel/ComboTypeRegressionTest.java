@@ -18,7 +18,9 @@ public class ComboTypeRegressionTest {
                 .put("quality", new JSONArray().put(new JSONArray().put("8").put("10")))
                 .put("prompt", new JSONArray().put("STRING").put(new JSONObject()));
         return new JSONObject().put("CreateVideo", new JSONObject()
-                .put("input", new JSONObject().put("required", videoInputs)));
+                .put("input", new JSONObject().put("required", videoInputs))
+                .put("input_order", new JSONObject().put("required", new JSONArray()
+                        .put("bit_depth").put("mode").put("quality").put("prompt"))));
     }
 
     private static JSONObject prompt() throws Exception {
