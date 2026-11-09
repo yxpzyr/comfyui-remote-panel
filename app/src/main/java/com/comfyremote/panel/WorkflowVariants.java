@@ -310,9 +310,13 @@ public final class WorkflowVariants {
     }
 
     private static boolean isFinalOutput(String type) {
-        String t = type.toLowerCase(java.util.Locale.ROOT);
-        return t.equals("saveimage") || t.startsWith("saveimage") || t.contains("saveanimated") ||
-                t.equals("savevideo") || t.equals("videocombine") || t.equals("savewebp") || t.equals("savegif");
+        String t = (type == null ? "" : type).toLowerCase(java.util.Locale.ROOT)
+                .replace("_", "").replace("-", "").replace(" ", "");
+        // VideoHelperSuite uses VHS_VideoCombine, not the bare VideoCombine name.
+        // Treat these media-writing sinks as branch outputs when discovering collections.
+        return t.contains("saveimage") || t.contains("saveanimated") ||
+                t.contains("savevideo") || t.contains("videocombine") ||
+                t.contains("savewebp") || t.contains("savegif");
     }
 
     private static int mostSpecificContainingGroup(JSONObject node, JSONArray groups) {
