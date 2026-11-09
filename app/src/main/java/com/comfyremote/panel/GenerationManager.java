@@ -112,7 +112,10 @@ public final class GenerationManager {
         } catch (Exception e) {
             JobRecord current = JobStore.find(context, localId);
             if (current != null && !current.isTerminal()) {
-                update(context, localId, JobRecord.FAILED, "提交失败：" + safeMessage(e), 0);
+                String error = "提交失败：" + safeMessage(e);
+                JobStore.saveErrorDetails(context, localId, error);
+                update(context, localId, JobRecord.FAILED,
+                        error.length() > 750 ? error.substring(0, 750) + "…" : error, 0);
             }
         }
     }
@@ -196,7 +199,11 @@ public final class GenerationManager {
                 if (history != null) {
                     String err = api.historyError(history, promptId);
                     if (!err.isEmpty()) {
-                        update(context, localId, JobRecord.FAILED, "ComfyUI 执行失败：" + err, 0);
+                        String detail = api.historyErrorDetails(history, promptId);
+                        JobStore.saveErrorDetails(context, localId,
+                                "Prompt ID: " + promptId + "\n" + detail);
+                        update(context, localId, JobRecord.FAILED,
+                                "ComfyUI 执行失败：" + err, 0);
                         return;
                     }
 
