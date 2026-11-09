@@ -322,6 +322,8 @@ public final class WorkflowUiConverter {
             Object v = values.opt(i);
             if (isControlToken(v) && !isStringLike(def)) continue;
             if (def.combo && comboContains(def, v)) return i;
+            if (def.dynamicCombo && v instanceof JSONObject &&
+                    ((JSONObject) v).has(def.name)) return i;
         }
         for (int i = start; i < end; i++) {
             Object v = values.opt(i);
@@ -382,12 +384,24 @@ public final class WorkflowUiConverter {
 
     private static Object fallbackValue(InputDef def) {
         if (def.hasDefault) return def.defaultValue;
+        if (def.dynamicCombo) {
+            // Nested dynamic choices can select different codecs. Infer a missing
+            // value only from the declared "auto" option or a single option.
+            for (Object option : def.allowedValues)
+                if ("auto".equals(String.valueOf(option))) return option;
+            return def.allowedValues.size() == 1 ? def.allowedValues.get(0) : null;
+        }
         if (def.combo && !def.allowedValues.isEmpty()) return def.allowedValues.get(0);
         return null;
     }
 
     private static Object adaptValueToDef(Object value, InputDef def) {
         if (value == null || value == JSONObject.NULL) return fallbackValue(def);
+        if (def.dynamicCombo && value instanceof JSONObject) {
+            // Preserve nested settings such as codec/encoding on an existing choice.
+            Object selected = ((JSONObject) value).opt(def.name);
+            return selected != null && comboContains(def, selected) ? value : fallbackValue(def);
+        }
         if (!def.combo) {
             String t = def.type.toUpperCase(Locale.ROOT);
             if (("INT".equals(t) || "FLOAT".equals(t) || "NUMBER".equals(t)) && value instanceof Number) {
@@ -603,7 +617,7 @@ public final class WorkflowUiConverter {
 
     private static final class InputDef {
         final String name, type;
-        final boolean widget, combo, required, hasDefault;
+        final boolean widget, combo, dynamicCombo, required, hasDefault;
         final boolean autogrow;
         final int autogrowMin;
         final Object defaultValue;
@@ -611,14 +625,15 @@ public final class WorkflowUiConverter {
         final boolean hasMin, hasMax;
         final double minValue, maxValue;
 
-        InputDef(String name, String type, boolean widget, boolean combo, boolean required,
-                 boolean hasDefault, Object defaultValue, List<Object> allowedValues,
+        InputDef(String name, String type, boolean widget, boolean combo, boolean dynamicCombo,
+                 boolean required, boolean hasDefault, Object defaultValue, List<Object> allowedValues,
                  boolean hasMin, double minValue, boolean hasMax, double maxValue,
                  boolean autogrow, int autogrowMin) {
             this.name = name;
             this.type = type;
             this.widget = widget;
             this.combo = combo;
+            this.dynamicCombo = dynamicCombo;
             this.required = required;
             this.autogrow = autogrow;
             this.autogrowMin = autogrowMin;
@@ -671,7 +686,7 @@ public final class WorkflowUiConverter {
         }
 
         private static InputDef parseInputDef(String name, Object raw, boolean required) {
-            boolean combo = false, widget = false, hasDefault = false, autogrow = false;
+            boolean combo = false, dynamicCombo = false, widget = false, hasDefault = false, autogrow = false;
             int autogrowMin = 0;
             boolean hasMin = false, hasMax = false;
             double minValue = 0.0, maxValue = 0.0;
@@ -697,11 +712,18 @@ public final class WorkflowUiConverter {
                 } else {
                     type = String.valueOf(first);
                     JSONArray modernOptions = opts == null ? null : opts.optJSONArray("options");
-                    if ("COMBO".equalsIgnoreCase(type) || modernOptions != null) {
+                    dynamicCombo = type.toUpperCase(Locale.ROOT).startsWith("COMFY_DYNAMICCOMBO");
+                    if ("COMBO".equalsIgnoreCase(type) || modernOptions != null || dynamicCombo) {
                         combo = true;
                         widget = true;
                         if (modernOptions != null) {
-                            for (int i = 0; i < modernOptions.length(); i++) allowed.add(modernOptions.opt(i));
+                            for (int i = 0; i < modernOptions.length(); i++) {
+                                Object option = modernOptions.opt(i);
+                                // ComfyUI V3 DynamicCombo options are objects with keys.
+                                if (dynamicCombo && option instanceof JSONObject)
+                                    allowed.add(((JSONObject) option).optString("key", ""));
+                                else allowed.add(option);
+                            }
                         }
                     }
                 }
@@ -736,7 +758,8 @@ public final class WorkflowUiConverter {
                 }
             }
 
-            return new InputDef(name, type, widget, combo, required, hasDefault, defaultValue, allowed,
+            return new InputDef(name, type, widget, combo, dynamicCombo,
+                    required, hasDefault, defaultValue, allowed,
                     hasMin, minValue, hasMax, maxValue, autogrow, autogrowMin);
         }
     }
