@@ -1,3 +1,11 @@
+## V2.8.4 修复 CreateVideo.bit_depth HTTP400 参数类型错误
+
+- 恢复 /object_info 中原生 COMBO 选项类型（字符串、数值和布尔值），而非一律将选项转为 Android 下拉菜单的显示字符串。
+- 工作流 JSON UI 转 ComfyUI API 时，使用 object_info 已定义的原始枚举值而不是原样回传错误类型。
+- 兼容旧版本保存的 API Prompt：提交前在后台按服务端节点定义修复可疑的数字字符串枚举（例如 CreateVideo.bit_depth 由 "8" 还原为数字 8）；保留真正需要字符串值的枚举和提示词。
+- 对截图报错 CreateVideo.bit_depth: '8' not in ['auto', 8, 10] 加入精准自动化回归测试，并验证 image/video 功能不会被改动。
+- 保留图生视频、文生视频、视频上传、文件下载与 V2.8.1 工作流库性能优化。
+
 ## V2.8.3 视频工作流任务诊断与兼容修复
 
 - 合集输出识别增加 `VHS_VideoCombine` 和扩展视频保存节点命名兼容（不再只认裸 `VideoCombine`）。
