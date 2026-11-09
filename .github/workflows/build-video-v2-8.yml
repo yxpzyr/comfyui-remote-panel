@@ -1,8 +1,8 @@
-name: Validate and sign V2.8.4 typed combo fixes
+name: Validate and sign V2.8.5 ComfyUI runtime diagnostics
 
 on:
   push:
-    branches: [ "fix/v2-8-4-combo-value-types" ]
+    branches: [ "fix/v2-8-5-runtime-error-details" ]
   workflow_dispatch:
 
 jobs:
@@ -32,7 +32,7 @@ jobs:
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: ComfyRemote-V2.8.4-debug-test
+          name: ComfyRemote-V2.8.5-debug-test
           path: app/build/outputs/apk/debug/app-debug.apk
 
       - name: Restore permanent signing keystore
@@ -53,5 +53,5 @@ jobs:
       - name: Upload signed release APK
         uses: actions/upload-artifact@v4
         with:
-          name: ComfyRemote-V2.8.4-signed
+          name: ComfyRemote-V2.8.5-signed
           path: app/build/outputs/apk/release/app-release.apk
