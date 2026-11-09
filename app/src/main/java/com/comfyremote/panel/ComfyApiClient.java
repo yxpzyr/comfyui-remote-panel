@@ -261,10 +261,92 @@ public class ComfyApiClient {
         return id;
     }
 
+    /**
+     * Stream the history response. Video workflows may embed enormous prompts in
+     * history["prompt"]; only the status and output metadata are needed to monitor jobs.
+     * Do not materialize the original prompt graph on Android every two seconds.
+     */
     public JSONObject getHistoryForPrompt(String promptId) throws Exception {
-        String enc = URLEncoder.encode(promptId, "UTF-8");
-        HttpResult r = getAny(new String[]{"/history/" + enc, "/api/history_v2/" + enc}, 8000, 15000);
-        return new JSONObject(r.text());
+        String encoded = URLEncoder.encode(promptId, "UTF-8");
+        Exception last = null;
+        for (String path : new String[]{"/history/" + encoded, "/api/history_v2/" + encoded}) {
+            HttpURLConnection con = null;
+            try {
+                con = (HttpURLConnection) new URL(base + path).openConnection();
+                con.setRequestMethod("GET");
+                con.setConnectTimeout(8000);
+                con.setReadTimeout(25000);
+                con.setUseCaches(false);
+                int code = con.getResponseCode();
+                if (code == 404) {
+                    last = new FileNotFoundException("HTTP 404 " + path);
+                    continue;
+                }
+                if (code < 200 || code >= 300)
+                    throw new Exception("读取任务历史失败 HTTP " + code + " " + path);
+                try (InputStream in = con.getInputStream();
+                     JsonReader reader = new JsonReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+                    return parseCompactHistory(reader, promptId);
+                }
+            } catch (FileNotFoundException e) {
+                last = e;
+            } catch (Exception e) {
+                // Do not mask malformed history or server failures by requesting another endpoint.
+                throw e;
+            } finally {
+                if (con != null) con.disconnect();
+            }
+        }
+        throw last == null ? new FileNotFoundException("任务历史暂不可用") : last;
+    }
+
+    /** Allows deterministic regression testing with massive nested prompt graphs. */
+    static JSONObject parseCompactHistory(JsonReader reader, String promptId) throws Exception {
+        JSONObject result = new JSONObject();
+        if (reader.peek() != JsonToken.BEGIN_OBJECT) throw new JSONException("任务历史不是 JSON 对象");
+        reader.beginObject();
+        while (reader.hasNext()) {
+            String key = reader.nextName();
+            JsonToken value = reader.peek();
+            if ("history".equals(key) && value == JsonToken.BEGIN_ARRAY) {
+                JSONArray arr = new JSONArray();
+                reader.beginArray();
+                while (reader.hasNext()) {
+                    if (reader.peek() == JsonToken.BEGIN_OBJECT) {
+                        JSONObject entry = readCompactHistoryEntry(reader);
+                        if (promptId.equals(entry.optString("prompt_id", promptId))) arr.put(entry);
+                    } else reader.skipValue();
+                }
+                reader.endArray();
+                result.put(key, arr);
+            } else if (value == JsonToken.BEGIN_OBJECT && !"outputs".equals(key)
+                    && !"status".equals(key)) {
+                // Legacy ComfyUI response: {"prompt-id": {"prompt": [huge], "outputs": {...}}}
+                if (promptId.equals(key)) result.put(key, readCompactHistoryEntry(reader));
+                else reader.skipValue();
+            } else if ("outputs".equals(key) || "status".equals(key) ||
+                    "prompt_id".equals(key) || "timestamp".equals(key)) {
+                Object data = readGalleryJson(reader, 0);
+                if (data != null) result.put(key, data);
+            } else reader.skipValue();
+        }
+        reader.endObject();
+        return result;
+    }
+
+    private static JSONObject readCompactHistoryEntry(JsonReader reader) throws Exception {
+        JSONObject entry = new JSONObject();
+        reader.beginObject();
+        while (reader.hasNext()) {
+            String key = reader.nextName();
+            if ("outputs".equals(key) || "status".equals(key)
+                    || "prompt_id".equals(key) || "timestamp".equals(key)) {
+                Object value = readGalleryJson(reader, 0);
+                if (value != null) entry.put(key, value);
+            } else reader.skipValue(); // Especially prompt and workflow: they may contain megabytes.
+        }
+        reader.endObject();
+        return entry;
     }
 
     public JSONObject getObjectInfo() throws Exception {
@@ -646,9 +728,25 @@ public class ComfyApiClient {
         if (entry == null) return "";
         JSONObject status = entry.optJSONObject("status");
         if (status == null) return "";
-        String s = status.optString("status_str", "").toLowerCase();
-        if (!s.equals("error")) return "";
-        return status.toString();
+        String s = status.optString("status_str", "").toLowerCase(java.util.Locale.ROOT);
+        if (!s.equals("error") && !s.equals("failed") && !s.equals("failure")) return "";
+        JSONArray messages = status.optJSONArray("messages");
+        if (messages != null) for (int i = messages.length() - 1; i >= 0; i--) {
+            JSONArray msg = messages.optJSONArray(i);
+            if (msg == null || msg.length() < 2) continue;
+            if (!"execution_error".equals(msg.optString(0, ""))) continue;
+            JSONObject detail = msg.optJSONObject(1);
+            if (detail == null) continue;
+            String node = detail.optString("node_id", "");
+            String type = detail.optString("node_type", "");
+            String kind = detail.optString("exception_type", "");
+            String description = detail.optString("exception_message", "");
+            return "节点 " + (node.isEmpty() ? "未知" : node) +
+                    (type.isEmpty() ? "" : " [" + type + "]") + "：" +
+                    (kind.isEmpty() ? "" : kind + " · ") +
+                    (description.isEmpty() ? "执行异常，请检查电脑 ComfyUI 控制台" : description);
+        }
+        return status.optString("message", "ComfyUI 报告执行错误，请检查电脑端日志");
     }
 
     public String getQueueState(String promptId) throws Exception {
@@ -808,12 +906,20 @@ public class ComfyApiClient {
     private HttpResult postJsonAny(String[] paths, JSONObject body, int connect, int read) throws Exception {
         byte[] data = body.toString().getBytes(StandardCharsets.UTF_8);
         Exception last = null;
-        for (String p : paths) {
+        for (String path : paths) {
             try {
-                HttpResult r = request("POST", p, data, "application/json; charset=utf-8", connect, read);
+                HttpResult r = request("POST", path, data, "application/json; charset=utf-8", connect, read);
                 if (r.code >= 200 && r.code < 300) return r;
-                last = new Exception("HTTP " + r.code + " " + p + ": " + r.text());
-            } catch (Exception e) { last = e; }
+                String message = "HTTP " + r.code + " " + path + ": " + r.text();
+                // /prompt returns HTTP 400 with the actual invalid node and input details.
+                // Never overwrite it with a meaningless 404 from the /api/prompt fallback.
+                if (r.code != 404 && r.code != 405) throw new Exception(message);
+                last = new FileNotFoundException(message);
+            } catch (FileNotFoundException e) {
+                last = e;
+            } catch (Exception e) {
+                throw e;
+            }
         }
         throw last == null ? new Exception("请求失败") : last;
     }
