@@ -33,44 +33,101 @@ public final class SaveVideoFormatGuard {
      * server revisions mark the format field differently, so the regular widget
      * mapper may skip it entirely.
      */
+    /**
+     * Repair a converted UI branch using the exact original SaveVideo widget choice.
+     * In some ComfyUI versions the generic widget aligner writes a nested "codec"
+     * object into format; that object is NOT a valid SaveVideo.format choice.
+     */
     public static int repairConvertedBranch(JSONObject uiGraph, JSONObject prompt,
                                             JSONObject objectInfo) throws JSONException {
         if (uiGraph == null || prompt == null || !hasSaveVideo(prompt)) return 0;
-        JSONObject sourceNodes = new JSONObject();
-        JSONArray nodes = uiGraph.optJSONArray("nodes");
-        if (nodes != null) for (int i = 0; i < nodes.length(); i++) {
-            JSONObject node = nodes.optJSONObject(i);
-            if (node != null) sourceNodes.put(String.valueOf(node.opt("id")), node);
-        }
+        JSONObject sourceNodes = indexUiNodes(uiGraph);
         int repaired = 0;
         Iterator<String> ids = prompt.keys();
         while (ids.hasNext()) {
             String id = ids.next();
             JSONObject target = prompt.optJSONObject(id);
-            if (target == null || !"SaveVideo".equals(target.optString("class_type", "")))
-                continue;
-            JSONObject targetInputs = target.optJSONObject("inputs");
-            if (targetInputs == null) continue;
-            if (targetInputs.has("format") && !targetInputs.isNull("format")) continue;
+            if (target == null || !"SaveVideo".equals(target.optString("class_type", ""))) continue;
+            JSONObject inputs = target.optJSONObject("inputs");
+            if (inputs == null || !needsRepair(inputs.opt("format"))) continue;
             JSONObject source = sourceNodes.optJSONObject(id);
-            Object originalFormat = uiWidgetValue(source, "format");
-            Object normalized = canonicalize(id, originalFormat, objectInfo, true);
-            targetInputs.put("format", normalized);
+            if (source == null || !"SaveVideo".equals(source.optString("type", ""))) continue;
+            JSONObject nodeInfo = objectInfo == null ? null : objectInfo.optJSONObject("SaveVideo");
+            if (nodeInfo == null) continue;
+            preserveMisplacedCodec(inputs.opt("format"), inputs);
+            Object value = uiWidgetValue(source, "format");
+            if (value == null || value == JSONObject.NULL) continue;
+            inputs.put("format", canonicalize(id, value, objectInfo, true));
             repaired++;
         }
         return repaired;
     }
 
-    /** Run before UI-converter required-input checks so missing format cannot escape. */
+    /** Also invoked during UI conversion, before regular required-field validation. */
     public static void repairUiNode(JSONObject uiNode, JSONObject apiInputs, JSONObject nodeSchema)
             throws JSONException {
         if (uiNode == null || apiInputs == null ||
                 !"SaveVideo".equals(uiNode.optString("type", ""))) return;
-        if (apiInputs.has("format") && !apiInputs.isNull("format")) return;
-        String nodeId = String.valueOf(uiNode.opt("id"));
+        String id = String.valueOf(uiNode.opt("id"));
         JSONObject info = new JSONObject().put("SaveVideo", nodeSchema);
         Object original = uiWidgetValue(uiNode, "format");
-        apiInputs.put("format", canonicalize(nodeId, original, info, true));
+        if (original != null && original != JSONObject.NULL) {
+            // The UI's recorded choice is authoritative when compiling a new branch.
+            Object existing = apiInputs.opt("format");
+            if (needsRepair(existing)) preserveMisplacedCodec(existing, apiInputs);
+            apiInputs.put("format", canonicalize(id, original, info, true));
+        } else if (needsRepair(apiInputs.opt("format"))) {
+            Object existing = apiInputs.opt("format");
+            preserveMisplacedCodec(existing, apiInputs);
+            apiInputs.put("format", canonicalize(id, null, info, true));
+        }
+    }
+
+    /** Only malformed or missing values need expensive saved-UI rehydration. */
+    public static boolean needsUiRecovery(JSONObject prompt) {
+        if (prompt == null) return false;
+        Iterator<String> ids = prompt.keys();
+        while (ids.hasNext()) {
+            JSONObject node = prompt.optJSONObject(ids.next());
+            if (node == null || !"SaveVideo".equals(node.optString("class_type", ""))) continue;
+            JSONObject inputs = node.optJSONObject("inputs");
+            if (inputs != null && needsRepair(inputs.opt("format"))) return true;
+        }
+        return false;
+    }
+
+    private static boolean needsRepair(Object original) {
+        if (original == null || original == JSONObject.NULL) return true;
+        if (!(original instanceof JSONObject)) return false;
+        JSONObject object = (JSONObject) original;
+        return !object.has("format") || object.isNull("format");
+    }
+
+    private static JSONObject indexUiNodes(JSONObject root) throws JSONException {
+        JSONObject nodes = new JSONObject();
+        if (root == null) return nodes;
+        JSONArray list = root.optJSONArray("nodes");
+        if (list == null) {
+            JSONObject wrapped = root.optJSONObject("workflow");
+            list = wrapped == null ? null : wrapped.optJSONArray("nodes");
+        }
+        if (list == null) return nodes;
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject node = list.optJSONObject(i);
+            if (node != null) nodes.put(String.valueOf(node.opt("id")), node);
+        }
+        return nodes;
+    }
+
+    /** Keep a misplaced codec selection rather than discarding user settings. */
+    private static void preserveMisplacedCodec(Object badFormat, JSONObject inputs) throws JSONException {
+        if (!(badFormat instanceof JSONObject) || inputs.has("codec")) return;
+        JSONObject obj = (JSONObject) badFormat;
+        if (!obj.has("codec") || obj.isNull("codec")) return;
+        Object codec = obj.opt("codec");
+        if (codec instanceof JSONObject) inputs.put("codec", codec);
+        else if (codec instanceof String)
+            inputs.put("codec", new JSONObject().put("codec", codec));
     }
 
     /**
@@ -93,6 +150,7 @@ public final class SaveVideoFormatGuard {
             JSONObject inputs = node.optJSONObject("inputs");
             if (inputs == null) throw new JSONException("SaveVideo 节点 " + id + " 缺少 inputs");
             Object original = inputs.opt("format");
+            if (needsRepair(original)) preserveMisplacedCodec(original, inputs);
             Object normalized = canonicalize(id, original, objectInfo, true);
             if (original == null || original == JSONObject.NULL || !equalsValue(original, normalized)) {
                 inputs.put("format", normalized);
@@ -150,10 +208,22 @@ public final class SaveVideoFormatGuard {
         if (candidate instanceof JSONObject) {
             JSONObject obj = (JSONObject) candidate;
             Object selected = obj.opt("format");
-            if (selected == null || selected == JSONObject.NULL)
-                throw new JSONException("SaveVideo 节点 " + id + " 的 format 对象缺少 format 键");
-            validateOption(id, selected, options);
-            return candidate;
+            if (selected != null && selected != JSONObject.NULL) {
+                // Native SaveVideo supports a full nested format/codec selection.
+                validateOption(id, selected, options);
+                return candidate;
+            }
+            // Legacy widget alignment may place {"codec":"auto"} in the
+            // format slot. It is a codec selection, NOT a valid format.
+            // Unwrap explicit choice wrappers only if the server lists them.
+            for (String key : new String[]{"value", "key"}) {
+                Object wrapped = obj.opt(key);
+                if (wrapped != null && wrapped != JSONObject.NULL &&
+                        options != null && findMatchingOption(wrapped, options) != null) {
+                    return findMatchingOption(wrapped, options);
+                }
+            }
+            candidate = null; // recover via schema default / explicit auto
         }
         if (candidate != null && options != null) {
             Object allowed = findMatchingOption(candidate, options);
