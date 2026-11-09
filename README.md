@@ -1,3 +1,12 @@
+## V2.8.7 图生视频 SaveVideo.format 丢失修复
+
+- 针对同一套 MiniMax H3 合集四个输出分支（图生视频 #189、文生视频 #193、首尾帧 #258、多参视频 #285），修复分支转换时格式输入漏传问题。
+- 修正旧逻辑只在服务端将 format 标为 required / COMFY_DYNAMICCOMBO_V3 时才修复：无论 COMBO / 动态输入、required / optional，都依据原始 UI widgets_values、服务器声明的选项，保留/补全实际 format。
+- 旧版本保存的子工作流 API 快照，在最终提交前统一检查每个原生 SaveVideo.format；不修改已经存在且合法的格式/编码参数，也不改变图像输入和生成参数。
+- 在失败日志中从 ComfyUI /history 的 prompt[2] 读取服务端实际收到的 SaveVideo.format，帮助定位是“客户端漏传”还是“服务端节点解析”。
+- 增加针对四个分支、旧图生视频分支快照、保留 codec、避免误选容器、服务器历史诊断的完整回归测试；保留 V2.8.6 之前所有图片/视频功能和工作流库性能优化。
+- 自动化测试是模拟 ComfyUI 节点定义，不等于已经在用户实际机器上完成视频生成端到端验证。
+
 ## V2.8.6 SaveVideo 缺少动态 format 修复
 
 - 修复 ComfyUI V3 动态下拉框 COMFY_DYNAMICCOMBO_V3 未识别，导致 SaveVideo.execute() missing required argument: format。
