@@ -1,3 +1,11 @@
+## V2.8.6 SaveVideo 缺少动态 format 修复
+
+- 修复 ComfyUI V3 动态下拉框 COMFY_DYNAMICCOMBO_V3 未识别，导致 SaveVideo.execute() missing required argument: format。
+- 使用工作流 UI 中原始选择的容器/codec 组合，保留嵌套格式参数，不强制覆盖为某个编码。
+- 若早期版本保存的 API Prompt 缺少必填动态 format，在提交前参照当前 ComfyUI /object_info 补齐；优先 schema default，其次已声明的 auto，只有唯一选项时才采用单选项；不存在可靠默认时明确阻止提交并显示参数错误。
+- 新增视频格式动态输入、旧工作流自动修复、原有格式保留、嵌套 codec 保留及歧义拒绝的回归测试。
+- 保留 V2.8.5 视频错误详情复制、V2.8.4 参数类型修复、视频上传下载、图片输入和合集加载性能优化。
+
 ## V2.8.5 视频执行报错诊断增强
 
 - 修复手机任务队列把完整 ComfyUI execution_error.status JSON 直接渲染成长文本的问题；现在只显示失败节点编号、节点类型、真实 exception_message。
