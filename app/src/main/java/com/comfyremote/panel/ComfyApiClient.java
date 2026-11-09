@@ -643,12 +643,13 @@ public class ComfyApiClient {
 
     public String historyError(JSONObject history, String promptId) {
         JSONObject entry = findPromptEntry(history, promptId);
-        if (entry == null) return "";
-        JSONObject status = entry.optJSONObject("status");
-        if (status == null) return "";
-        String s = status.optString("status_str", "").toLowerCase();
-        if (!s.equals("error")) return "";
-        return status.toString();
+        return ComfyExecutionError.summary(entry == null ? null : entry.optJSONObject("status"));
+    }
+
+    /** Full execution traceback for an explicit copy/view action, never for a queue card. */
+    public String historyErrorDetails(JSONObject history, String promptId) {
+        JSONObject entry = findPromptEntry(history, promptId);
+        return ComfyExecutionError.details(entry == null ? null : entry.optJSONObject("status"));
     }
 
     public String getQueueState(String promptId) throws Exception {
