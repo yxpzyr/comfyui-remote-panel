@@ -646,10 +646,18 @@ public class ComfyApiClient {
         return ComfyExecutionError.summary(entry == null ? null : entry.optJSONObject("status"));
     }
 
-    /** Full execution traceback for an explicit copy/view action, never for a queue card. */
+    /** Full execution traceback and server-side submitted sink inputs for diagnostics. */
     public String historyErrorDetails(JSONObject history, String promptId) {
         JSONObject entry = findPromptEntry(history, promptId);
-        return ComfyExecutionError.details(entry == null ? null : entry.optJSONObject("status"));
+        String details = ComfyExecutionError.details(entry == null ? null : entry.optJSONObject("status"));
+        if (!details.isEmpty()) {
+            // Server history stores the effective execution graph at prompt[2].
+            // This lets users verify whether SaveVideo.format was actually sent,
+            // independently of any cached client-side workflow JSON.
+            String formats = SaveVideoFormatGuard.submittedFormats(entry);
+            if (!formats.isEmpty()) details += "\n\nComfyUI 接收的视频保存参数：\n" + formats;
+        }
+        return details;
     }
 
     public String getQueueState(String promptId) throws Exception {
