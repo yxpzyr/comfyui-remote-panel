@@ -1,8 +1,8 @@
-name: Validate and sign V2.8.7 all video branches
+name: Validate and sign V2.8.8 all video branches
 
 on:
   push:
-    branches: [ "fix/v2-8-7-savevideo-branch-guard" ]
+    branches: [ "fix/v2-8-8-savevideo-format-object" ]
   workflow_dispatch:
 
 permissions:
@@ -35,7 +35,7 @@ jobs:
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: ComfyRemote-V2.8.7-debug-test
+          name: ComfyRemote-V2.8.8-debug-test
           path: app/build/outputs/apk/debug/app-debug.apk
 
       - name: Restore permanent signing keystore
@@ -56,17 +56,17 @@ jobs:
       - name: Upload signed release APK
         uses: actions/upload-artifact@v4
         with:
-          name: ComfyRemote-V2.8.7-signed
+          name: ComfyRemote-V2.8.8-signed
           path: app/build/outputs/apk/release/app-release.apk
 
       - name: Publish test APK as downloadable GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp app/build/outputs/apk/release/app-release.apk ComfyRemote_V2.8.7_signed.apk
-          gh release create v2.8.7-android-test ComfyRemote_V2.8.7_signed.apk \
+          cp app/build/outputs/apk/release/app-release.apk ComfyRemote_V2.8.8_signed.apk
+          gh release create v2.8.8-android-test ComfyRemote_V2.8.8_signed.apk \
             --target "$GITHUB_SHA" \
-            --title "ComfyRemote V2.8.7 (Android test build)" \
-            --notes "V2.8.7 signed Android test build. SaveVideo format guard and video branch regression tests passed in CI. Device-level end-to-end video generation is not yet verified. Install over the previous version without uninstalling." \
+            --title "ComfyRemote V2.8.8 (Android test build)" \
+            --notes "V2.8.8 signed Android test build. SaveVideo format guard and video branch regression tests passed in CI. Device-level end-to-end video generation is not yet verified. Install over the previous version without uninstalling." \
             --prerelease \
             --latest=false
