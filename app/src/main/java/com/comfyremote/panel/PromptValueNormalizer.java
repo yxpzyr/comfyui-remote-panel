@@ -35,6 +35,81 @@ public final class PromptValueNormalizer {
         return false;
     }
 
+    /**
+     * Older saved API prompts and pre-V2.8.6 UI conversion can omit SaveVideo.format
+     * entirely. ComfyUI V3's COMFY_DYNAMICCOMBO_V3 is not a normal COMBO and
+     * cannot be handled by the numeric-string normalizer.
+     */
+    public static boolean needsRequiredDynamicInspection(JSONObject prompt) {
+        if (prompt == null) return false;
+        Iterator<String> it = prompt.keys();
+        while (it.hasNext()) {
+            JSONObject node = prompt.optJSONObject(it.next());
+            if (node == null) continue;
+            String type = node.optString("class_type", "").toLowerCase(java.util.Locale.ROOT);
+            if (type.equals("savevideo") || type.endsWith("_savevideo") || type.endsWith(".savevideo"))
+                return true;
+        }
+        return false;
+    }
+
+    /**
+     * Reconcile missing required V3 dynamic choices against live /object_info.
+     * Choose schema default first, then explicitly advertised auto, then an only
+     * possible choice. Otherwise fail visibly instead of silently picking a codec.
+     */
+    public static int ensureRequiredDynamicInputs(JSONObject prompt, JSONObject objectInfo)
+            throws JSONException {
+        if (prompt == null || objectInfo == null) return 0;
+        int filled = 0;
+        Iterator<String> nodeIds = prompt.keys();
+        while (nodeIds.hasNext()) {
+            String nodeId = nodeIds.next();
+            JSONObject node = prompt.optJSONObject(nodeId);
+            if (node == null) continue;
+            String type = node.optString("class_type", "");
+            JSONObject nodeDef = objectInfo.optJSONObject(type);
+            JSONObject input = nodeDef == null ? null : nodeDef.optJSONObject("input");
+            JSONObject required = input == null ? null : input.optJSONObject("required");
+            JSONObject values = node.optJSONObject("inputs");
+            if (required == null || values == null) continue;
+            Iterator<String> names = required.keys();
+            while (names.hasNext()) {
+                String name = names.next();
+                JSONArray spec = required.optJSONArray(name);
+                if (spec == null ||
+                        !String.valueOf(spec.opt(0)).toUpperCase(java.util.Locale.ROOT)
+                            .startsWith("COMFY_DYNAMICCOMBO")) continue;
+                JSONObject meta = spec.optJSONObject(1);
+                JSONArray options = meta == null ? null : meta.optJSONArray("options");
+                if (values.has(name) && !values.isNull(name)) {
+                    // Existing valid scalar and nested selections must survive unchanged.
+                    continue;
+                }
+                Object fallback = meta == null ? null : meta.opt("default");
+                if (fallback == JSONObject.NULL) fallback = null;
+                if (fallback == null && options != null) {
+                    Object sole = null;
+                    for (int i = 0; i < options.length(); i++) {
+                        JSONObject entry = options.optJSONObject(i);
+                        if (entry == null || !entry.has("key")) continue;
+                        Object key = entry.opt("key");
+                        if ("auto".equals(String.valueOf(key))) { fallback = key; break; }
+                        if (sole == null) sole = key;
+                    }
+                    if (fallback == null && options.length() == 1) fallback = sole;
+                }
+                if (fallback == null) {
+                    throw new JSONException("节点 " + nodeId + " (" + type + ") 缺少必填 " +
+                            name + "，而服务端没有可确定的默认选项；请在 ComfyUI 中配置后重新导入。");
+                }
+                values.put(name, fallback);
+                filled++;
+            }
+        }
+        return filled;
+    }
+
     /** Changes only widget values whose raw /object_info choices prove a type correction. */
     public static int normalizeComboValues(JSONObject prompt, JSONObject objectInfo) throws JSONException {
         if (prompt == null || objectInfo == null) return 0;
