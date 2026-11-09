@@ -6,6 +6,9 @@ import android.content.SharedPreferences;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -143,9 +146,47 @@ public final class JobStore {
         return out;
     }
 
+    /** Store long Python tracebacks outside SharedPreferences and the 1.2s queue render loop. */
+    public static void saveErrorDetails(Context context, String localId, String details) {
+        if (localId == null || localId.isEmpty() || details == null || details.isEmpty()) return;
+        try {
+            File dir = new File(context.getFilesDir(), "comfy_task_errors");
+            if (!dir.isDirectory() && !dir.mkdirs()) return;
+            File target = new File(dir, safeErrorFilename(localId));
+            String text = details.length() > 64000 ? details.substring(0, 64000) : details;
+            Files.write(target.toPath(), text.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            android.util.Log.w("JobStore", "无法保存完整任务错误日志", e);
+        }
+    }
+
+    public static String readErrorDetails(Context context, String localId) {
+        if (localId == null || localId.isEmpty()) return "";
+        try {
+            File target = new File(new File(context.getFilesDir(), "comfy_task_errors"),
+                    safeErrorFilename(localId));
+            if (!target.isFile()) return "";
+            return new String(Files.readAllBytes(target.toPath()), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String safeErrorFilename(String id) {
+        return id.replaceAll("[^a-zA-Z0-9_-]", "_") + ".log";
+    }
+
     public static void clearFinished(Context context) {
         synchronized (LOCK) {
             List<JobRecord> list = list(context);
+            for (JobRecord j : list) {
+                if (j.isTerminal()) {
+                    File log = new File(new File(context.getFilesDir(), "comfy_task_errors"),
+                            safeErrorFilename(j.localId));
+                    if (log.isFile() && !log.delete())
+                        android.util.Log.w("JobStore", "无法清理旧错误日志");
+                }
+            }
             list.removeIf(JobRecord::isTerminal);
             save(context, list);
         }
