@@ -1,3 +1,11 @@
+## V2.8.5 视频执行报错诊断增强
+
+- 修复手机任务队列把完整 ComfyUI execution_error.status JSON 直接渲染成长文本的问题；现在只显示失败节点编号、节点类型、真实 exception_message。
+- 完整 Python traceback 单独保存在应用内的有界日志文件中，不影响每 1.2 秒刷新的任务卡片；失败任务提供 **查看 / 复制完整错误** 按钮，包括 prompt_id。
+- 保存执行错误诊断时不改变原 ComfyUI 成功/失败判定，也不伪称已经解决服务器节点本身的异常。
+- 保留 V2.8.4 原生数值 COMBO 修复、视频上传下载、工作流库轻量加载与合集切换优化。
+- 增加 JSON execution_error 解析、短错误摘要、完整日志保存回归测试。真机和用户 ComfyUI 视频执行仍需以实际日志为准。
+
 ## V2.8.4 修复 CreateVideo.bit_depth HTTP400 参数类型错误
 
 - 恢复 /object_info 中原生 COMBO 选项类型（字符串、数值和布尔值），而非一律将选项转为 Android 下拉菜单的显示字符串。
