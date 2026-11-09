@@ -207,11 +207,20 @@ public final class GenerationManager {
                         // Do not finish on the first image. V2.3 waits for ComfyUI to mark the
                         // whole prompt complete, then the newest observed output becomes final.
                         if (observed.isEmpty()) {
-                            List<ImageRef> fallbackRefs = new ArrayList<>();
-                            try {
-                                JSONObject all = api.getAllHistory(300);
-                                fallbackRefs = api.parseAllImagesForPrompt(all, promptId, allowedOutputs);
-                            } catch (Exception ignored) {}
+                            // Old/third-party video savers sometimes return media under
+                            // a different output node ID than the saved selection. Retry
+                            // the *current* prompt without the filter before concluding
+                            // it produced no downloadable output.
+                            List<ImageRef> fallbackRefs =
+                                    api.parseAllImagesForPrompt(history, promptId, null);
+                            if (fallbackRefs.isEmpty()) {
+                                try {
+                                    // This reader streams history and skips huge prompt graphs.
+                                    for (ImageRef ref : api.getGalleryHistoryRefs(300, 1500)) {
+                                        if (promptId.equals(ref.promptId)) fallbackRefs.add(ref);
+                                    }
+                                } catch (Exception ignored) {}
+                            }
                             nextOrder = mergeObserved(promptId, observed, fallbackRefs, nextOrder);
                         }
 
@@ -367,7 +376,11 @@ public final class GenerationManager {
         boolean meaningful = before == null || !safe(before.status).equals(safe(status)) || !safe(before.message).equals(safe(message)) ||
                 (outputCount >= 0 && before.outputCount != outputCount);
         JobStore.updateStatus(context, localId, status, message, outputCount);
-        if (meaningful) notifyListeners(JobStore.find(context, localId));
+        JobRecord updated = JobStore.find(context, localId);
+        if (JobRecord.FAILED.equals(status) &&
+                (before == null || !JobRecord.FAILED.equals(before.status)))
+            FailureDiagnostics.record(context, updated);
+        if (meaningful) notifyListeners(updated);
     }
 
     public static void notifySubmitted(Context context, String localId) { notifyListeners(JobStore.find(context, localId)); }
