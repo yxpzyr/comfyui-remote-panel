@@ -91,18 +91,23 @@ public final class GenerationManager {
             // existing profiles saved by old releases (e.g. CreateVideo.bit_depth "8" -> 8).
             // This runs off the main thread and only fetches schemas for suspect values.
             // Server-side validation remains authoritative if schema lookup is unavailable.
+            boolean requiresVideoGuard = SaveVideoFormatGuard.hasSaveVideo(submittedPrompt);
             boolean requiresDynamicCheck =
                     PromptValueNormalizer.needsRequiredDynamicInspection(submittedPrompt);
-            if (requiresDynamicCheck || PromptValueNormalizer.needsComboNormalization(submittedPrompt)) {
+            if (requiresVideoGuard || requiresDynamicCheck ||
+                    PromptValueNormalizer.needsComboNormalization(submittedPrompt)) {
                 try {
                     JSONObject objectInfo = WorkflowUiConverter.getObjectInfoCached(server);
                     PromptValueNormalizer.normalizeComboValues(submittedPrompt, objectInfo);
-                    // Unlike a normal COMBO, V3 SaveVideo.format can be required with
-                    // no schema default. Old profiles must be repaired on submission.
+                    // Guard ALL native SaveVideo nodes, not just schema fields marked
+                    // COMFY_DYNAMICCOMBO_V3 / required. ComfyUI revisions can expose
+                    // format as plain COMBO or under optional in /object_info.
+                    if (requiresVideoGuard)
+                        SaveVideoFormatGuard.ensureSubmissionFormats(submittedPrompt, objectInfo);
                     PromptValueNormalizer.ensureRequiredDynamicInputs(submittedPrompt, objectInfo);
                 } catch (Exception e) {
-                    if (requiresDynamicCheck)
-                        throw new Exception("无法校验视频保存节点的 format 等必填参数：" + safeMessage(e), e);
+                    if (requiresVideoGuard || requiresDynamicCheck)
+                        throw new Exception("视频保存节点参数检查失败：" + safeMessage(e), e);
                     android.util.Log.w("GenerationManager", "跳过 COMBO 类型兼容预检查", e);
                 }
             }
