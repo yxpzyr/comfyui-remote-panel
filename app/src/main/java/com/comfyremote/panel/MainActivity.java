@@ -2073,7 +2073,7 @@ public class MainActivity extends Activity {
         if (f.kind == WorkflowUtils.FieldChoice.BOOL) {
             value = b.switchView != null && b.switchView.isChecked();
         } else if (f.kind == WorkflowUtils.FieldChoice.COMBO && b.spinnerView != null) {
-            value = b.spinnerView.getSelectedItem() == null ? "" : String.valueOf(b.spinnerView.getSelectedItem());
+            value = f.rawComboValueAt(b.spinnerView.getSelectedItemPosition());
         } else {
             String raw = b.editView == null ? "" : b.editView.getText().toString().trim();
             if (f.kind == WorkflowUtils.FieldChoice.INT) {
@@ -2103,7 +2103,8 @@ public class MainActivity extends Activity {
         try { return readFieldValue(b); }
         catch (Exception ignored) {
             if (b.editView != null) return b.editView.getText().toString();
-            if (b.spinnerView != null && b.spinnerView.getSelectedItem() != null) return String.valueOf(b.spinnerView.getSelectedItem());
+            if (b.spinnerView != null && b.spinnerView.getSelectedItem() != null)
+                return b.choice.rawComboValueAt(b.spinnerView.getSelectedItemPosition());
             return b.switchView != null && b.switchView.isChecked();
         }
     }
