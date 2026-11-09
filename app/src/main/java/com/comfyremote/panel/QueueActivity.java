@@ -2,6 +2,10 @@ package com.comfyremote.panel;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
+import android.text.TextUtils;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.drawable.GradientDrawable;
@@ -201,6 +205,10 @@ public class QueueActivity extends Activity {
 
         TextView message = text(job.message == null ? "" : job.message, 12, false);
         message.setPadding(0, dp(5), 0, 0);
+        if (JobRecord.FAILED.equals(job.status)) {
+            message.setMaxLines(5);
+            message.setEllipsize(TextUtils.TruncateAt.END);
+        }
         info.addView(message);
         card.addView(body);
 
@@ -232,6 +240,15 @@ public class QueueActivity extends Activity {
             card.addView(hint);
         }
 
+        if (JobRecord.FAILED.equals(job.status)) {
+            Button details = button("📋 查看 / 复制完整错误");
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
+            lp.setMargins(0, dp(8), 0, 0);
+            card.addView(details, lp);
+            details.setOnClickListener(v -> showJobError(job));
+        }
+
         if (JobRecord.LOCAL_QUEUED.equals(job.status) || JobRecord.SUBMITTING.equals(job.status) || JobRecord.QUEUED.equals(job.status)) {
             Button cancel = button("取消等待");
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
@@ -256,6 +273,29 @@ public class QueueActivity extends Activity {
                     .show());
         }
         return card;
+    }
+
+    private void showJobError(JobRecord job) {
+        String saved = JobStore.readErrorDetails(this, job.localId);
+        String full = saved.isEmpty() ? (job.message == null ? "" : job.message) : saved;
+        String title = "任务失败 · " + (job.workflowName == null ? "工作流" : job.workflowName);
+        String viewText = full.length() > 18000
+                ? full.substring(0, 18000) + "\n\n（内容较长，点“复制完整日志”获取全部）"
+                : full;
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(viewText)
+                .setNegativeButton("关闭", null)
+                .setPositiveButton("复制完整日志", (dialog, which) -> {
+                    ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (clipboard != null) {
+                        clipboard.setPrimaryClip(ClipData.newPlainText("ComfyUI 错误详情",
+                                "Prompt ID: " + (job.promptId == null ? "" : job.promptId) +
+                                        "\n工作流: " + job.workflowName + "\n" + full));
+                        Toast.makeText(this, "已复制完整错误，可直接粘贴到聊天", Toast.LENGTH_LONG).show();
+                    }
+                })
+                .show();
     }
 
     private int progressFor(JobRecord job) {
