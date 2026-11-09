@@ -22,14 +22,14 @@ public class SaveVideoFormatRegressionTest {
     }
 
     private static JSONObject schema() throws Exception {
+        JSONArray formats = new JSONArray().put(option("auto")).put(option("mp4"))
+                .put(option("mkv")).put(option("webm")).put(option("mov"));
         JSONObject required = new JSONObject()
                 .put("video", new JSONArray().put("VIDEO").put(new JSONObject()))
                 .put("filename_prefix", new JSONArray().put("STRING")
                         .put(new JSONObject().put("default", "video/ComfyUI")))
                 .put("format", new JSONArray().put("COMFY_DYNAMICCOMBO_V3")
-                        .put(new JSONObject().put("options", new JSONArray()
-                                .put(option("auto")).put(option("mp4"))
-                                .put(option("mkv")).put(option("webm")).put(option("mov"))));
+                        .put(new JSONObject().put("options", formats)));
         JSONObject saveVideo = new JSONObject().put("input", new JSONObject().put("required", required))
                 .put("input_order", new JSONObject().put("required", new JSONArray()
                         .put("video").put("filename_prefix").put("format")));
