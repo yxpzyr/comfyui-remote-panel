@@ -333,18 +333,21 @@ public final class WorkflowUtils {
         if (meta != null && (meta.optBoolean("image_upload", false) || meta.optBoolean("forceInput", false))) return null;
 
         List<String> comboOptions = new ArrayList<>();
-        if (typeSpec instanceof JSONArray) {
-            JSONArray a = (JSONArray) typeSpec;
-            for (int i = 0; i < a.length(); i++) comboOptions.add(String.valueOf(a.opt(i)));
-        } else if (meta != null && meta.optJSONArray("options") != null) {
-            JSONArray a = meta.optJSONArray("options");
-            for (int i = 0; i < a.length(); i++) comboOptions.add(String.valueOf(a.opt(i)));
+        List<Object> rawComboOptions = new ArrayList<>();
+        JSONArray sourceOptions = typeSpec instanceof JSONArray ? (JSONArray) typeSpec
+                : meta == null ? null : meta.optJSONArray("options");
+        if (sourceOptions != null) {
+            for (int i = 0; i < sourceOptions.length(); i++) {
+                Object item = sourceOptions.opt(i);
+                comboOptions.add(String.valueOf(item));
+                rawComboOptions.add(item);
+            }
         }
 
         String type = typeSpec instanceof JSONArray ? "COMBO" : String.valueOf(typeSpec == null ? "" : typeSpec).toUpperCase(Locale.ROOT);
         if ("COMBO".equals(type) || !comboOptions.isEmpty()) {
             return new FieldChoice(nodeId, inputName, title, classType, FieldChoice.COMBO, value,
-                    Double.NaN, Double.NaN, Double.NaN, comboOptions);
+                    Double.NaN, Double.NaN, Double.NaN, comboOptions, rawComboOptions);
         }
         int kind;
         if ("BOOLEAN".equals(type)) kind = FieldChoice.BOOL;
@@ -467,6 +470,14 @@ public final class WorkflowUtils {
         public final Object value;
         public final double min, max, step;
         public final List<String> options;
+        /** Native JSON option scalars, including numbers, from live /object_info. */
+        public final List<Object> rawOptions;
+
+        public Object rawComboValueAt(int selectedIndex) {
+            return selectedIndex >= 0 && selectedIndex < rawOptions.size()
+                    ? rawOptions.get(selectedIndex)
+                    : selectedIndex >= 0 && selectedIndex < options.size() ? options.get(selectedIndex) : "";
+        }
 
         public FieldChoice(String nodeId, String inputName, String nodeTitle, int kind, Object value) {
             this(nodeId, inputName, nodeTitle, "", kind, value);
@@ -479,6 +490,13 @@ public final class WorkflowUtils {
 
         public FieldChoice(String nodeId, String inputName, String nodeTitle, String classType,
                            int kind, Object value, double min, double max, double step, List<String> options) {
+            this(nodeId, inputName, nodeTitle, classType, kind, value,
+                    min, max, step, options, new ArrayList<>());
+        }
+
+        public FieldChoice(String nodeId, String inputName, String nodeTitle, String classType,
+                           int kind, Object value, double min, double max, double step,
+                           List<String> options, List<Object> rawOptions) {
             this.nodeId = nodeId == null ? "" : nodeId;
             this.inputName = inputName == null ? "" : inputName;
             this.nodeTitle = nodeTitle == null || nodeTitle.isEmpty() ? "节点" : nodeTitle;
@@ -489,6 +507,7 @@ public final class WorkflowUtils {
             this.max = max;
             this.step = step;
             this.options = options == null ? new ArrayList<>() : options;
+            this.rawOptions = rawOptions == null ? new ArrayList<>() : rawOptions;
         }
 
         public boolean hasMin() { return !Double.isNaN(min); }
