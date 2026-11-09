@@ -91,6 +91,10 @@ public class QueueActivity extends Activity {
         state.setTextColor(ThemeManager.secondary(this));
         state.setPadding(0, dp(8), 0, dp(10));
         root.addView(state);
+        Button diagnostics = button("📋 失败诊断记录（清理队列后仍保留）");
+        diagnostics.setOnClickListener(v -> showFailureDiagnostics());
+        root.addView(diagnostics, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
 
         ScrollView scroll = new ScrollView(this);
         listContainer = new LinearLayout(this);
@@ -104,6 +108,30 @@ public class QueueActivity extends Activity {
             renderJobs();
         });
         setContentView(root);
+    }
+
+    private void showFailureDiagnostics() {
+        String summary = FailureDiagnostics.display(this);
+        new AlertDialog.Builder(this)
+                .setTitle("最近失败诊断 · 可复制")
+                .setMessage(summary)
+                .setPositiveButton("复制记录", (d, w) -> {
+                    android.content.ClipboardManager clipboard =
+                            (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    if (clipboard != null) {
+                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
+                                "ComfyUI 远程面板诊断", summary));
+                        Toast.makeText(this, "已复制诊断记录", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNeutralButton("清空诊断", (d, w) -> new AlertDialog.Builder(this)
+                        .setTitle("清空失败诊断记录？")
+                        .setMessage("仅删除诊断摘要，不影响工作流、任务、图片或视频。")
+                        .setNegativeButton("取消", null)
+                        .setPositiveButton("清空", (dd, ww) -> FailureDiagnostics.clear(this))
+                        .show())
+                .setNegativeButton("关闭", null)
+                .show();
     }
 
     private void renderJobs() {
