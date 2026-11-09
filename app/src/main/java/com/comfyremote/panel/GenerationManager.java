@@ -102,8 +102,25 @@ public final class GenerationManager {
                     // Guard ALL native SaveVideo nodes, not just schema fields marked
                     // COMFY_DYNAMICCOMBO_V3 / required. ComfyUI revisions can expose
                     // format as plain COMBO or under optional in /object_info.
-                    if (requiresVideoGuard)
+                    if (requiresVideoGuard) {
+                        // A previously saved subworkflow can carry an incorrectly mapped
+                        // {"codec":...} object in SaveVideo.format. Recover the
+                        // actual format widget from the original UI before fallback.
+                        if (SaveVideoFormatGuard.needsUiRecovery(submittedPrompt) &&
+                                job.workflowId != null && !job.workflowId.isEmpty()) {
+                            try {
+                                WorkflowProfile originalProfile =
+                                        WorkflowStore.loadById(context, job.workflowId);
+                                if (originalProfile != null)
+                                    SaveVideoFormatGuard.repairConvertedBranch(
+                                            originalProfile.uiObjectOrNull(), submittedPrompt, objectInfo);
+                            } catch (Exception e) {
+                                android.util.Log.w("GenerationManager",
+                                        "无法从原始 UI 恢复 SaveVideo 格式，改用服务器节点定义", e);
+                            }
+                        }
                         SaveVideoFormatGuard.ensureSubmissionFormats(submittedPrompt, objectInfo);
+                    }
                     PromptValueNormalizer.ensureRequiredDynamicInputs(submittedPrompt, objectInfo);
                 } catch (Exception e) {
                     if (requiresVideoGuard || requiresDynamicCheck)
