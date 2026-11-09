@@ -1,8 +1,8 @@
-name: Validate and sign V2.8.5 ComfyUI runtime diagnostics
+name: Validate and sign V2.8.6 SaveVideo format repair
 
 on:
   push:
-    branches: [ "fix/v2-8-5-runtime-error-details" ]
+    branches: [ "fix/v2-8-6-savevideo-dynamic-format" ]
   workflow_dispatch:
 
 jobs:
@@ -32,7 +32,7 @@ jobs:
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: ComfyRemote-V2.8.5-debug-test
+          name: ComfyRemote-V2.8.6-debug-test
           path: app/build/outputs/apk/debug/app-debug.apk
 
       - name: Restore permanent signing keystore
@@ -53,5 +53,5 @@ jobs:
       - name: Upload signed release APK
         uses: actions/upload-artifact@v4
         with:
-          name: ComfyRemote-V2.8.5-signed
+          name: ComfyRemote-V2.8.6-signed
           path: app/build/outputs/apk/release/app-release.apk
