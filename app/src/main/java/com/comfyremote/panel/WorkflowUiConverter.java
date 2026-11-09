@@ -405,7 +405,12 @@ public final class WorkflowUiConverter {
             return value;
         }
 
-        if (comboContains(def, value)) return value;
+        // Preserve the raw option's JSON type. The display text "8" must be sent as
+        // numeric 8 when /object_info declares ["auto", 8, 10] (CreateVideo.bit_depth).
+        // Previously comboContains() matched by text then returned the original string.
+        for (Object option : def.allowedValues) {
+            if (jsonScalarEquals(option, value)) return option;
+        }
         String text = String.valueOf(value);
 
         // Case-insensitive exact match.
