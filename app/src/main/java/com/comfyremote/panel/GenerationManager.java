@@ -87,6 +87,18 @@ public final class GenerationManager {
                 String replacement = SubmissionFilenamePolicy.forTask((String) value, job.localId, job.submittedAt);
                 if (!replacement.equals(value)) inputs.put("filename_prefix", replacement);
             }
+            // V2.8.4: recover correct JSON types from live COMBO definitions for
+            // existing profiles saved by old releases (e.g. CreateVideo.bit_depth "8" -> 8).
+            // This runs off the main thread and only fetches schemas for suspect values.
+            // Server-side validation remains authoritative if schema lookup is unavailable.
+            if (PromptValueNormalizer.needsComboNormalization(submittedPrompt)) {
+                try {
+                    JSONObject objectInfo = WorkflowUiConverter.getObjectInfoCached(server);
+                    PromptValueNormalizer.normalizeComboValues(submittedPrompt, objectInfo);
+                } catch (Exception e) {
+                    android.util.Log.w("GenerationManager", "跳过 COMBO 类型兼容预检查", e);
+                }
+            }
             String promptId = api.queuePrompt(submittedPrompt);
             JobRecord afterSubmit = JobStore.find(context, localId);
             if (afterSubmit == null || afterSubmit.isTerminal()) {
