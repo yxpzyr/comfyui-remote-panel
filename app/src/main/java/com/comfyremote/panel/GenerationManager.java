@@ -209,7 +209,8 @@ public final class GenerationManager {
                         if (observed.isEmpty()) {
                             List<ImageRef> fallbackRefs = new ArrayList<>();
                             try {
-                                JSONObject all = api.getAllHistory(300);
+                                // Avoid loading hundreds of huge video prompt graphs into Android memory.
+                                JSONObject all = api.getAllHistory(15);
                                 fallbackRefs = api.parseAllImagesForPrompt(all, promptId, allowedOutputs);
                             } catch (Exception ignored) {}
                             nextOrder = mergeObserved(promptId, observed, fallbackRefs, nextOrder);
@@ -222,10 +223,10 @@ public final class GenerationManager {
 
                         completedWithoutImages++;
                         update(context, localId, JobRecord.SYNCING,
-                                "任务已完成，正在同步图片或视频… " + completedWithoutImages + "/20", -1);
+                                "ComfyUI 已确认成功，正在同步媒体记录… " + completedWithoutImages + "/20", -1);
                         if (completedWithoutImages >= 20) {
                             JobStore.complete(context, localId, new ArrayList<>(),
-                                    "ComfyUI 已完成任务，但 history 未提供可下载图片记录");
+                                    "ComfyUI 已执行成功，但 history 没有返回可下载的图片/视频文件；请检查 SaveVideo/VHS_VideoCombine 节点的保存设置");
                             notifyListeners(JobStore.find(context, localId));
                             return;
                         }
@@ -268,15 +269,24 @@ public final class GenerationManager {
                 consecutiveNetworkErrors = 0;
             } catch (Exception e) {
                 consecutiveNetworkErrors++;
+                // Network failures are NOT evidence that video generation failed.
+                // Large videos can temporarily block the server or a mobile connection.
+                // Keep the job recoverable; the server's explicit history error alone
+                // can confirm an execution failure.
                 if (consecutiveNetworkErrors >= 10) {
-                    update(context, localId, JobRecord.FAILED, "连续读取 ComfyUI 状态失败：" + safeMessage(e), -1);
-                    return;
+                    update(context, localId, JobRecord.SYNCING,
+                            "暂时无法读取 ComfyUI 状态（已尝试 " + consecutiveNetworkErrors +
+                                    " 次）。不代表生成失败，正在恢复连接：" + safeMessage(e), -1);
+                } else {
+                    update(context, localId, current.status,
+                            "连接暂时中断，重新检查执行状态（" + consecutiveNetworkErrors + " 次）", -1);
                 }
-                update(context, localId, current.status,
-                        "暂时无法读取服务器状态，正在重试（" + consecutiveNetworkErrors + "/10）", -1);
             }
         }
-        update(context, localId, JobRecord.FAILED, "等待 ComfyUI 任务结果超时", -1);
+        // Never declare a long-running video FAILED solely because monitoring timed out.
+        // ResumePending can reattach when the app is reopened.
+        update(context, localId, JobRecord.SYNCING,
+                "未能确认 ComfyUI 最终状态。任务未被判为失败；重新打开 App 可继续查询", -1);
     }
 
     /**
