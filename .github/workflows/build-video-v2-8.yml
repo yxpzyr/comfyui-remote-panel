@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -64,9 +68,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp app/build/outputs/apk/release/app-release.apk ComfyRemote_V2.8.8_signed.apk
-          gh release create v2.8.8-android-test ComfyRemote_V2.8.8_signed.apk \
-            --target "$GITHUB_SHA" \
-            --title "ComfyRemote V2.8.8 (Android test build)" \
-            --notes "V2.8.8 signed Android test build. SaveVideo format guard and video branch regression tests passed in CI. Device-level end-to-end video generation is not yet verified. Install over the previous version without uninstalling." \
-            --prerelease \
-            --latest=false
+          if ! gh release view v2.8.8-android-test >/dev/null 2>&1; then
+            gh release create v2.8.8-android-test \
+              --target "$GITHUB_SHA" \
+              --title "ComfyRemote V2.8.8 (Android test build)" \
+              --notes "V2.8.8 signed Android test build. SaveVideo format guard and video branch regression tests passed in CI. Device-level end-to-end video generation is not yet verified. Install over the previous version without uninstalling." \
+              --prerelease \
+              --latest=false
+          fi
+          gh release upload v2.8.8-android-test ComfyRemote_V2.8.8_signed.apk --clobber
