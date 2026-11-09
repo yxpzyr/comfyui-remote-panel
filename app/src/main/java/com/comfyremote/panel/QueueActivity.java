@@ -21,6 +21,7 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import org.json.JSONObject;
 
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
@@ -277,7 +278,36 @@ public class QueueActivity extends Activity {
 
     private void showJobError(JobRecord job) {
         String saved = JobStore.readErrorDetails(this, job.localId);
-        String full = saved.isEmpty() ? (job.message == null ? "" : job.message) : saved;
+        if (saved.isEmpty() && job.promptId != null && !job.promptId.isEmpty()) {
+            Toast.makeText(this, "正在从 ComfyUI 恢复这条任务的执行错误…", Toast.LENGTH_SHORT).show();
+            imagePool.submit(() -> {
+                String resolved = "";
+                String summary = "";
+                try {
+                    ComfyApiClient api = new ComfyApiClient(job.server == null || job.server.isEmpty()
+                            ? server : job.server);
+                    JSONObject history = api.getHistoryForPrompt(job.promptId);
+                    resolved = api.historyErrorDetails(history, job.promptId);
+                    summary = api.historyError(history, job.promptId);
+                    if (!resolved.isEmpty()) {
+                        JobStore.saveErrorDetails(this, job.localId, "Prompt ID: " + job.promptId + "\n" + resolved);
+                        if (!summary.isEmpty())
+                            JobStore.updateStatus(this, job.localId, JobRecord.FAILED,
+                                    "ComfyUI 执行失败：" + summary, -1);
+                    }
+                } catch (Exception ignored) { }
+                String details = resolved.isEmpty() ? (job.message == null ? "" : job.message)
+                        : "Prompt ID: " + job.promptId + "\n" + resolved;
+                runOnUiThread(() -> {
+                    if (!isFinishing()) showJobErrorDialog(job, details);
+                });
+            });
+            return;
+        }
+        showJobErrorDialog(job, saved.isEmpty() ? (job.message == null ? "" : job.message) : saved);
+    }
+
+    private void showJobErrorDialog(JobRecord job, String full) {
         String title = "任务失败 · " + (job.workflowName == null ? "工作流" : job.workflowName);
         String viewText = full.length() > 18000
                 ? full.substring(0, 18000) + "\n\n（内容较长，点“复制完整日志”获取全部）"
