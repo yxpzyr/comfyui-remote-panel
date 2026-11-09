@@ -80,6 +80,32 @@ public class ComboTypeRegressionTest {
         assertEquals(0, PromptValueNormalizer.normalizeComboValues(graph, schema()));
     }
 
+    @Test public void uiWorkflowConversionAlsoPreservesTypedBitDepth() throws Exception {
+        okhttp3.mockwebserver.MockWebServer server = new okhttp3.mockwebserver.MockWebServer();
+        server.enqueue(new okhttp3.mockwebserver.MockResponse()
+                .setHeader("Content-Type", "application/json").setBody(schema().toString()));
+        server.start();
+        try {
+            WorkflowUiConverter.clearObjectInfoCache();
+            JSONObject ui = new JSONObject()
+                    .put("nodes", new JSONArray().put(new JSONObject()
+                            .put("id", 209).put("type", "CreateVideo")
+                            .put("pos", new JSONArray().put(0).put(0))
+                            .put("size", new JSONArray().put(200).put(100))
+                            .put("widgets_values", new JSONArray()
+                                    .put("8").put("10").put("8").put("8"))))
+                    .put("links", new JSONArray());
+            JSONObject result = WorkflowUiConverter.toApiPrompt(ui, server.url("/").toString());
+            Object bitDepth = result.getJSONObject("209").getJSONObject("inputs").get("bit_depth");
+            assertTrue("UI conversion must restore numeric 8", bitDepth instanceof Number);
+            assertEquals(8, ((Number) bitDepth).intValue());
+            assertEquals("/object_info", server.takeRequest().getPath());
+        } finally {
+            server.shutdown();
+            WorkflowUiConverter.clearObjectInfoCache();
+        }
+    }
+
     @Test public void legacyComboAllowsMatchingNumericOrStringCases() throws Exception {
         JSONArray allowed = new JSONArray().put("auto").put(8).put(10);
         assertEquals(8, ((Number) PromptValueNormalizer.canonicalValue("8", allowed)).intValue());
