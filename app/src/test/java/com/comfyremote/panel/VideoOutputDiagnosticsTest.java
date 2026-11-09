@@ -42,6 +42,27 @@ public class VideoOutputDiagnosticsTest {
         assertEquals("output.mp4", items.get(0).filename);
     }
 
+    @Test public void actualHistoryEndpointStreamsVideoOutputsInsteadOfEntirePrompt() throws Exception {
+        MockWebServer server = new MockWebServer();
+        String huge = "y".repeat(1_100_000);
+        JSONObject entry = new JSONObject()
+                .put("prompt", new JSONArray().put(0).put(PID).put(new JSONObject().put("nodes", huge)))
+                .put("status", new JSONObject().put("status_str", "success").put("completed", true))
+                .put("outputs", new JSONObject().put("200", new JSONObject()
+                        .put("images", new JSONArray().put(new JSONObject()
+                                .put("filename", "render.mp4").put("type", "output")))));
+        server.enqueue(new MockResponse().setBody(new JSONObject().put(PID, entry).toString()));
+        server.start();
+        try {
+            ComfyApiClient api = new ComfyApiClient(server.url("/").toString());
+            JSONObject compact = api.getHistoryForPrompt(PID);
+            assertTrue(api.isHistoryCompleted(compact, PID));
+            assertTrue(compact.toString().length() < 2000);
+            assertEquals("render.mp4", api.parseAllImagesForPrompt(compact, PID).get(0).filename);
+            assertEquals("/history/" + PID, server.takeRequest().getPath());
+        } finally { server.shutdown(); }
+    }
+
     @Test public void alternativeVideoSaveNodeAppearsWhenSelectedFilterIsOutdated() throws Exception {
         JSONObject entry = new JSONObject().put("status", new JSONObject()
                 .put("completed", true).put("status_str", "success"))
