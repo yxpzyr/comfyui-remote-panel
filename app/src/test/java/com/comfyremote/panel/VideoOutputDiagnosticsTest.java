@@ -22,9 +22,15 @@ public class VideoOutputDiagnosticsTest {
 
     @Test public void largeComfyHistoryDropsPromptGraphButPreservesVideoAndSuccess() throws Exception {
         String largeGraph = "x".repeat(3_000_000);
-        String json = "{\\\""+PID+"\\\": {\\\"prompt\\\":[0,\\\""+PID+"\\\", {\\\"huge\\\":\\\""+
-                largeGraph+"\\\"}],\\\"status\\\":{\\\"status_str\\\":\\\"success\\\",\\\"completed\\\":true},"+
-                "\\\"outputs\\\":{\\\"91\\\":{\\\"videos\\\":[{\\\"filename\\\":\\\"output.mp4\\\",\\\"subfolder\\\":\\\"videos\\\",\\\"type\\\":\\\"output\\\"}]}}}}";
+        JSONObject video = new JSONObject().put("filename", "output.mp4")
+                .put("subfolder", "videos").put("type", "output");
+        JSONObject entry = new JSONObject()
+                .put("prompt", new JSONArray().put(0).put(PID)
+                        .put(new JSONObject().put("huge", largeGraph)))
+                .put("status", new JSONObject().put("status_str", "success").put("completed", true))
+                .put("outputs", new JSONObject().put("91",
+                        new JSONObject().put("videos", new JSONArray().put(video))));
+        String json = new JSONObject().put(PID, entry).toString();
         ComfyApiClient api = new ComfyApiClient("http://127.0.0.1:8188");
         JSONObject history = ComfyApiClient.parseCompactHistory(new JsonReader(new StringReader(json)), PID);
         assertFalse(history.toString().contains(largeGraph.substring(0, 100)));
@@ -66,9 +72,12 @@ public class VideoOutputDiagnosticsTest {
 
     @Test public void badPromptReturnsOriginalNodeValidationErrorInsteadOfFallback404() throws Exception {
         MockWebServer server = new MockWebServer();
-        server.enqueue(new MockResponse().setResponseCode(400)
-                .setBody("{\\\"error\\\":{\\\"type\\\":\\\"prompt_outputs_failed_validation\\\"},"+
-                        "\\\"node_errors\\\":{\\\"138\\\":{\\\"errors\\\":[{\\\"message\\\":\\\"Invalid output video\\\"}]}}}"));
+        JSONObject response = new JSONObject().put("error",
+                        new JSONObject().put("type", "prompt_outputs_failed_validation"))
+                .put("node_errors", new JSONObject().put("138", new JSONObject()
+                        .put("errors", new JSONArray().put(
+                                new JSONObject().put("message", "Invalid output video")))));
+        server.enqueue(new MockResponse().setResponseCode(400).setBody(response.toString()));
         server.start();
         try {
             ComfyApiClient api = new ComfyApiClient(server.url("/").toString());
