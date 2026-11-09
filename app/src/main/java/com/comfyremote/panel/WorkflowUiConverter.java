@@ -115,6 +115,10 @@ public final class WorkflowUiConverter {
             NodeSchema schema = NodeSchema.from(def);
             applyWidgetValues(node, schema, apiInputs, connectedNames);
             normalizeAndFillRequired(schema, apiInputs, connectedNames);
+            // Native SaveVideo.format is a required V3 dynamic widget. Recover
+            // the exact choice from the source UI node even when /object_info
+            // omits the widget annotation or classifies it as optional.
+            SaveVideoFormatGuard.repairUiNode(node, apiInputs, def);
             // V2.6 preflight: never submit a compiled branch with missing required inputs.
             for (InputDef requiredInput : schema.defs.values()) {
                 if (requiredInput.required && !hasRequiredInput(requiredInput, apiInputs)) {
