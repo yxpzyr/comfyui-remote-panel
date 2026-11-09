@@ -61,6 +61,18 @@ public final class SaveVideoFormatGuard {
         return repaired;
     }
 
+    /** Run before UI-converter required-input checks so missing format cannot escape. */
+    public static void repairUiNode(JSONObject uiNode, JSONObject apiInputs, JSONObject nodeSchema)
+            throws JSONException {
+        if (uiNode == null || apiInputs == null ||
+                !"SaveVideo".equals(uiNode.optString("type", ""))) return;
+        if (apiInputs.has("format") && !apiInputs.isNull("format")) return;
+        String nodeId = String.valueOf(uiNode.opt("id"));
+        JSONObject info = new JSONObject().put("SaveVideo", nodeSchema);
+        Object original = uiWidgetValue(uiNode, "format");
+        apiInputs.put("format", canonicalize(nodeId, original, info, true));
+    }
+
     /**
      * Final submission guard. Repairs old per-subworkflow API snapshots without
      * rebuilding their entire graph or modifying their image/seed/codec settings.
