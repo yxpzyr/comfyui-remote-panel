@@ -809,13 +809,63 @@ public class ComfyApiClient {
         byte[] data = body.toString().getBytes(StandardCharsets.UTF_8);
         Exception last = null;
         for (String p : paths) {
-            try {
-                HttpResult r = request("POST", p, data, "application/json; charset=utf-8", connect, read);
-                if (r.code >= 200 && r.code < 300) return r;
-                last = new Exception("HTTP " + r.code + " " + p + ": " + r.text());
-            } catch (Exception e) { last = e; }
+            // /prompt is a non-idempotent operation. Retrying it on another endpoint after
+            // a timeout may submit the same generation twice. Fall back only when this URL
+            // explicitly does not exist, and retain the server's real validation response.
+            HttpResult r = request("POST", p, data, "application/json; charset=utf-8", connect, read);
+            if (r.code >= 200 && r.code < 300) return r;
+            if (r.code != 404 && r.code != 405)
+                throw new Exception("HTTP " + r.code + " " + p + ": " + describePromptError(r.text()));
+            last = new Exception("HTTP " + r.code + " " + p);
         }
         throw last == null ? new Exception("请求失败") : last;
+    }
+
+    /**
+     * ComfyUI /prompt rejects invalid nodes with an error + node_errors map.
+     * Keep the actual cause instead of overwriting it with a second /api/prompt 404.
+     */
+    public static String describePromptError(String body) {
+        if (body == null || body.trim().isEmpty()) return "服务器没有返回错误详情";
+        try {
+            JSONObject response = new JSONObject(body);
+            StringBuilder out = new StringBuilder();
+            JSONObject error = response.optJSONObject("error");
+            if (error != null) {
+                String reason = error.optString("message", "");
+                String details = error.optString("details", "");
+                if (!reason.isEmpty()) out.append(reason);
+                if (!details.isEmpty()) out.append(" · ").append(details);
+            }
+            JSONObject nodeErrors = response.optJSONObject("node_errors");
+            if (nodeErrors != null) {
+                java.util.Iterator<String> ids = nodeErrors.keys();
+                int count = 0;
+                while (ids.hasNext() && count < 4) {
+                    String id = ids.next();
+                    JSONObject node = nodeErrors.optJSONObject(id);
+                    out.append(" · 节点 ").append(id);
+                    if (node != null) {
+                        String classType = node.optString("class_type", "");
+                        if (!classType.isEmpty()) out.append(" (").append(classType).append(")");
+                        JSONArray errors = node.optJSONArray("errors");
+                        if (errors != null && errors.length() > 0) {
+                            JSONObject first = errors.optJSONObject(0);
+                            if (first != null) {
+                                String message = first.optString("message", first.optString("type", ""));
+                                String details = first.optString("details", "");
+                                if (!message.isEmpty()) out.append(": ").append(message);
+                                if (!details.isEmpty()) out.append(" ").append(details);
+                            }
+                        }
+                    }
+                    count++;
+                }
+            }
+            return out.length() == 0 ? body : out.toString();
+        } catch (Exception ignored) {
+            return body;
+        }
     }
 
     private void postEmptyAny(String[] paths, int connect, int read) throws Exception {
