@@ -59,6 +59,7 @@ public class VideoNativeIntegrationTest {
             assertNotNull("The Android decoder must produce an actual frame", cover);
             assertTrue(cover.getWidth() > 100 && cover.getHeight() > 50);
             assertTrue(cover.getWidth() <= 512 && cover.getHeight() <= 512);
+            assertEquals("Portrait videos retain their aspect ratio", 240f / 432, cover.getWidth() / (float) cover.getHeight(), .02f);
             assertNotEquals(cover.getPixel(20, 20), cover.getPixel(cover.getWidth() - 20, cover.getHeight() - 20));
             assertTrue("Cover must not download the padded 16 MiB video: " + server.sent.get(), server.sent.get() < 2 * 1024 * 1024);
             assertEquals(0, server.withoutRange.get());
@@ -73,8 +74,7 @@ public class VideoNativeIntegrationTest {
                     assertTrue(target.getDrawable() instanceof BitmapDrawable);
                 }
             });
-            File output = new File(context().getExternalFilesDir("validation"), "native-video-cover.jpg");
-            try (FileOutputStream file = new FileOutputStream(output)) { cover.compress(Bitmap.CompressFormat.JPEG, 90, file); }
+            saveImage("native-video-cover.jpg", cover, Bitmap.CompressFormat.JPEG);
             report("cover_file_bytes=" + server.bytes.length + " ranged_bytes_sent=" + server.sent.get() + " requests=" + before);
         }
     }
@@ -84,14 +84,21 @@ public class VideoNativeIntegrationTest {
             try {
                 assertTrue("Player must have begun its network preparation", server.requested.await(15, TimeUnit.SECONDS));
                 AtomicLong elapsed = new AtomicLong();
+                long requestedAt = SystemClock.elapsedRealtime();
                 instrumentation().runOnMainSync(() -> {
                     long before = SystemClock.elapsedRealtime();
                     activity.findViewById(R.id.video_back).performClick();
                     elapsed.set(SystemClock.elapsedRealtime() - before);
                 });
                 assertTrue("Back must not wait for a 6-second server response: " + elapsed.get(), elapsed.get() < 500);
+                assertTrue("The main-thread queue must also remain responsive",
+                        SystemClock.elapsedRealtime() - requestedAt < 1000);
+                while (!activity.isDestroyed() && SystemClock.elapsedRealtime() - requestedAt < 1500) Thread.sleep(10);
+                long total = SystemClock.elapsedRealtime() - requestedAt;
+                assertTrue("The screen must actually exit before video preparation completes", activity.isDestroyed());
+                assertTrue("Navigation must finish within one second: " + total, total < 1000);
                 assertTrue(activity.isFinishing());
-                report("return_during_loading_ms=" + elapsed.get());
+                report("return_during_loading_callback_ms=" + elapsed.get() + " total_navigation_ms=" + total);
             } finally { instrumentation().runOnMainSync(activity::finish); }
         }
     }
@@ -109,6 +116,12 @@ public class VideoNativeIntegrationTest {
                     Thread.sleep(100);
                 }
                 assertTrue("Native video should render before the deadline", rendered.get());
+                Thread.sleep(350);
+                Bitmap screenshot = instrumentation().getUiAutomation().takeScreenshot();
+                if (screenshot != null) {
+                    saveImage("native-player.png", screenshot, Bitmap.CompressFormat.PNG);
+                    screenshot.recycle();
+                }
                 AtomicLong elapsed = new AtomicLong();
                 instrumentation().runOnMainSync(() -> {
                     long before = SystemClock.elapsedRealtime(); activity.onBackPressed();
@@ -127,9 +140,19 @@ public class VideoNativeIntegrationTest {
         return (VideoPlayerActivity) instrumentation().startActivitySync(intent);
     }
     private void report(String line) throws Exception {
-        File file = new File(context().getExternalFilesDir("validation"), "native-results.txt");
-        try (FileOutputStream out = new FileOutputStream(file, true)) { out.write((line + "\n").getBytes(StandardCharsets.UTF_8)); }
         android.util.Log.i("VideoNativeValidation", line);
+    }
+    private void saveImage(String name, Bitmap bitmap, Bitmap.CompressFormat format) throws Exception {
+        android.content.ContentValues values = new android.content.ContentValues();
+        values.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, name);
+        values.put(android.provider.MediaStore.Images.Media.MIME_TYPE, name.endsWith(".png") ? "image/png" : "image/jpeg");
+        values.put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/ComfyRemoteValidation");
+        values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 1);
+        android.net.Uri uri = context().getContentResolver().insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+        assertNotNull(uri);
+        try (OutputStream out = context().getContentResolver().openOutputStream(uri)) { assertTrue(bitmap.compress(format, 90, out)); }
+        values.clear(); values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0);
+        context().getContentResolver().update(uri, values, null, null);
     }
     private static final class MediaServer implements AutoCloseable {
         final byte[] bytes;

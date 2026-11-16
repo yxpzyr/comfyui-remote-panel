@@ -48,7 +48,7 @@ jobs:
           disable-animations: true
           script: |
             gradle connectedDebugAndroidTest --stacktrace
-            adb pull /sdcard/Android/data/com.comfyremote.panel/files/validation device-validation
+            adb pull /sdcard/Pictures/ComfyRemoteValidation device-validation
       - name: Upload test reports and native cover evidence
         if: always()
         uses: actions/upload-artifact@v4

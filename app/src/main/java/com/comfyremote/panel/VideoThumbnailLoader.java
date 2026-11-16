@@ -135,8 +135,10 @@ final class VideoThumbnailLoader {
         catch (RejectedExecutionException ignored) {}
     }
     static String cacheKey(String server, ImageRef ref) {
-        String identity = ComfyApiClient.normalizeBase(server) + "|" + ref.promptId + "|" + ref.sourceNodeId
-                + "|" + ref.key() + "|" + ref.timestamp + "|" + ref.generatedAt;
+        // Home/queue timestamps include local observation times; remote history does not.
+        // The server + prompt ID + file identity must share one cover across all views.
+        String identity = ComfyApiClient.normalizeBase(server) + "|" + ref.promptId + "|" + ref.key()
+                + "|" + (ref.promptId.isEmpty() ? ref.timestamp : "");
         try {
             byte[] hash = MessageDigest.getInstance("SHA-256").digest(identity.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             StringBuilder result = new StringBuilder();

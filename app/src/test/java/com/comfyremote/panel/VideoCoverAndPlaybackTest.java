@@ -133,6 +133,10 @@ public class VideoCoverAndPlaybackTest {
         assertNotEquals(VideoThumbnailLoader.cacheKey("8188", ref), VideoThumbnailLoader.cacheKey("8189", ref));
         assertNotEquals(VideoThumbnailLoader.cacheKey("8188", ref),
                 VideoThumbnailLoader.cacheKey("8188", new ImageRef("cover.mp4", "", "output", 1, "different-task")));
+        assertEquals("Server history and local observation metadata share one video cover",
+                VideoThumbnailLoader.cacheKey("8188", ref),
+                VideoThumbnailLoader.cacheKey("8188", new ImageRef("cover.mp4", "", "output", 99,
+                        ref.promptId, "189", 123456, 1)));
     }
     @Test public void coverFailureBackoffSurvivesMemoryEvictionAndStaleTilesNeverDecode() throws Exception {
         AtomicInteger attempts = new AtomicInteger();

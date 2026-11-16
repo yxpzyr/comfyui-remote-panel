@@ -192,10 +192,11 @@ public class VideoPlayerActivity extends Activity {
     }
     private void captureCover(VideoPlaybackSession owner) {
         if (closing || !screenVisible || session != owner || !texture.isAvailable()) return;
-        int width = Math.min(512, Math.max(1, texture.getWidth()));
-        int height = Math.max(1, (int) (texture.getHeight() * (long) width / Math.max(1, texture.getWidth())));
+        float scale = Math.min(1f, 512f / Math.max(1, Math.max(texture.getWidth(), texture.getHeight())));
+        int width = Math.max(1, Math.round(texture.getWidth() * scale));
+        int height = Math.max(1, Math.round(texture.getHeight() * scale));
         try {
-            Bitmap frame = texture.getBitmap(width, Math.min(512, height));
+            Bitmap frame = texture.getBitmap(width, height);
             VideoThumbnailLoader.remember(getApplicationContext(), server, ref, frame);
         } catch (Exception ignored) {}
     }
