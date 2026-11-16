@@ -93,6 +93,14 @@ public class GalleryActivity extends Activity {
         if (allTasks.isEmpty() && !fetching) refreshGallery(true);
     }
 
+    private volatile boolean screenVisible;
+    @Override protected void onStart() {
+        super.onStart(); screenVisible = true;
+        submittedThumbKeys.clear();
+        if (grid != null) grid.post(this::requestVisibleThumbnails);
+    }
+    @Override protected void onStop() { screenVisible = false; super.onStop(); }
+
     @Override protected void onDestroy() {
         ++renderGeneration;
         workPool.shutdownNow();
@@ -424,7 +432,7 @@ public class GalleryActivity extends Activity {
     }
 
     private void requestVisibleThumbnails() {
-        if (scroll == null || isFinishing() || isDestroyed()) return;
+        if (!screenVisible || scroll == null || isFinishing() || isDestroyed()) return;
         int y = scroll.getScrollY();
         int top = Math.max(0, y - dp(220));
         int bottom = y + scroll.getHeight() + dp(220);
@@ -433,7 +441,7 @@ public class GalleryActivity extends Activity {
             if (thumb.tile.getBottom() < top || thumb.tile.getTop() > bottom) continue;
             if (!submittedThumbKeys.add(thumb.taskKey)) continue;
             GalleryThumbnailLoader.load(this, thumb.server, thumb.ref, thumb.view, 320,
-                    () -> !isFinishing() && !isDestroyed() && thumb.generation == renderGeneration);
+                    () -> screenVisible && !isFinishing() && !isDestroyed() && thumb.generation == renderGeneration);
         }
     }
 

@@ -1,8 +1,8 @@
-name: Validate and sign V2.8.9 video performance
+name: Validate and sign V2.8.10 video covers and responsive playback
 
 on:
   push:
-    branches: [ "fix/v2-8-9-video-performance-data" ]
+    branches: [ "fix/v2-8-10-video-covers-back" ]
   workflow_dispatch:
 
 permissions:
@@ -10,11 +10,12 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,18 +28,37 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Build debug APK to verify Java and Android resources
-        run: gradle assembleDebug --stacktrace
-      - name: Run video performance and existing compatibility regressions
+      - name: Build debug APK
+        run: gradle assembleDebug assembleDebugAndroidTest --stacktrace
+      - name: Run JVM and Android framework regressions
         run: gradle testDebugUnitTest --stacktrace
-      - name: Upload regression test reports
+      - name: Enable emulator KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Decode real video covers and verify immediate Back on Android
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: default
+          arch: x86_64
+          ram-size: 1536M
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none -no-snapshot
+          disable-animations: true
+          script: |
+            gradle connectedDebugAndroidTest --stacktrace
+            adb pull /sdcard/Android/data/com.comfyremote.panel/files/validation device-validation
+      - name: Upload test reports and native cover evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ComfyRemote-V2.8.9-test-reports
+          name: ComfyRemote-V2.8.10-test-reports
           path: |
-            app/build/reports/tests/
+            app/build/reports/
             app/build/test-results/
+            app/build/outputs/androidTest-results/
+            device-validation/
       - name: Restore permanent signing keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -55,6 +75,6 @@ jobs:
       - name: Upload signed release APK
         uses: actions/upload-artifact@v4
         with:
-          name: ComfyRemote-V2.8.9-signed
+          name: ComfyRemote-V2.8.10-signed
           path: app/build/outputs/apk/release/app-release.apk
 

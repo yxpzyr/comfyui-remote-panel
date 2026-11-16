@@ -240,7 +240,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.8.9 · 视频省流 / 队列优化 / 界面状态恢复", 13, false);
+        TextView subtitle = text("V2.8.10 · 视频封面缓存 / 播放随时返回", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);

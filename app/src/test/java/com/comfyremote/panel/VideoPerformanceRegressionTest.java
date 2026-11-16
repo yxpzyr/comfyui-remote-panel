@@ -29,6 +29,7 @@ import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
 public class VideoPerformanceRegressionTest {
+    @org.junit.After public void resetVideoDecoder() { VideoThumbnailLoader.decoder = VideoThumbnailLoader.NATIVE_DECODER; }
     private Application app() { return RuntimeEnvironment.getApplication(); }
     private ByteArrayInputStream input(String value) {
         return new ByteArrayInputStream(value.getBytes(StandardCharsets.UTF_8));
@@ -43,16 +44,11 @@ public class VideoPerformanceRegressionTest {
         f.setAccessible(true); return f.get(object);
     }
 
-    @Test public void repeatedVideoThumbnailsAndImageApiRejectVideoWithoutNetwork() throws Exception {
+    @Test public void imageApisRejectVideoWithoutNetwork() throws Exception {
         try (MockWebServer server = new MockWebServer()) {
             server.start();
             String base = server.url("/").toString();
             ImageRef video = new ImageRef("result.mp4", "video", "output");
-            for (int i = 0; i < 200; i++) {
-                ImageView target = new ImageView(app());
-                GalleryThumbnailLoader.load(app(), base, video, target, 256, () -> true);
-                assertNotNull(target.getDrawable());
-            }
             ComfyApiClient api = new ComfyApiClient(base);
             try { api.fetchImage(video); fail("Video must never become an in-memory image download"); }
             catch (IllegalArgumentException expected) {}
@@ -173,6 +169,8 @@ public class VideoPerformanceRegressionTest {
     }
 
     @Test public void queueLifecycleWith300VideosRecyclesRowsAndDoesNotFetchVideos() throws Exception {
+        VideoThumbnailLoader.decoder = (url, wanted) ->
+                android.graphics.Bitmap.createBitmap(16, 16, android.graphics.Bitmap.Config.RGB_565);
         try (MockWebServer server = new MockWebServer()) {
             server.start();
             String base = server.url("/").toString();
@@ -222,6 +220,8 @@ public class VideoPerformanceRegressionTest {
     }
 
     @Test public void homeActivityRecreationRestoresUnsavedParametersAndExpansion() throws Exception {
+        VideoThumbnailLoader.decoder = (url, wanted) ->
+                android.graphics.Bitmap.createBitmap(16, 16, android.graphics.Bitmap.Config.RGB_565);
         legacy(new JSONArray());
         WorkflowProfile profile = WorkflowProfile.create("recreation test",
                 new JSONObject().put("1", new JSONObject().put("class_type", "SaveImage")

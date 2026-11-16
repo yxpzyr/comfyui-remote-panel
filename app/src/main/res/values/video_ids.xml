@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="video_back" type="id" />
+    <item name="video_status" type="id" />
+    <item name="video_texture" type="id" />
+</resources>

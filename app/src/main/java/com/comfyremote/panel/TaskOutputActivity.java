@@ -77,6 +77,14 @@ public class TaskOutputActivity extends Activity {
         loadOutputs();
     }
 
+    private volatile boolean screenVisible;
+    @Override protected void onStart() {
+        super.onStart(); screenVisible = true;
+        requestedThumbKeys.clear();
+        if (grid != null) grid.post(this::requestVisibleThumbnails);
+    }
+    @Override protected void onStop() { screenVisible = false; super.onStop(); }
+
     @Override protected void onDestroy() {
         ++renderGeneration;
         workPool.shutdownNow();
@@ -302,7 +310,7 @@ public class TaskOutputActivity extends Activity {
     }
 
     private void requestVisibleThumbnails() {
-        if (scroll == null || isFinishing() || isDestroyed()) return;
+        if (!screenVisible || scroll == null || isFinishing() || isDestroyed()) return;
         int top = Math.max(0, scroll.getScrollY() - dp(200));
         int bottom = scroll.getScrollY() + scroll.getHeight() + dp(200);
         for (PendingThumb thumb : pendingThumbs) {
@@ -310,7 +318,7 @@ public class TaskOutputActivity extends Activity {
             if (thumb.tile.getBottom() < top || thumb.tile.getTop() > bottom) continue;
             if (!requestedThumbKeys.add(thumb.ref.key())) continue;
             GalleryThumbnailLoader.load(this, server, thumb.ref, thumb.view, 320,
-                    () -> !isFinishing() && !isDestroyed() && renderGeneration == thumb.generation);
+                    () -> screenVisible && !isFinishing() && !isDestroyed() && renderGeneration == thumb.generation);
         }
     }
 
