@@ -241,10 +241,11 @@ public class VideoPerformanceRegressionTest {
         ((ExecutorService) field(screen, "pool")).submit(() -> {}).get(10, TimeUnit.SECONDS);
         Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
         android.widget.LinearLayout outputs = (android.widget.LinearLayout) field(screen, "outputList");
-        for (int attempt = 0; outputs.getChildCount() == 0 && attempt < 200; attempt++) {
+        for (int attempt = 0; field(screen, "currentOutputJob") != completed && attempt < 200; attempt++) {
             Thread.sleep(10);
             Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
         }
+        assertSame(completed, field(screen, "currentOutputJob"));
         android.view.View previousCard = outputs.getChildAt(0);
         assertNotNull(previousCard);
         first.pause().stop().start().resume();
