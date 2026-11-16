@@ -167,7 +167,7 @@ public class TaskOutputActivity extends Activity {
                     ComfyApiClient api = new ComfyApiClient(server);
                     List<ImageRef> remote = new ArrayList<>();
                     try {
-                        JSONObject history = api.getHistoryForPrompt(promptId);
+                        JSONObject history = api.getHistoryStatusForPrompt(promptId);
                         remote.addAll(api.parseAllImagesForPrompt(history, promptId));
                     } catch (Exception ignored) {}
                     if (remote.isEmpty()) {

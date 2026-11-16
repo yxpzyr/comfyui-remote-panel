@@ -137,6 +137,7 @@ public final class JobStore {
             list.add(0, record);
             trim(list);
             save(context, list);
+            prunePayloads(context, list);
             return record;
         }
     }
@@ -286,6 +287,18 @@ public final class JobStore {
             }
             list.removeIf(JobRecord::isTerminal);
             save(context, list);
+            prunePayloads(context, list);
+        }
+    }
+
+    private static void prunePayloads(Context context, List<JobRecord> retained) {
+        java.util.Set<String> live = new java.util.HashSet<>();
+        for (JobRecord job : retained) live.add(job.localId + ".json");
+        File[] files = payloadDir(context).listFiles((dir, name) ->
+                name.matches("[A-Za-z0-9_-]+\\.json") && !name.equals("legacy_index_backup.json"));
+        if (files != null) for (File file : files) {
+            if (!live.contains(file.getName()) && !file.delete())
+                android.util.Log.w("JobStore", "无法清理已移除任务的提交快照");
         }
     }
 

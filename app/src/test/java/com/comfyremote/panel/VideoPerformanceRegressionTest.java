@@ -155,6 +155,7 @@ public class VideoPerformanceRegressionTest {
         JobStore.updateStatus(app(), job.localId, JobRecord.COMPLETED, "done", 0);
         JobStore.clearFinished(app());
         assertTrue(JobStore.list(app()).isEmpty());
+        assertFalse(new File(new File(app().getFilesDir(), "job_payloads_v289"), job.localId + ".json").exists());
     }
 
     @Test public void largeUiStateUsesSmallBundleAndRestoresExactParameters() throws Exception {
