@@ -122,7 +122,8 @@ public class VideoPerformanceRegressionTest {
         assertTrue(metadata.get(0).hasSubmissionPayload());
         assertEquals(job.promptJson, JobStore.loadSubmission(app(), job.localId).promptJson);
         File directory = new File(app().getFilesDir(), "job_payloads_v289");
-        assertEquals(original.toString(), Files.readString(new File(directory, "legacy_index_backup.json").toPath()));
+        assertEquals(original.toString(), new String(Files.readAllBytes(
+                new File(directory, "legacy_index_backup.json").toPath()), StandardCharsets.UTF_8));
         File payload = new File(directory, job.localId + ".json");
         assertTrue(payload.setLastModified(1_000_000L));
         JobStore.attachPrompt(app(), job.localId, "p", "client-restored");
@@ -206,16 +207,39 @@ public class VideoPerformanceRegressionTest {
 
     @Test public void uploadReceiptsAreScopedToServerAndChangedInputAndCanBeInvalidated() throws Exception {
         File file = new File(app().getCacheDir(), "input.mp4");
-        Files.writeString(file.toPath(), "video");
+        Files.write(file.toPath(), "video".getBytes(StandardCharsets.UTF_8));
         android.net.Uri uri = android.net.Uri.fromFile(file);
         String key = InputUploadReceipts.key(app(), "server-one", uri, "", true);
         assertFalse(key.isEmpty());
         InputUploadReceipts.remember(app(), key, "uploads/input.mp4");
         assertEquals("uploads/input.mp4", InputUploadReceipts.find(app(), key));
         assertEquals("", InputUploadReceipts.find(app(), InputUploadReceipts.key(app(), "server-two", uri, "", true)));
-        Files.writeString(file.toPath(), "changed content");
+        Files.write(file.toPath(), "changed content".getBytes(StandardCharsets.UTF_8));
         assertNotEquals(key, InputUploadReceipts.key(app(), "server-one", uri, "", true));
         InputUploadReceipts.forget(app(), key);
         assertEquals("", InputUploadReceipts.find(app(), key));
+    }
+
+    @Test public void homeActivityRecreationRestoresUnsavedParametersAndExpansion() throws Exception {
+        legacy(new JSONArray());
+        WorkflowProfile profile = WorkflowProfile.create("recreation test",
+                new JSONObject().put("1", new JSONObject().put("class_type", "SaveImage")
+                        .put("inputs", new JSONObject().put("filename_prefix", "test"))), null);
+        WorkflowStore.upsert(app(), profile);
+        WorkflowStore.setActiveId(app(), profile.id);
+        ActivityController<MainActivity> first = Robolectric.buildActivity(MainActivity.class).setup();
+        MainActivity screen = first.get();
+        Map<String, Object> values = (Map<String, Object>) field(screen, "transientParameterValues");
+        values.put("unsaved-test-value", "keep my prompt");
+        java.lang.reflect.Field advanced = MainActivity.class.getDeclaredField("advancedExpanded");
+        advanced.setAccessible(true); advanced.setBoolean(screen, true);
+        Bundle state = new Bundle();
+        first.pause().saveInstanceState(state).stop().destroy();
+        ActivityController<MainActivity> second = Robolectric.buildActivity(MainActivity.class).create(state).start().resume();
+        assertEquals("keep my prompt", ((Map<?, ?>) field(second.get(), "transientParameterValues")).get("unsaved-test-value"));
+        assertTrue((Boolean) field(second.get(), "advancedExpanded"));
+        assertEquals(profile.id, ((WorkflowProfile) field(second.get(), "activeProfile")).id);
+        second.pause().stop().destroy();
+        assertTrue(((ExecutorService) field(second.get(), "pool")).isShutdown());
     }
 }

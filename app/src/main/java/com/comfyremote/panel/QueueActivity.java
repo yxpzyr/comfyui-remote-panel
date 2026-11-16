@@ -196,6 +196,8 @@ public class QueueActivity extends Activity {
 
     private LinearLayout jobCard(JobRecord job, Integer waitingPosition, LinearLayout recycled) {
         LinearLayout card = recycled == null ? new LinearLayout(this) : recycled;
+        if (card.getTag() instanceof String) thumbnailTargets.remove((String) card.getTag());
+        card.setTag(job.localId);
         card.removeAllViews();
         card.setOnClickListener(null);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -416,6 +418,7 @@ public class QueueActivity extends Activity {
             return;
         }
         if (job.inputPreviewUri == null || job.inputPreviewUri.isEmpty()) return;
+        thumbnailTargets.put(job.localId, target);
         String key = "in|" + job.inputPreviewUri;
         Bitmap cached = thumbCache.get(key);
         if (cached != null) { target.setImageBitmap(cached); return; }
@@ -424,7 +427,10 @@ public class QueueActivity extends Activity {
             try {
                 Bitmap bmp = decodeUriThumb(Uri.parse(job.inputPreviewUri), 520, 520);
                 if (bmp != null) thumbCache.put(key, bmp);
-                runOnUiThread(this::renderJobs);
+                runOnUiThread(() -> {
+                    if (visible && !isDestroyed() && thumbnailTargets.get(job.localId) == target && bmp != null)
+                        target.setImageBitmap(bmp);
+                });
             } catch (Exception ignored) {}
             finally { loadingThumbs.remove(key); }
         });
