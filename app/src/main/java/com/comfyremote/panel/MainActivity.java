@@ -144,6 +144,8 @@ public class MainActivity extends Activity {
     @Override protected void onStart() {
         super.onStart();
         screenVisible = true;
+        if (currentOutputJob != null && !outputBindings.isEmpty())
+            renderFinalOutput(currentOutputJob, new ArrayList<>(currentOutputRefs), outputBindings.get(0));
         GenerationManager.addListener(jobListener);
         refreshQueueButton();
         syncLatestCompletedOutput();

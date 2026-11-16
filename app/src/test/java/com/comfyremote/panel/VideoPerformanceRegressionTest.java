@@ -232,6 +232,20 @@ public class VideoPerformanceRegressionTest {
         MainActivity screen = first.get();
         Map<String, Object> values = (Map<String, Object>) field(screen, "transientParameterValues");
         values.put("unsaved-test-value", "keep my prompt");
+        JobRecord completed = JobRecord.create(profile.id, "video", "", "", "8188", "");
+        completed.status = JobRecord.COMPLETED; completed.promptId = "completed-video";
+        completed.outputRefsJson = new JSONArray().put(
+                new ImageRef("clip.mp4", "", "output", 1L, completed.promptId, "1", 1L, 1).toJson()).toString();
+        java.lang.reflect.Method load = MainActivity.class.getDeclaredMethod("loadJobOutputs", JobRecord.class);
+        load.setAccessible(true); load.invoke(screen, completed);
+        ((ExecutorService) field(screen, "pool")).submit(() -> {}).get(10, TimeUnit.SECONDS);
+        Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+        android.widget.LinearLayout outputs = (android.widget.LinearLayout) field(screen, "outputList");
+        android.view.View previousCard = outputs.getChildAt(0);
+        assertNotNull(previousCard);
+        first.pause().stop().start().resume();
+        assertNotSame("Resume restarts any thumbnail work cancelled while hidden", previousCard, outputs.getChildAt(0));
+        assertEquals(1, ((List<?>) field(screen, "currentOutputRefs")).size());
         java.lang.reflect.Field advanced = MainActivity.class.getDeclaredField("advancedExpanded");
         advanced.setAccessible(true); advanced.setBoolean(screen, true);
         Bundle state = new Bundle();
