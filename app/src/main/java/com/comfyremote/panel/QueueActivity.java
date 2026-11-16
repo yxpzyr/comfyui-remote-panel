@@ -18,7 +18,11 @@ import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
-import android.widget.ScrollView;
+import android.widget.ListView;
+import android.widget.BaseAdapter;
+import android.view.View;
+import android.view.ViewGroup;
+import android.util.LruCache;
 import android.widget.TextView;
 import android.widget.Toast;
 import org.json.JSONObject;
@@ -39,17 +43,28 @@ import java.util.concurrent.Executors;
 
 public class QueueActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final ExecutorService imagePool = Executors.newFixedThreadPool(4);
-    private final Map<String, Bitmap> thumbCache = new ConcurrentHashMap<>();
+    private final ExecutorService imagePool = Executors.newFixedThreadPool(2);
+    private final ExecutorService listPool = Executors.newSingleThreadExecutor();
+    private final ExecutorService downloadPool = Executors.newSingleThreadExecutor();
+    private final LruCache<String, Bitmap> thumbCache = new LruCache<String, Bitmap>(4 * 1024 * 1024) {
+        @Override protected int sizeOf(String key, Bitmap bitmap) { return bitmap.getAllocationByteCount(); }
+    };
+    private final Map<String, ImageView> thumbnailTargets = new ConcurrentHashMap<>();
+    private volatile boolean visible;
+    private volatile boolean readingJobs;
+    private List<JobRecord> displayedJobs = new ArrayList<>();
+    private Map<String, Integer> positions = new HashMap<>();
+    private String displayedVersion = "";
+    private BaseAdapter adapter;
     private final Set<String> loadingThumbs = ConcurrentHashMap.newKeySet();
-    private LinearLayout listContainer;
+    private ListView listContainer;
     private TextView state;
     private String server;
 
     private final Runnable refresher = new Runnable() {
         @Override public void run() {
             renderJobs();
-            handler.postDelayed(this, 1200);
+            handler.postDelayed(this, 1500);
         }
     };
 
@@ -64,11 +79,15 @@ public class QueueActivity extends Activity {
 
     @Override protected void onStart() {
         super.onStart();
+        visible = true;
+        displayedVersion = "";
         handler.removeCallbacks(refresher);
         handler.post(refresher);
     }
 
     @Override protected void onStop() {
+        visible = false;
+        thumbnailTargets.clear();
         handler.removeCallbacks(refresher);
         super.onStop();
     }
@@ -97,11 +116,19 @@ public class QueueActivity extends Activity {
         state.setPadding(0, dp(8), 0, dp(10));
         root.addView(state);
 
-        ScrollView scroll = new ScrollView(this);
-        listContainer = new LinearLayout(this);
-        listContainer.setOrientation(LinearLayout.VERTICAL);
-        scroll.addView(listContainer);
-        root.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        listContainer = new ListView(this);
+        listContainer.setDividerHeight(dp(10));
+        adapter = new BaseAdapter() {
+            @Override public int getCount() { return displayedJobs.size(); }
+            @Override public JobRecord getItem(int position) { return displayedJobs.get(position); }
+            @Override public long getItemId(int position) { return position; }
+            @Override public View getView(int position, View recycled, ViewGroup parent) {
+                JobRecord job = getItem(position);
+                return jobCard(job, positions.get(job.localId), recycled instanceof LinearLayout ? (LinearLayout) recycled : null);
+            }
+        };
+        listContainer.setAdapter(adapter);
+        root.addView(listContainer, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         back.setOnClickListener(v -> finish());
         clear.setOnClickListener(v -> {
@@ -112,23 +139,48 @@ public class QueueActivity extends Activity {
     }
 
     private void renderJobs() {
-        List<JobRecord> jobs = JobStore.list(this);
-        Map<String, Integer> waitingPositions = waitingPositions(jobs);
-        listContainer.removeAllViews();
-        int active = 0, done = 0;
-        for (JobRecord job : jobs) {
-            if (!job.isTerminal()) active++;
-            if (JobRecord.COMPLETED.equals(job.status)) done++;
-        }
-        state.setText("共 " + jobs.size() + " 个任务 · " + active + " 个等待/生成中 · " + done + " 个已完成 · 进度自动刷新");
-        if (jobs.isEmpty()) {
-            TextView empty = text("还没有任务。回到主界面选择图片，上传完成后点“开始生成”。", 14, false);
-            empty.setTextColor(ThemeManager.muted(this));
-            empty.setPadding(0, dp(24), 0, 0);
-            listContainer.addView(empty);
-            return;
-        }
-        for (JobRecord job : jobs) listContainer.addView(jobCard(job, waitingPositions.get(job.localId)), cardParams());
+        if (!visible || readingJobs || listPool.isShutdown()) return;
+        readingJobs = true;
+        listPool.execute(() -> {
+            try {
+                List<JobRecord> jobs = JobStore.list(getApplicationContext());
+                StringBuilder version = new StringBuilder();
+                int active = 0, done = 0;
+                for (JobRecord job : jobs) {
+                    if (!job.isTerminal()) active++;
+                    if (JobRecord.COMPLETED.equals(job.status)) done++;
+                    version.append(job.localId).append(':').append(job.updatedAt).append('|');
+                }
+                if (active > 0) version.append(System.currentTimeMillis() / 10000);
+                final String key = version.toString();
+                final int activeCount = active, doneCount = done;
+                runOnUiThread(() -> {
+                    readingJobs = false;
+                    if (!visible || isDestroyed()) return;
+                    state.setText("共 " + jobs.size() + " 个任务 · " + activeCount + " 个等待/生成中 · " + doneCount + " 个已完成 · 进度自动刷新");
+                    if (!key.equals(displayedVersion) || displayedJobs.isEmpty()) {
+                        displayedVersion = key;
+                        displayedJobs = jobs;
+                        positions = waitingPositions(jobs);
+                        adapter.notifyDataSetChanged();
+                    }
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    readingJobs = false;
+                    if (visible) state.setText("任务列表读取失败，原数据已保留：" + error.getMessage());
+                });
+            }
+        });
+    }
+
+    @Override protected void onDestroy() {
+        visible = false;
+        handler.removeCallbacksAndMessages(null);
+        listPool.shutdownNow(); imagePool.shutdownNow();
+        downloadPool.shutdown();
+        thumbCache.evictAll(); thumbnailTargets.clear();
+        super.onDestroy();
     }
 
     private Map<String, Integer> waitingPositions(List<JobRecord> jobs) {
@@ -142,8 +194,10 @@ public class QueueActivity extends Activity {
         return out;
     }
 
-    private LinearLayout jobCard(JobRecord job, Integer waitingPosition) {
-        LinearLayout card = new LinearLayout(this);
+    private LinearLayout jobCard(JobRecord job, Integer waitingPosition, LinearLayout recycled) {
+        LinearLayout card = recycled == null ? new LinearLayout(this) : recycled;
+        card.removeAllViews();
+        card.setOnClickListener(null);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(12), dp(12), dp(12), dp(12));
         GradientDrawable bg = new GradientDrawable();
@@ -227,7 +281,7 @@ public class QueueActivity extends Activity {
         loadJobThumbnail(job, thumb);
 
         List<ImageRef> outputs = job.outputRefs();
-        ImageRef finalOutput = ImageRef.chooseFinal(outputs);
+        ImageRef finalOutput = ImageRef.chooseFinalSaved(outputs);
         if (JobRecord.COMPLETED.equals(job.status) && finalOutput != null) {
             card.setOnClickListener(v -> showOutput(job, finalOutput));
             thumb.setOnClickListener(v -> showOutput(job, finalOutput));
@@ -235,7 +289,7 @@ public class QueueActivity extends Activity {
                 saveRef(job, finalOutput);
                 return true;
             });
-            TextView hint = text("点任务/缩略图查看原图 · 长按缩略图保存", 11, false);
+            TextView hint = text(finalOutput.isVideo() ? "▶ 点任务播放视频 · 长按下载原始视频" : "点任务/缩略图查看原图 · 长按缩略图保存", 11, false);
             hint.setTextColor(ThemeManager.accent(this));
             hint.setPadding(0, dp(5), 0, 0);
             card.addView(hint);
@@ -353,23 +407,12 @@ public class QueueActivity extends Activity {
 
     private void loadJobThumbnail(JobRecord job, ImageView target) {
         List<ImageRef> refs = job.outputRefs();
-        ImageRef finalRef = ImageRef.chooseFinal(refs);
+        ImageRef finalRef = ImageRef.chooseFinalSaved(refs);
         if (JobRecord.COMPLETED.equals(job.status) && finalRef != null) {
-            ImageRef ref = finalRef;
-            String key = "out|" + ref.key();
-            Bitmap cached = thumbCache.get(key);
-            if (cached != null) { target.setImageBitmap(cached); return; }
-            if (!loadingThumbs.add(key)) return;
-            imagePool.submit(() -> {
-                try {
-                    String targetServer = job.server == null || job.server.isEmpty() ? server : job.server;
-                    ComfyApiClient.ImageDownload dl = new ComfyApiClient(targetServer).fetchImage(ref);
-                    Bitmap bmp = MainActivity.decodeScaled(dl.bytes, 520, 520);
-                    if (bmp != null) thumbCache.put(key, bmp);
-                    runOnUiThread(this::renderJobs);
-                } catch (Exception ignored) {}
-                finally { loadingThumbs.remove(key); }
-            });
+            String targetServer = job.server == null || job.server.isEmpty() ? server : job.server;
+            thumbnailTargets.put(job.localId, target);
+            GalleryThumbnailLoader.load(this, targetServer, finalRef, target, 320,
+                    () -> visible && !isDestroyed() && thumbnailTargets.get(job.localId) == target);
             return;
         }
         if (job.inputPreviewUri == null || job.inputPreviewUri.isEmpty()) return;
@@ -403,6 +446,10 @@ public class QueueActivity extends Activity {
     }
 
     private void showOutput(JobRecord job, ImageRef ref) {
+        if (ref.isVideo()) {
+            VideoPlayerActivity.open(this, job.server == null || job.server.isEmpty() ? server : job.server, ref);
+            return;
+        }
         LinearLayout holder = new LinearLayout(this);
         holder.setGravity(Gravity.CENTER);
         holder.setPadding(dp(8), dp(8), dp(8), dp(8));
@@ -444,12 +491,12 @@ public class QueueActivity extends Activity {
     }
 
     private void saveRef(JobRecord job, ImageRef ref) {
-        imagePool.submit(() -> {
+        downloadPool.submit(() -> {
             try {
                 String targetServer = job.server == null || job.server.isEmpty() ? server : job.server;
-                ComfyApiClient.ImageDownload dl = new ComfyApiClient(targetServer).fetchImage(ref);
-                MediaSaver.saveImage(this, dl.bytes, ref.filename, dl.mime);
-                runOnUiThread(() -> Toast.makeText(this, "已保存到 Pictures/ComfyRemote", Toast.LENGTH_SHORT).show());
+                new ComfyApiClient(targetServer).saveMedia(getApplicationContext(), ref);
+                runOnUiThread(() -> { if (!isDestroyed()) Toast.makeText(this,
+                        ref.isVideo() ? "已保存到 Movies/ComfyRemote" : "已保存到 Pictures/ComfyRemote", Toast.LENGTH_SHORT).show(); });
             } catch (Exception e) {
                 runOnUiThread(() -> Toast.makeText(this, "保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show());
             }

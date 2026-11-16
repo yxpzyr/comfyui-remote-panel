@@ -253,6 +253,10 @@ public class ComfyApiClient {
         JSONObject body = new JSONObject();
         body.put("prompt", workflow);
         body.put("client_id", clientId);
+        // The phone displays textual progress, not binary latent preview frames.
+        // This per-prompt setting avoids receiving unused video-frame previews;
+        // it does not change saved outputs or the server's startup configuration.
+        body.put("extra_data", new JSONObject().put("preview_method", "none"));
         HttpResult r = postJsonAny(new String[]{"/prompt", "/api/prompt"}, body, 10000, 30000);
         JSONObject result = new JSONObject(r.text());
         String id = result.optString("prompt_id", "");
@@ -265,6 +269,46 @@ public class ComfyApiClient {
         String enc = URLEncoder.encode(promptId, "UTF-8");
         HttpResult r = getAny(new String[]{"/history/" + enc, "/api/history_v2/" + enc}, 8000, 15000);
         return new JSONObject(r.text());
+    }
+
+    /** Progress polling must not materialize the embedded execution graph. */
+    public JSONObject getHistoryStatusForPrompt(String promptId) throws Exception {
+        String enc = URLEncoder.encode(promptId, "UTF-8");
+        Exception last = null;
+        for (String path : new String[]{"/history/" + enc, "/api/history_v2/" + enc}) {
+            HttpURLConnection con = null;
+            try {
+                con = (HttpURLConnection) new URL(base + path).openConnection();
+                con.setConnectTimeout(8000); con.setReadTimeout(15000);
+                int status = con.getResponseCode();
+                if (status == 404) { last = new FileNotFoundException(path); continue; }
+                if (status != 200) throw new Exception("history HTTP " + status);
+                try (InputStream in = con.getInputStream()) { return readHistoryStatus(in, promptId); }
+            } finally { if (con != null) con.disconnect(); }
+        }
+        throw last == null ? new FileNotFoundException(promptId) : last;
+    }
+
+    static JSONObject readHistoryStatus(InputStream in, String promptId) throws Exception {
+        JSONObject result = new JSONObject();
+        try (JsonReader reader = new JsonReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+            reader.beginObject();
+            while (reader.hasNext()) {
+                String id = reader.nextName();
+                if (!id.equals(promptId) || reader.peek() != JsonToken.BEGIN_OBJECT) { reader.skipValue(); continue; }
+                JSONObject entry = new JSONObject();
+                reader.beginObject();
+                while (reader.hasNext()) {
+                    String field = reader.nextName();
+                    if ("outputs".equals(field) || "status".equals(field)) entry.put(field, readGalleryJson(reader, 0));
+                    else reader.skipValue();
+                }
+                reader.endObject();
+                result.put(id, entry);
+            }
+            reader.endObject();
+        }
+        return result;
     }
 
     public JSONObject getObjectInfo() throws Exception {
@@ -369,7 +413,7 @@ public class ComfyApiClient {
     }
 
     /** Parse only outputs/status metadata, never the huge workflow graph. */
-    private static Object readGalleryJson(JsonReader r, int depth) throws Exception {
+    static Object readGalleryJson(JsonReader r, int depth) throws Exception {
         if (depth > 20) { r.skipValue(); return null; }
         JsonToken token = r.peek();
         if (token == JsonToken.BEGIN_OBJECT) {
@@ -661,13 +705,74 @@ public class ComfyApiClient {
     }
 
     public String getQueueState(String promptId) throws Exception {
-        HttpResult r = getAny(new String[]{"/queue", "/api/queue"}, 8000, 15000);
-        JSONObject q = new JSONObject(r.text());
-        if (queueArrayContains(q.optJSONArray("queue_running"), promptId)) return QUEUE_RUNNING;
-        if (queueArrayContains(q.optJSONArray("queue_pending"), promptId)) return QUEUE_PENDING;
-        if (queueArrayContains(q.optJSONArray("running"), promptId)) return QUEUE_RUNNING;
-        if (queueArrayContains(q.optJSONArray("pending"), promptId)) return QUEUE_PENDING;
-        return QUEUE_UNKNOWN;
+        synchronized (QUEUE_CACHE) {
+            QueueSnapshot snapshot = QUEUE_CACHE.get(base);
+            long now = System.currentTimeMillis();
+            if (snapshot == null || now - snapshot.loadedAt >= 30000 || now < snapshot.loadedAt) {
+                Exception last = null;
+                for (String path : new String[]{"/queue", "/api/queue"}) {
+                    HttpURLConnection con = null;
+                    try {
+                        con = (HttpURLConnection) new URL(base + path).openConnection();
+                        con.setConnectTimeout(8000); con.setReadTimeout(15000);
+                        if (con.getResponseCode() == 404) continue;
+                        if (con.getResponseCode() != 200) throw new Exception("queue HTTP " + con.getResponseCode());
+                        try (InputStream in = con.getInputStream()) { snapshot = new QueueSnapshot(readQueueStates(in)); }
+                        if (QUEUE_CACHE.size() >= 4) QUEUE_CACHE.clear();
+                        QUEUE_CACHE.put(base, snapshot); break;
+                    } catch (Exception e) { last = e; }
+                    finally { if (con != null) con.disconnect(); }
+                }
+                if (snapshot == null || snapshot.loadedAt < now) {
+                    if (last != null) throw last;
+                    throw new Exception("无法读取队列状态");
+                }
+            }
+            return snapshot.states.getOrDefault(promptId, QUEUE_UNKNOWN);
+        }
+    }
+
+    private static final java.util.Map<String, QueueSnapshot> QUEUE_CACHE = new java.util.HashMap<>();
+    private static final class QueueSnapshot {
+        final long loadedAt = System.currentTimeMillis();
+        final java.util.Map<String, String> states;
+        QueueSnapshot(java.util.Map<String, String> states) { this.states = states; }
+    }
+
+    static java.util.Map<String, String> readQueueStates(InputStream in) throws Exception {
+        java.util.Map<String, String> states = new java.util.HashMap<>();
+        try (JsonReader reader = new JsonReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+            reader.beginObject();
+            while (reader.hasNext()) {
+                String field = reader.nextName();
+                String status = field.equals("queue_running") || field.equals("running") ? QUEUE_RUNNING
+                        : field.equals("queue_pending") || field.equals("pending") ? QUEUE_PENDING : null;
+                if (status == null || reader.peek() != JsonToken.BEGIN_ARRAY) { reader.skipValue(); continue; }
+                reader.beginArray();
+                while (reader.hasNext()) {
+                    String id = "";
+                    if (reader.peek() == JsonToken.BEGIN_ARRAY) {
+                        reader.beginArray(); int column = 0;
+                        while (reader.hasNext()) {
+                            if (column++ == 1 && reader.peek() == JsonToken.STRING) id = reader.nextString();
+                            else reader.skipValue();
+                        }
+                        reader.endArray();
+                    } else if (reader.peek() == JsonToken.BEGIN_OBJECT) {
+                        reader.beginObject();
+                        while (reader.hasNext()) {
+                            if (reader.nextName().equals("prompt_id") && reader.peek() == JsonToken.STRING) id = reader.nextString();
+                            else reader.skipValue();
+                        }
+                        reader.endObject();
+                    } else reader.skipValue();
+                    if (!id.isEmpty()) states.put(id, status);
+                }
+                reader.endArray();
+            }
+            reader.endObject();
+        }
+        return states;
     }
 
     private boolean queueArrayContains(JSONArray a, String promptId) {
@@ -746,6 +851,8 @@ public class ComfyApiClient {
     }
 
     public ImageDownload fetchImage(ImageRef ref) throws Exception {
+        if (ref == null || ref.isVideo())
+            throw new IllegalArgumentException("视频必须使用播放或流式下载接口，不能作为图片读取");
         String q = "?filename=" + enc(ref.filename) + "&subfolder=" + enc(ref.subfolder) + "&type=" + enc(ref.type);
         HttpResult r = getAny(new String[]{"/view" + q, "/api/view" + q}, 10000, 60000);
         return new ImageDownload(r.body, r.contentType == null ? MediaSaver.guessMime(ref.filename) : r.contentType);
@@ -758,6 +865,8 @@ public class ComfyApiClient {
 
     public ImageDownload fetchImagePreview(ImageRef ref, int quality, int maxBytes,
                                            java.util.function.BooleanSupplier keepGoing) throws Exception {
+        if (ref == null || ref.isVideo())
+            throw new IllegalArgumentException("视频不自动下载缩略图");
         int q = Math.max(35, Math.min(85, quality));
         String query = "?filename=" + enc(ref.filename) + "&subfolder=" + enc(ref.subfolder)
                 + "&type=" + enc(ref.type) + "&preview=jpeg;" + q + "&channel=rgb";

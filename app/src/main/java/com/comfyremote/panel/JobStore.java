@@ -18,6 +18,9 @@ public final class JobStore {
     private static final String PREFS = "comfy_remote";
     private static final String KEY = "generation_jobs_v18"; // preserve V1.8 history
     private static final int MAX_RECORDS = 300;
+    private static String cachedRaw;
+    private static String cachedDirectory;
+    private static List<JobRecord> cachedJobs = new ArrayList<>();
 
     private JobStore() {}
 
@@ -25,18 +28,107 @@ public final class JobStore {
         synchronized (LOCK) {
             List<JobRecord> out = new ArrayList<>();
             String raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, "");
+            String directory = context.getFilesDir().getAbsolutePath();
+            if (directory.equals(cachedDirectory) && raw != null && raw.equals(cachedRaw))
+                return copies(cachedJobs);
             if (raw != null && !raw.trim().isEmpty()) {
-                try {
-                    JSONArray a = new JSONArray(raw);
-                    for (int i = 0; i < a.length(); i++) {
-                        JSONObject o = a.optJSONObject(i);
-                        if (o != null) out.add(JobRecord.fromJson(o));
+                boolean migrated = false;
+                try (android.util.JsonReader reader = new android.util.JsonReader(new java.io.StringReader(raw))) {
+                    reader.beginArray();
+                    while (reader.hasNext()) {
+                        if (reader.peek() != android.util.JsonToken.BEGIN_OBJECT) { reader.skipValue(); continue; }
+                        JSONObject o = new JSONObject();
+                        String payload = "";
+                        reader.beginObject();
+                        while (reader.hasNext()) {
+                            String key = reader.nextName();
+                            if ("prompt_json".equals(key)) {
+                                if (reader.peek() == android.util.JsonToken.STRING) payload = reader.nextString();
+                                else reader.skipValue();
+                            } else {
+                                Object value = ComfyApiClient.readGalleryJson(reader, 0);
+                                if (value != null) o.put(key, value);
+                            }
+                        }
+                        reader.endObject();
+                        if (!payload.isEmpty()) o.put("submission_payload_saved", true);
+                        JobRecord job = JobRecord.fromJson(o);
+                        if (!payload.isEmpty()) {
+                            // Preserve the original index before compacting it. Each graph
+                            // is streamed to one private file; never retain 300 graphs in RAM.
+                            File backup = new File(payloadDir(context), "legacy_index_backup.json");
+                            if (!backup.exists()) atomicText(backup, raw);
+                            atomicText(payloadFile(context, job.localId), payload);
+                            job.submissionPayloadSaved = true;
+                            migrated = true;
+                        }
+                        job.promptJson = "";
+                        out.add(job);
                     }
-                } catch (Exception ignored) {}
+                    reader.endArray();
+                    if (migrated) {
+                        raw = metadataJson(out);
+                        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, raw).apply();
+                    }
+                } catch (Exception error) {
+                    // Never replace a failed migration with an empty history.
+                    throw new IllegalStateException("任务历史读取失败，原始记录已保留", error);
+                }
             }
             out.sort(Comparator.comparingLong((JobRecord j) -> j.submittedAt).reversed());
-            return out;
+            cachedRaw = raw; cachedDirectory = directory; cachedJobs = out;
+            return copies(out);
         }
+    }
+
+    public static JobRecord loadSubmission(Context context, String localId) {
+        synchronized (LOCK) {
+            JobRecord job = find(context, localId);
+            if (job == null || !job.hasSubmissionPayload()) return job;
+            try {
+                job.promptJson = new String(Files.readAllBytes(payloadFile(context, localId).toPath()), StandardCharsets.UTF_8);
+                return job;
+            } catch (Exception e) { throw new IllegalStateException("任务提交快照读取失败，未重新提交", e); }
+        }
+    }
+
+    private static List<JobRecord> copies(List<JobRecord> source) {
+        List<JobRecord> result = new ArrayList<>(source.size());
+        for (JobRecord job : source) result.add(JobRecord.fromJson(job.toJson()));
+        return result;
+    }
+
+    private static File payloadDir(Context context) {
+        File dir = new File(context.getFilesDir(), "job_payloads_v289");
+        if (!dir.isDirectory() && !dir.mkdirs()) throw new IllegalStateException("无法创建任务快照目录");
+        return dir;
+    }
+
+    private static File payloadFile(Context context, String id) {
+        if (id == null || !id.matches("[A-Za-z0-9_-]+")) throw new IllegalArgumentException("无效任务 ID");
+        return new File(payloadDir(context), id + ".json");
+    }
+
+    private static void atomicText(File target, String value) throws Exception {
+        File temp = new File(target.getParentFile(), target.getName() + ".tmp");
+        try {
+            try (java.io.Writer writer = Files.newBufferedWriter(temp.toPath(), StandardCharsets.UTF_8)) { writer.write(value); }
+            try { Files.move(temp.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE); }
+            catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(temp.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally { temp.delete(); }
+    }
+
+    private static String metadataJson(List<JobRecord> jobs) throws Exception {
+        JSONArray result = new JSONArray();
+        for (JobRecord job : jobs) {
+            JSONObject metadata = job.toJson();
+            metadata.put("prompt_json", "");
+            result.put(metadata);
+        }
+        return result.toString();
     }
 
     public static JobRecord add(Context context, JobRecord record) {
@@ -69,7 +161,12 @@ public final class JobStore {
     }
 
     public static void attachPrompt(Context context, String localId, String promptId) {
+        attachPrompt(context, localId, promptId, "");
+    }
+
+    public static void attachPrompt(Context context, String localId, String promptId, String clientId) {
         update(context, localId, j -> {
+            j.clientId = clientId == null ? "" : clientId;
             j.promptId = promptId == null ? "" : promptId;
             j.status = JobRecord.QUEUED;
             j.message = "已提交到 ComfyUI 队列";
@@ -216,7 +313,9 @@ public final class JobStore {
             List<JobRecord> list = list(context);
             for (JobRecord j : list) {
                 if (j.localId.equals(localId)) {
+                    String before = j.toJson().toString();
                     mutator.apply(j);
+                    if (before.equals(j.toJson().toString())) return;
                     j.updatedAt = System.currentTimeMillis();
                     break;
                 }
@@ -228,10 +327,19 @@ public final class JobStore {
     private static void save(Context context, List<JobRecord> list) {
         list.sort(Comparator.comparingLong((JobRecord j) -> j.submittedAt).reversed());
         trim(list);
-        JSONArray a = new JSONArray();
-        for (JobRecord j : list) a.put(j.toJson());
-        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        p.edit().putString(KEY, a.toString()).apply();
+        try {
+            for (JobRecord job : list) {
+                if (job.promptJson != null && !job.promptJson.isEmpty()) {
+                    atomicText(payloadFile(context, job.localId), job.promptJson);
+                    job.submissionPayloadSaved = true;
+                    job.promptJson = "";
+                }
+            }
+            String raw = metadataJson(list);
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, raw).apply();
+            cachedRaw = raw; cachedDirectory = context.getFilesDir().getAbsolutePath();
+            cachedJobs = copies(list);
+        } catch (Exception error) { throw new IllegalStateException("任务保存失败，原始记录已保留", error); }
     }
 
     private static void trim(List<JobRecord> list) {

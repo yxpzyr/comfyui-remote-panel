@@ -19,7 +19,7 @@ public final class ComfyProgressSocket {
         void onExecutionStart(String promptId);
     }
 
-    public interface Handle { void close(); }
+    public interface Handle { void close(); default boolean isOpen() { return false; } }
 
     private ComfyProgressSocket() {}
 
@@ -36,7 +36,10 @@ public final class ComfyProgressSocket {
         catch (Exception e) { encodedClient = clientId == null ? "" : clientId; }
         String url = ws + "/ws?clientId=" + encodedClient;
         Request request = new Request.Builder().url(url).build();
+        java.util.concurrent.atomic.AtomicBoolean connected = new java.util.concurrent.atomic.AtomicBoolean();
         WebSocket socket = client.newWebSocket(request, new WebSocketListener() {
+            @Override public void onOpen(WebSocket webSocket, Response response) { connected.set(true); }
+            @Override public void onClosed(WebSocket webSocket, int code, String reason) { connected.set(false); }
             @Override public void onMessage(WebSocket webSocket, String text) {
                 try {
                     JSONObject root = new JSONObject(text);
@@ -55,13 +58,18 @@ public final class ComfyProgressSocket {
             }
 
             @Override public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+                connected.set(false);
                 // Polling remains the fallback source of truth; no user-facing failure needed here.
             }
         });
-        return () -> {
+        return new Handle() {
+          @Override public boolean isOpen() { return connected.get(); }
+          @Override public void close() {
+            connected.set(false);
             try { socket.close(1000, "done"); } catch (Exception ignored) {}
             try { client.dispatcher().executorService().shutdown(); } catch (Exception ignored) {}
             try { client.connectionPool().evictAll(); } catch (Exception ignored) {}
+          }
         };
     }
 }

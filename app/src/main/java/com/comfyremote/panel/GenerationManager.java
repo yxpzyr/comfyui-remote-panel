@@ -27,6 +27,7 @@ public final class GenerationManager {
     private static final ExecutorService MONITOR_POOL = Executors.newCachedThreadPool();
     private static final Set<String> SUBMITTING = ConcurrentHashMap.newKeySet();
     private static final Set<String> MONITORING = ConcurrentHashMap.newKeySet();
+    private static final java.util.concurrent.atomic.AtomicBoolean RESUMING = new java.util.concurrent.atomic.AtomicBoolean();
     private static final Set<JobListener> LISTENERS = new CopyOnWriteArraySet<>();
     private static final Map<String, ComfyProgressSocket.Handle> SOCKETS = new ConcurrentHashMap<>();
     // V2.3: best-effort execution timestamps for output nodes, used to identify the last generated image.
@@ -47,15 +48,25 @@ public final class GenerationManager {
     }
 
     public static void resumePending(Context context, String fallbackServer) {
+        if (!RESUMING.compareAndSet(false, true)) return;
         Context app = context.getApplicationContext();
+        MONITOR_POOL.submit(() -> {
+            try { resumePendingInBackground(app, fallbackServer); }
+            finally { RESUMING.set(false); }
+        });
+    }
+
+    private static void resumePendingInBackground(Context app, String fallbackServer) {
         List<JobRecord> jobs = JobStore.list(app);
         List<JobRecord> local = new ArrayList<>();
         for (JobRecord job : jobs) {
             if (job.isTerminal()) continue;
-            if ((job.promptId == null || job.promptId.isEmpty()) && !job.promptJson.isEmpty() &&
+            if ((job.promptId == null || job.promptId.isEmpty()) && job.hasSubmissionPayload() &&
                     (JobRecord.LOCAL_QUEUED.equals(job.status) || JobRecord.SUBMITTING.equals(job.status))) {
                 local.add(job);
             } else if (job.promptId != null && !job.promptId.isEmpty()) {
+                if (job.clientId != null && !job.clientId.isEmpty() && !SOCKETS.containsKey(job.promptId))
+                    startProgressSocket(app, job.localId, job.promptId, job.clientId, serverFor(job, fallbackServer));
                 monitorPrompt(app, serverFor(job, fallbackServer), job.localId, job.promptId);
             }
         }
@@ -65,9 +76,10 @@ public final class GenerationManager {
 
     private static void submitStoredJob(Context context, String localId) {
         JobRecord job = JobStore.find(context, localId);
-        if (job == null || job.isTerminal() || job.promptJson == null || job.promptJson.isEmpty()) return;
+        if (job == null || job.isTerminal() || !job.hasSubmissionPayload()) return;
         String server = serverFor(job, "8188");
         try {
+            job = JobStore.loadSubmission(context, localId);
             JobStore.markSubmitting(context, localId);
             notifyListeners(JobStore.find(context, localId));
             ComfyApiClient api = new ComfyApiClient(server);
@@ -134,7 +146,7 @@ public final class GenerationManager {
                 try { api.deleteQueuePrompt(promptId); } catch (Exception ignored) {}
                 return;
             }
-            JobStore.attachPrompt(context, localId, promptId);
+            JobStore.attachPrompt(context, localId, promptId, api.getClientId());
             notifyListeners(JobStore.find(context, localId));
             startProgressSocket(context, localId, promptId, api.getClientId(), server);
             monitorPrompt(context, server, localId, promptId);
@@ -216,18 +228,21 @@ public final class GenerationManager {
         }
 
         for (int tick = 0; tick < 1800; tick++) {
-            try { Thread.sleep(2000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+            try { Thread.sleep(Math.min(60000L, 5000L * (1L << Math.min(4, consecutiveNetworkErrors)))); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
             JobRecord current = JobStore.find(context, localId);
             if (current == null || current.isTerminal()) return;
 
             try {
                 JSONObject history = null;
-                try { history = api.getHistoryForPrompt(promptId); }
+                try { history = api.getHistoryStatusForPrompt(promptId); }
                 catch (FileNotFoundException ignored) {}
 
                 if (history != null) {
                     String err = api.historyError(history, promptId);
                     if (!err.isEmpty()) {
+                        // Fetch the original graph only once on failure to retain node diagnostics.
+                        try { history = api.getHistoryForPrompt(promptId); } catch (Exception ignored) {}
                         String detail = api.historyErrorDetails(history, promptId);
                         JobStore.saveErrorDetails(context, localId,
                                 "Prompt ID: " + promptId + "\n" + detail);
@@ -258,8 +273,11 @@ public final class GenerationManager {
                             List<ImageRef> fallbackRefs = new ArrayList<>();
                             try {
                                 // Avoid loading hundreds of huge video prompt graphs into Android memory.
-                                JSONObject all = api.getAllHistory(15);
-                                fallbackRefs = api.parseAllImagesForPrompt(all, promptId, allowedOutputs);
+                                if (completedWithoutImages == 0) {
+                                    for (ImageRef candidate : api.getGalleryHistoryRefs(15, 1000))
+                                        if (promptId.equals(candidate.promptId) && (allowedOutputs.isEmpty() || allowedOutputs.contains(candidate.sourceNodeId)))
+                                            fallbackRefs.add(candidate);
+                                }
                             } catch (Exception ignored) {}
                             nextOrder = mergeObserved(promptId, observed, fallbackRefs, nextOrder);
                         }
@@ -296,7 +314,7 @@ public final class GenerationManager {
                         if (ComfyApiClient.QUEUE_RUNNING.equals(outputQueueState) ||
                                 ComfyApiClient.QUEUE_PENDING.equals(outputQueueState)) {
                             stableOutputTicks = 0;
-                        } else if (stableOutputTicks >= 10) {
+                        } else if (stableOutputTicks >= 4) {
                             complete(context, localId, new ArrayList<>(observed.values()));
                             return;
                         }
@@ -305,6 +323,10 @@ public final class GenerationManager {
                     }
                 }
 
+                ComfyProgressSocket.Handle progress = SOCKETS.get(promptId);
+                // A healthy socket already carries per-task progress. /queue embeds
+                // every queued execution graph and must remain a fallback, not a heartbeat.
+                if (progress != null && progress.isOpen()) { consecutiveNetworkErrors = 0; continue; }
                 String queueState = api.getQueueState(promptId);
                 if (ComfyApiClient.QUEUE_RUNNING.equals(queueState)) {
                     JobStore.markStarted(context, localId, "ComfyUI 正在生成");

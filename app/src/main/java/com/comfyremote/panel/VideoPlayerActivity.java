@@ -26,6 +26,8 @@ public class VideoPlayerActivity extends Activity {
     private ImageRef ref;
     private String server;
     private int lastPosition;
+    private boolean stopped;
+    private TextView hint;
 
     public static void open(Activity from, String server, ImageRef ref) {
         android.content.Intent intent = new android.content.Intent(from, VideoPlayerActivity.class);
@@ -70,13 +72,18 @@ public class VideoPlayerActivity extends Activity {
         vp.gravity = Gravity.CENTER;
         stage.addView(video, vp);
         root.addView(stage, new LinearLayout.LayoutParams(-1, 0, 1f));
-        TextView hint = new TextView(this);
+        hint = new TextView(this);
         hint.setGravity(Gravity.CENTER);
         hint.setText("视频原声播放 · 点击画面控制暂停和进度 · 播放失败可尝试下载到手机");
         hint.setTextColor(0xffcccccc);
         hint.setTextSize(12);
         root.addView(hint, new LinearLayout.LayoutParams(-1, dp(48)));
         setContentView(root);
+        hint.setOnClickListener(v -> {
+            if (!stopped) return;
+            stopped = false;
+            openStream();
+        });
         back.setOnClickListener(v -> finish());
         save.setOnClickListener(v -> {
             save.setEnabled(false);
@@ -96,35 +103,48 @@ public class VideoPlayerActivity extends Activity {
             Toast.makeText(this, "无法播放该视频编码，可先下载后用其他播放器打开", Toast.LENGTH_LONG).show();
             return true;
         });
+        if (state != null) lastPosition = state.getInt("position", 0);
+        video.setOnPreparedListener(mp -> { if (lastPosition > 0) video.seekTo(lastPosition); });
+        if (state == null) openStream();
+        else {
+            stopped = true;
+            hint.setText("点击此处继续播放 · 返回或切到后台后停止视频网络读取");
+        }
+    }
+
+    private void openStream() {
         try {
             video.setVideoURI(Uri.parse(new ComfyApiClient(server).videoUrl(ref)));
             video.requestFocus();
             video.start();
+            hint.setText("视频原声播放 · 点击画面控制暂停和进度 · 播放失败可尝试下载到手机");
         } catch (Exception e) {
             Toast.makeText(this, "视频打开失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
         }
-        if (state != null) lastPosition = state.getInt("position", 0);
-        video.setOnPreparedListener(mp -> { if (lastPosition > 0) video.seekTo(lastPosition); });
     }
 
     @Override protected void onSaveInstanceState(Bundle out) {
-        if (video != null) out.putInt("position", video.getCurrentPosition());
+        if (video != null) out.putInt("position", stopped ? lastPosition : video.getCurrentPosition());
         super.onSaveInstanceState(out);
     }
 
     @Override protected void onPause() {
-        if (video != null) { lastPosition = video.getCurrentPosition(); video.pause(); }
+        if (video != null && !stopped) { lastPosition = video.getCurrentPosition(); video.pause(); }
         super.onPause();
     }
 
-    @Override protected void onResume() {
-        super.onResume();
-        if (video != null && lastPosition > 0) { video.seekTo(lastPosition); video.start(); }
+    @Override protected void onStop() {
+        if (video != null) {
+            video.stopPlayback(); // Pausing alone can leave the network buffer filling.
+            stopped = true;
+            hint.setText("点击此处继续播放 · 返回或切到后台后停止视频网络读取");
+        }
+        super.onStop();
     }
 
     @Override protected void onDestroy() {
         if (video != null) video.stopPlayback();
-        downloadPool.shutdownNow();
+        downloadPool.shutdown();
         super.onDestroy();
     }
 

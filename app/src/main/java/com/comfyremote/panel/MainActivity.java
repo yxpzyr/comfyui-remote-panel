@@ -102,6 +102,11 @@ public class MainActivity extends Activity {
     private String workflowFolderFilter = FOLDER_ALL;
     private WorkflowProfile activeProfile;
     private String lastPreviewedPromptId = "";
+    private volatile boolean screenVisible;
+    private boolean latestSyncInFlight, queueCountInFlight;
+    private String loadingOutputKey = "";
+    private int outputLoadGeneration;
+    private int restoredScrollY;
 
     private final GenerationManager.JobListener jobListener = job -> runOnUiThread(() -> {
         refreshQueueButton();
@@ -127,15 +132,18 @@ public class MainActivity extends Activity {
         normalizeFolderFilter();
         profiles = WorkflowStore.loadSummaries(this);
         resolveActiveProfile();
+        restoreUiSession(savedInstanceState);
         buildUi();
         rebuildWorkflowStrip();
         rebuildDynamicControls();
+        mainScroll.post(() -> mainScroll.scrollTo(0, restoredScrollY));
         GenerationManager.resumePending(this, currentServer());
         syncLatestCompletedOutput();
     }
 
     @Override protected void onStart() {
         super.onStart();
+        screenVisible = true;
         GenerationManager.addListener(jobListener);
         refreshQueueButton();
         syncLatestCompletedOutput();
@@ -165,11 +173,50 @@ public class MainActivity extends Activity {
     }
 
     @Override protected void onStop() {
+        screenVisible = false;
+        outputLoadGeneration++;
+        loadingOutputKey = "";
         captureSessionInputs();
         // V2.5: temporary parameter edits are intentionally NOT persisted on background/exit.
         saveOutputSelection();
         GenerationManager.removeListener(jobListener);
         super.onStop();
+    }
+
+    @Override protected void onDestroy() {
+        screenVisible = false;
+        outputLoadGeneration++;
+        pool.shutdown(); batchPool.shutdown();
+        super.onDestroy();
+    }
+
+    @Override protected void onSaveInstanceState(Bundle out) {
+        try {
+            JSONObject state = new JSONObject();
+            state.put("workflow", activeProfile == null ? "" : activeProfile.id);
+            state.put("variant", activeProfile == null ? "" : activeProfile.activeVariantId);
+            state.put("advanced", advancedExpanded); state.put("inventory", nodeInventoryExpanded);
+            state.put("parameters", new JSONObject(transientParameterValues));
+            state.put("expanded", new JSONArray(expandedParameterNodes));
+            state.put("scroll", mainScroll == null ? 0 : mainScroll.getScrollY());
+            MainSessionState.save(this, out, state);
+        } catch (Exception e) { android.util.Log.w("MainActivity", "无法保存临时界面状态", e); }
+        super.onSaveInstanceState(out);
+    }
+
+    private void restoreUiSession(Bundle saved) {
+        JSONObject state = MainSessionState.restore(this, saved);
+        if (state == null || activeProfile == null || !activeProfile.id.equals(state.optString("workflow")) ||
+                !safe(activeProfile.activeVariantId).equals(state.optString("variant"))) return;
+        advancedExpanded = state.optBoolean("advanced"); nodeInventoryExpanded = state.optBoolean("inventory");
+        restoredScrollY = state.optInt("scroll");
+        JSONObject parameters = state.optJSONObject("parameters");
+        if (parameters != null) {
+            java.util.Iterator<String> keys = parameters.keys();
+            while (keys.hasNext()) { String key = keys.next(); transientParameterValues.put(key, parameters.opt(key)); }
+        }
+        JSONArray expanded = state.optJSONArray("expanded");
+        if (expanded != null) for (int i = 0; i < expanded.length(); i++) expandedParameterNodes.add(expanded.optString(i));
     }
 
     private void buildUi() {
@@ -191,7 +238,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.7 · 性能优化 / 图库轻量加载 / 稳定性修复", 13, false);
+        TextView subtitle = text("V2.8.9 · 视频省流 / 队列优化 / 界面状态恢复", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -1327,6 +1374,8 @@ public class MainActivity extends Activity {
         }
         statusText.setText("状态：已选择" + (binding.choice.videoInput ? "输入视频 " : "输入图 ") + (binding.index + 1) + "，正在上传到 ComfyUI…");
         loadPreviewOnly(binding, uri);
+        InputUploadReceipts.forget(this, InputUploadReceipts.key(this, currentServer(), uri,
+                binding.maskPath, binding.choice.videoInput));
         startInputUpload(binding, uri);
     }
 
@@ -1345,8 +1394,14 @@ public class MainActivity extends Activity {
         pool.submit(() -> {
             try {
                 ComfyApiClient api = new ComfyApiClient(server);
+                String receiptKey = InputUploadReceipts.key(this, server, uri, binding.maskPath, binding.choice.videoInput);
+                String existing = InputUploadReceipts.find(this, receiptKey);
                 File masked = binding.maskPath == null || binding.maskPath.isEmpty() ? null : new File(binding.maskPath);
                 ComfyApiClient.UploadResult uploaded;
+                final String remoteFilename;
+                if (!existing.isEmpty()) {
+                    remoteFilename = existing;
+                } else {
                 if (binding.choice.videoInput) {
                     uploaded = api.uploadVideo(this, uri, sent -> runOnUiThread(() -> {
                         if (token != binding.uploadToken || binding.uploadState == null) return;
@@ -1356,10 +1411,13 @@ public class MainActivity extends Activity {
                     uploaded = masked != null && masked.isFile()
                             ? api.uploadImageFile(masked) : api.uploadImage(this, uri);
                 }
+                remoteFilename = uploaded.workflowFilename();
+                InputUploadReceipts.remember(this, receiptKey, remoteFilename);
+                }
                 runOnUiThread(() -> {
-                    if (token != binding.uploadToken || binding.uri == null || !binding.uri.equals(uri)) return;
+                    if (isDestroyed() || token != binding.uploadToken || binding.uri == null || !binding.uri.equals(uri)) return;
                     binding.uploading = false;
-                    binding.remoteFilename = uploaded.workflowFilename();
+                    binding.remoteFilename = remoteFilename;
                     if (binding.uploadState != null) {
                         binding.uploadState.setText(binding.choice.videoInput ? "✓ 视频已上传到 ComfyUI/input，可开始处理"
                                 : binding.maskPath == null || binding.maskPath.isEmpty() ? "✓ 已上传，可开始生成" : "✓ 原图 + 蒙版已上传，可开始生成");
@@ -2358,13 +2416,27 @@ public class MainActivity extends Activity {
     }
 
     private void syncLatestCompletedOutput() {
-        JobRecord latest = JobStore.latestCompleted(this);
-        if (latest == null) return;
-        if (!safe(latest.promptId).equals(lastPreviewedPromptId) || currentOutputRefs.isEmpty()) loadJobOutputs(latest);
+        if (!screenVisible || latestSyncInFlight || pool.isShutdown()) return;
+        latestSyncInFlight = true;
+        pool.submit(() -> {
+            JobRecord latest = null;
+            try { latest = JobStore.latestCompleted(getApplicationContext()); }
+            catch (Exception e) { android.util.Log.w("MainActivity", "无法读取最新任务", e); }
+            final JobRecord completed = latest;
+            runOnUiThread(() -> {
+                latestSyncInFlight = false;
+                if (!screenVisible || isDestroyed() || completed == null) return;
+                if (!safe(completed.promptId).equals(lastPreviewedPromptId)) loadJobOutputs(completed);
+            });
+        });
     }
 
     private void loadJobOutputs(JobRecord job) {
-        if (job == null) return;
+        if (job == null || !screenVisible || isDestroyed() || pool.isShutdown()) return;
+        final String outputKey = safe(job.promptId);
+        if (outputKey.equals(loadingOutputKey)) return;
+        loadingOutputKey = outputKey;
+        final int generation = ++outputLoadGeneration;
         final String serverForJob = job.server == null || job.server.isEmpty() ? currentServer() : job.server;
         pool.submit(() -> {
             try {
@@ -2374,7 +2446,7 @@ public class MainActivity extends Activity {
                 if (legacyOrder && job.promptId != null && !job.promptId.isEmpty()) {
                     List<ImageRef> remote = new ArrayList<>();
                     try {
-                        JSONObject history = api.getHistoryForPrompt(job.promptId);
+                        JSONObject history = api.getHistoryStatusForPrompt(job.promptId);
                         remote = api.parseAllImagesForPrompt(history, job.promptId);
                     } catch (Exception ignored) {}
                     if (remote.isEmpty()) {
@@ -2389,6 +2461,9 @@ public class MainActivity extends Activity {
                 }
                 if (refs.isEmpty()) {
                     runOnUiThread(() -> {
+                        if (!screenVisible || isDestroyed() || generation != outputLoadGeneration) return;
+                        loadingOutputKey = "";
+                        lastPreviewedPromptId = outputKey;
                         currentOutputRefs.clear();
                         currentOutputJob = null;
                         outputList.removeAllViews();
@@ -2401,25 +2476,21 @@ public class MainActivity extends Activity {
 
                 ImageRef finalRef = ImageRef.chooseFinalSaved(refs);
                 if (finalRef == null) return;
-                // Do not retain the full original PNG on the home screen. Preview is bounded.
-                Bitmap bmp = null;
-                try {
-                    if (!finalRef.isVideo()) {
-                        ComfyApiClient.ImageDownload preview = api.fetchImagePreview(finalRef, 76, 7 * 1024 * 1024);
-                        bmp = GalleryThumbnailLoader.decodeThumbnail(preview.bytes, 1200);
-                    }
-                } catch (Exception ignored) {
-                    // Older servers may not support previews. Saving the untouched original
-                    // must remain available even when the preview cannot be displayed.
-                }
+                Bitmap bmp = null; // Shared thumbnail cache loads only after the visible tile exists.
                 OutputBinding finalOutput = new OutputBinding(finalRef, serverForJob, bmp);
                 List<ImageRef> fullRefs = new ArrayList<>(refs);
                 runOnUiThread(() -> {
+                    if (!screenVisible || isDestroyed() || generation != outputLoadGeneration) return;
+                    loadingOutputKey = "";
                     lastPreviewedPromptId = safe(job.promptId);
                     renderFinalOutput(job, fullRefs, finalOutput);
                 });
             } catch (Exception e) {
-                runOnUiThread(() -> statusText.setText("状态：最终输出加载失败 · " + safe(e.getMessage())));
+                runOnUiThread(() -> {
+                    if (!screenVisible || isDestroyed() || generation != outputLoadGeneration) return;
+                    loadingOutputKey = "";
+                    statusText.setText("状态：最终输出加载失败 · " + safe(e.getMessage()));
+                });
             }
         });
     }
@@ -2457,10 +2528,8 @@ public class MainActivity extends Activity {
         FrameLayout imageFrame = new FrameLayout(this);
         ImageView image = previewImage();
         image.setImageBitmap(finalOutput.bitmap);
-        if (finalOutput.ref.isVideo()) {
-            VideoThumbnailLoader.load(finalOutput.server, finalOutput.ref, image, 650,
-                    () -> !isFinishing() && !isDestroyed() && currentOutputJob == job);
-        }
+        GalleryThumbnailLoader.load(this, finalOutput.server, finalOutput.ref, image, 650,
+                () -> screenVisible && !isFinishing() && !isDestroyed() && currentOutputJob == job);
         if (finalOutput.bitmap == null) {
             image.setBackgroundColor(ThemeManager.imagePlaceholder(this));
         }
@@ -2483,8 +2552,7 @@ public class MainActivity extends Activity {
             folder.setOnClickListener(v -> openTaskOutputs(job));
         }
         box.addView(imageFrame, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(235)));
-        if (finalOutput.bitmap == null && !finalOutput.ref.isVideo())
-            box.addView(text("预览暂不可用，仍可保存原始图片", 12, false));
+
         box.addView(text("服务器文件位置：" + finalOutput.ref.serverRelativePath(), 11, false));
         if (finalOutput.ref.isTemporary()) {
             box.addView(text("本次仅找到 temp 临时预览：该文件不会出现在电脑 ComfyUI/output，"
@@ -2551,10 +2619,18 @@ public class MainActivity extends Activity {
     }
 
     private void refreshQueueButton() {
-        if (queueButton == null) return;
-        int active = 0;
-        for (JobRecord job : JobStore.list(this)) if (!job.isTerminal()) active++;
-        queueButton.setText(active > 0 ? "队列 (" + active + ")" : "队列");
+        if (queueButton == null || queueCountInFlight || pool.isShutdown()) return;
+        queueCountInFlight = true;
+        pool.submit(() -> {
+            int count = 0;
+            try { for (JobRecord job : JobStore.list(getApplicationContext())) if (!job.isTerminal()) count++; }
+            catch (Exception error) { android.util.Log.w("MainActivity", "无法读取任务计数", error); }
+            final int active = count;
+            runOnUiThread(() -> {
+                queueCountInFlight = false;
+                if (screenVisible && !isDestroyed()) queueButton.setText(active == 0 ? "队列" : "队列 (" + active + ")");
+            });
+        });
     }
 
     private JSONObject getObjectInfoCached(String server) throws Exception {

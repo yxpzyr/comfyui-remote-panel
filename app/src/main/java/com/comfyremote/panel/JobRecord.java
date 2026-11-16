@@ -22,12 +22,18 @@ public final class JobRecord {
 
     public String localId;
     public String promptId;
+    public String clientId = "";
     public String workflowId;
     public String workflowName;
     public String inputSummary;
     public String inputPreviewUri;
     public String server;
     public String promptJson;
+    public boolean submissionPayloadSaved;
+
+    public boolean hasSubmissionPayload() {
+        return submissionPayloadSaved || (promptJson != null && !promptJson.isEmpty());
+    }
     public String status;
     public String message;
     public long submittedAt;
@@ -117,12 +123,14 @@ public final class JobRecord {
         try {
             o.put("local_id", localId);
             o.put("prompt_id", promptId);
+            o.put("client_id", clientId);
             o.put("workflow_id", workflowId);
             o.put("workflow_name", workflowName);
             o.put("input_summary", inputSummary);
             o.put("input_preview_uri", inputPreviewUri);
             o.put("server", server);
             o.put("prompt_json", promptJson);
+            o.put("submission_payload_saved", hasSubmissionPayload());
             o.put("status", status);
             o.put("message", message);
             o.put("submitted_at", submittedAt);
@@ -144,12 +152,14 @@ public final class JobRecord {
         JobRecord j = new JobRecord();
         j.localId = o.optString("local_id", UUID.randomUUID().toString());
         j.promptId = o.optString("prompt_id", "");
+        j.clientId = o.optString("client_id", "");
         j.workflowId = o.optString("workflow_id", "");
         j.workflowName = o.optString("workflow_name", "工作流");
         j.inputSummary = o.optString("input_summary", "");
         j.inputPreviewUri = o.optString("input_preview_uri", "");
         j.server = o.optString("server", "8188");
         j.promptJson = o.optString("prompt_json", "");
+        j.submissionPayloadSaved = o.optBoolean("submission_payload_saved", false);
         j.status = o.optString("status", FAILED);
         j.message = o.optString("message", "");
         j.submittedAt = o.optLong("submitted_at", System.currentTimeMillis());
@@ -166,7 +176,7 @@ public final class JobRecord {
         // V1.8 migration: an interrupted upload without a prompt becomes locally queued only
         // when enough payload exists to safely resume; otherwise retain the old failure semantics.
         if (UPLOADING.equals(j.status) && j.promptId.isEmpty()) {
-            if (!j.promptJson.isEmpty()) {
+            if (j.hasSubmissionPayload()) {
                 j.status = LOCAL_QUEUED;
                 j.message = "等待恢复提交";
             } else {
