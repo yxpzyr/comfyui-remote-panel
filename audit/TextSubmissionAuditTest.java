@@ -69,7 +69,7 @@ public class TextSubmissionAuditTest {
                 assertEquals(expected.getJSONObject("240").getJSONObject("inputs").getString("text"),
                         sent.getJSONObject("240").getJSONObject("inputs").getString("text"));
                 Path output = Paths.get(System.getenv("AUDIT_OUTPUT"));
-                Files.createDirectories(output.getParent()); Files.writeString(output, sent.toString(2), StandardCharsets.UTF_8);
+                Files.createDirectories(output.getParent()); Files.write(output, sent.toString(2).getBytes(StandardCharsets.UTF_8));
                 for (JobRecord record : JobStore.list(app))
                     JobStore.updateStatus(app, record.localId, JobRecord.FAILED, "Read-only audit finished", 0);
             } finally { controller.pause().stop().destroy(); }
