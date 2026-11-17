@@ -1,0 +1,102 @@
+{
+  "254": {
+    "inputs": {
+      "模型系列": "Qwen3.5-VL",
+      "主模型": "Qwen3.5-4B-Q4_K_M.gguf",
+      "视觉投影mmproj": "Qwen3.5-4B-mmproj-BF16.gguf",
+      "启用思考": false,
+      "保留历史think": false,
+      "上下文长度": 23296,
+      "GPU层数": -1,
+      "KV缓存K类型": "默认(F16)",
+      "KV缓存V类型": "默认(F16)",
+      "MoE专家上CPU": false,
+      "前N层专家上CPU": 0,
+      "Qwen3.8推理强度": "xhigh",
+      "MTP推测解码": "关闭",
+      "MTP草稿token数": 2,
+      "Flash Attention": "不开启",
+      "MTP草稿模型": "无"
+    },
+    "class_type": "QwenTE_ModelLoader",
+    "_meta": {
+      "title": "QwenTE_ModelLoader"
+    }
+  },
+  "252": {
+    "inputs": {
+      "qwen模型": [
+        "254",
+        0
+      ],
+      "提示词": [
+        "253",
+        1
+      ],
+      "输入模式": "文本",
+      "系统提示词": "",
+      "最多帧数": 24,
+      "最大边长": 1024,
+      "最大生成token": 4096,
+      "温度": 0.7,
+      "top_p": 0.9,
+      "top_k": 20,
+      "重复惩罚": 1.0,
+      "频率惩罚": 0.0,
+      "存在惩罚": 0.0,
+      "seed": 12345,
+      "输出think块": false,
+      "生成后自动卸载模型": true
+    },
+    "class_type": "QwenTE_ImageInfer",
+    "_meta": {
+      "title": "QwenTE_ImageInfer"
+    }
+  },
+  "253": {
+    "inputs": {
+      "输入提示词": [
+        "240",
+        0
+      ],
+      "任务类型": "全参考模式(Reference to Video)",
+      "视频时长": 10.0,
+      "参考素材说明": "",
+      "增强方式": "本地模板",
+      "api_key": "",
+      "api_base_url": "",
+      "model": "",
+      "max_output_tokens": 4096,
+      "temperature": 0.6,
+      "timeout_s": 300,
+      "绕过代理": false
+    },
+    "class_type": "TE_H3_Prompt_Enhancer",
+    "_meta": {
+      "title": "TE_H3_Prompt_Enhancer"
+    }
+  },
+  "240": {
+    "inputs": {
+      "text": "Two friends walk through a sunny public park and talk about their travel plans.",
+      "reference_labels": ""
+    },
+    "class_type": "TE_prompt_text",
+    "_meta": {
+      "title": "TE_prompt_text"
+    }
+  },
+  "239": {
+    "inputs": {
+      "input_text": [
+        "252",
+        0
+      ],
+      "text": ""
+    },
+    "class_type": "TE_text_display",
+    "_meta": {
+      "title": "TE_text_display"
+    }
+  }
+}

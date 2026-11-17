@@ -1,0 +1,75 @@
+name: Compare ordinary text submissions across three app versions
+on:
+  push:
+    branches: [ "audit/text-submission-three-versions" ]
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '2.8.10'
+            sha: f2773f4bccfe997c7b6d699d36413c3c2f53b318
+          - version: '2.8.11'
+            sha: e66e5ec5b94a91035689cbc8d177584e48c00761
+          - version: '2.8.12'
+            sha: 2d52f6069792590a116e54012bbe0541eed657bc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: audit-source
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.sha }}
+          path: tested
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Add identical audit harness without modifying app code
+        run: |
+          cp audit-source/audit/TextSubmissionAuditTest.java tested/app/src/test/java/com/comfyremote/panel/
+          mkdir -p tested/app/src/test/resources
+          cp audit-source/audit/text-submission-audit.json tested/app/src/test/resources/
+      - name: Capture the actual ordinary-text request
+        working-directory: tested
+        env:
+          AUDIT_OUTPUT: ${{ github.workspace }}/result/submission.json
+        run: gradle testDebugUnitTest --tests '*TextSubmissionAuditTest' --stacktrace
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: text-audit-${{ matrix.version }}
+          path: |
+            result/submission.json
+            tested/app/build/test-results/testDebugUnitTest/TEST-com.comfyremote.panel.TextSubmissionAuditTest.xml
+  compare:
+    needs: capture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: text-audit-*
+          path: captures
+      - name: Require identical request graphs across all three versions
+        run: |
+          python3 - <<'PY'
+          import json,pathlib
+          files=sorted(pathlib.Path('captures').glob('*/result/submission.json'))
+          assert len(files)==3, files
+          values=[json.loads(p.read_text()) for p in files]
+          assert values[0]==values[1]==values[2], 'App versions emitted different request graphs'
+          pathlib.Path('comparison.json').write_text(json.dumps({'versions':['2.8.10','2.8.11','2.8.12'],'same_ordinary_input_and_fixed_settings':True,'request_graphs_identical':True,'scope':'No model inference, no personal or explicit text, no physical phone changes'},indent=2))
+          print('PASS: all three actual app requests are identical for the controlled ordinary-text case')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: text-audit-comparison
+          path: comparison.json
