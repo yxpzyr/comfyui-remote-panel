@@ -196,6 +196,7 @@ public final class JobStore {
 
     public static void markStarted(Context context, String localId, String message) {
         update(context, localId, j -> {
+            if (j.isTerminal()) return;
             if (j.startedAt <= 0) j.startedAt = System.currentTimeMillis();
             j.status = JobRecord.RUNNING;
             if (message != null && !message.isEmpty()) j.message = message;
@@ -205,6 +206,7 @@ public final class JobStore {
 
     public static void updateProgress(Context context, String localId, int percent, String currentNode, String message) {
         update(context, localId, j -> {
+            if (j.isTerminal()) return;
             int p = Math.max(0, Math.min(99, percent));
             j.progressPercent = Math.max(j.progressPercent, p);
             if (currentNode != null) j.currentNode = currentNode;

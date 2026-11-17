@@ -243,6 +243,7 @@ public class SeedAndTextRegressionTest {
         java.io.File file=new java.io.File(new java.io.File(app().getFilesDir(),"text_outputs_v2811"),job.localId+".json");
         assertTrue(file.setLastModified(1000000));
         JobStore.updateProgress(app(),job.localId,50,"1","done");
+        assertEquals(JobRecord.COMPLETED,JobStore.find(app(),job.localId).status);
         assertEquals(1000000,file.lastModified());
         String index=app().getSharedPreferences("comfy_remote",0).getString("generation_jobs_v18","");
         assertTrue(index.length()<5000);
