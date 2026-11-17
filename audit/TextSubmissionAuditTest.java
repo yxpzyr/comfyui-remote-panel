@@ -51,7 +51,32 @@ public class TextSubmissionAuditTest {
             server.start();
             app.getSharedPreferences("comfy_remote", 0).edit()
                     .putString("server", server.url("/").toString()).putString("generation_jobs_v18", "[]").commit();
-            WorkflowProfile profile = WorkflowProfile.create("Ordinary text submission audit", expected, null);
+            JSONArray uiNodes = new JSONArray(), uiLinks = new JSONArray();
+            int nextLink = 1, index = 0;
+            Iterator<String> nodeIds = expected.keys();
+            while (nodeIds.hasNext()) {
+                String id = nodeIds.next(); JSONObject source = expected.getJSONObject(id);
+                JSONArray inputs = new JSONArray();
+                JSONObject values = source.getJSONObject("inputs"); Iterator<String> names = values.keys();
+                while (names.hasNext()) {
+                    String name = names.next(); JSONArray link = values.optJSONArray(name);
+                    if (link == null || link.length() != 2) continue;
+                    inputs.put(new JSONObject().put("name", name).put("link", nextLink));
+                    uiLinks.put(new JSONArray().put(nextLink++).put(Integer.parseInt(link.getString(0)))
+                            .put(link.getInt(1)).put(Integer.parseInt(id)).put(inputs.length() - 1).put("STRING"));
+                }
+                uiNodes.put(new JSONObject().put("id", Integer.parseInt(id)).put("type", source.getString("class_type"))
+                        .put("mode", 0).put("inputs", inputs).put("pos", new JSONArray().put(40 + index++ * 150).put(40)));
+            }
+            uiNodes.put(new JSONObject().put("id", 900).put("type", "SaveImage").put("mode", 0)
+                    .put("pos", new JSONArray().put(1200).put(40)).put("inputs", new JSONArray()));
+            JSONObject ui = new JSONObject().put("nodes", uiNodes).put("links", uiLinks).put("groups", new JSONArray()
+                    .put(new JSONObject().put("title", "Prompt enhancement").put("bounding", new JSONArray().put(0).put(0).put(1000).put(1000)))
+                    .put(new JSONObject().put("title", "Other feature").put("bounding", new JSONArray().put(1100).put(0).put(600).put(1000))));
+            WorkflowProfile profile = WorkflowProfile.create("Ordinary text submission audit", expected, ui);
+            profile.initializeCollection(new JSONArray()
+                    .put(new JSONObject().put("id", "group:0").put("group_index", 0).put("title", "Prompt enhancement").put("outputs", new JSONArray().put("239")))
+                    .put(new JSONObject().put("id", "group:1").put("group_index", 1).put("title", "Other feature").put("outputs", new JSONArray().put("900"))), "group:0");
             profile.setOutputChoices(Collections.singletonList(new WorkflowUtils.OutputChoice("239", "Text output", "TE_text_display")), true, false);
             WorkflowStore.upsert(app, profile); WorkflowStore.setActiveId(app, profile.id);
             ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup();
