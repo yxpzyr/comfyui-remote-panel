@@ -1,0 +1,550 @@
+{
+  "nodes": [
+    {
+      "id": 254,
+      "type": "QwenTE_ModelLoader",
+      "pos": [
+        7801.69347603463,
+        4942.626679723765
+      ],
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "qwen模型",
+          "type": "QWENLLAMA",
+          "links": [
+            380
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "QwenTE_ModelLoader"
+      },
+      "widgets_values": [
+        "Qwen3.5-VL",
+        "Qwen3.5-4B-Q4_K_M.gguf",
+        "Qwen3.5-4B-mmproj-BF16.gguf",
+        false,
+        false,
+        23296,
+        -1,
+        "默认(F16)",
+        "默认(F16)",
+        false,
+        0,
+        "xhigh",
+        "关闭",
+        2,
+        "不开启",
+        "无"
+      ]
+    },
+    {
+      "id": 193,
+      "type": "SaveVideo",
+      "pos": [
+        -378.7728014514954,
+        5045.355171658802
+      ],
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveVideo"
+      },
+      "widgets_values": [
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。"
+      ]
+    },
+    {
+      "id": 189,
+      "type": "SaveVideo",
+      "pos": [
+        1489.8622128613001,
+        5035.425028997236
+      ],
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveVideo"
+      },
+      "widgets_values": [
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。"
+      ]
+    },
+    {
+      "id": 253,
+      "type": "TE_H3_Prompt_Enhancer",
+      "pos": [
+        7384.698360383213,
+        5405.85439268772
+      ],
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "H3参考素材",
+          "shape": 7,
+          "type": "TE_H3_REFERENCES",
+          "link": null
+        },
+        {
+          "name": "输入提示词",
+          "type": "STRING",
+          "widget": {
+            "name": "输入提示词"
+          },
+          "link": 382
+        }
+      ],
+      "outputs": [
+        {
+          "name": "增强提示词(API)",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "提示词模版(本地)",
+          "type": "STRING",
+          "links": [
+            381
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TE_H3_Prompt_Enhancer"
+      },
+      "widgets_values": [
+        "两位角色在公园交流，镜头缓慢推进。",
+        "全参考模式(Reference to Video)",
+        10,
+        "",
+        "本地模板",
+        "",
+        "",
+        "",
+        4096,
+        0.6,
+        300,
+        false
+      ]
+    },
+    {
+      "id": 285,
+      "type": "SaveVideo",
+      "pos": [
+        5836.938022739442,
+        4787.370037373488
+      ],
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveVideo"
+      },
+      "widgets_values": [
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。"
+      ]
+    },
+    {
+      "id": 252,
+      "type": "QwenTE_ImageInfer",
+      "pos": [
+        7804.849578112768,
+        5312.737685994518
+      ],
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "qwen模型",
+          "type": "QWENLLAMA",
+          "link": 380
+        },
+        {
+          "name": "skill加载器",
+          "shape": 7,
+          "type": "QWEN_TE_SKILL",
+          "link": null
+        },
+        {
+          "name": "图片",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 502
+        },
+        {
+          "name": "图片2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 503
+        },
+        {
+          "name": "图片3",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "图片4",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "图片5",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "图片6",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "图片7",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "图片8",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "提示词",
+          "type": "STRING",
+          "widget": {
+            "name": "提示词"
+          },
+          "link": 381
+        }
+      ],
+      "outputs": [
+        {
+          "name": "文本",
+          "type": "STRING",
+          "links": [
+            384
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "QwenTE_ImageInfer"
+      },
+      "widgets_values": [
+        "文本",
+        "",
+        "",
+        24,
+        1024,
+        4096,
+        0.7,
+        0.9,
+        20,
+        1,
+        0,
+        0,
+        1067866521488700,
+        "randomize",
+        false,
+        true
+      ]
+    },
+    {
+      "id": 240,
+      "type": "TE_prompt_text",
+      "pos": [
+        7383.961141810073,
+        4942.1065973696395
+      ],
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": [
+            382
+          ]
+        },
+        {
+          "name": "H3参考素材",
+          "type": "TE_H3_REFERENCES",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TE_prompt_text"
+      },
+      "widgets_values": [
+        "两位角色在公园交流，镜头缓慢推进。",
+        "",
+        "两位角色在公园交流，镜头缓慢推进。"
+      ]
+    },
+    {
+      "id": 258,
+      "type": "SaveVideo",
+      "pos": [
+        3573.1720966088756,
+        4811.363555175927
+      ],
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveVideo"
+      },
+      "widgets_values": [
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。"
+      ]
+    },
+    {
+      "id": 239,
+      "type": "TE_text_display",
+      "pos": [
+        8206.71996410044,
+        4941.8030676762055
+      ],
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "input_text",
+          "shape": 7,
+          "type": "STRING",
+          "link": 384
+        }
+      ],
+      "outputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TE_text_display"
+      },
+      "widgets_values": [
+        "两位角色在公园交流，镜头缓慢推进。",
+        false,
+        ""
+      ]
+    },
+    {
+      "id": 366,
+      "type": "LoadImage",
+      "pos": [
+        7026.156550581286,
+        6171.991653835047
+      ],
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            502
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "example.png",
+        "example.png"
+      ]
+    },
+    {
+      "id": 365,
+      "type": "LoadImage",
+      "pos": [
+        7009.4562211791235,
+        5556.6734091998005
+      ],
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            503
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "example.png",
+        "example.png"
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "id": 5,
+      "title": "MiniMaxH3-图生视频",
+      "bounding": [
+        288.1464818767596,
+        4696.520725638921,
+        1688.94221402139,
+        1272.8052988712498
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 6,
+      "title": "MiniMaxH3-文生视频",
+      "bounding": [
+        -1580.4885324360366,
+        4706.450868300487,
+        1688.94221402139,
+        1272.8052988712498
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 7,
+      "title": "提示词增强-1",
+      "bounding": [
+        7352.34896933415,
+        4749.457783422374,
+        1455.2759374343045,
+        1114.6714048488511
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 8,
+      "title": "MiniMaxH3-首尾帧",
+      "bounding": [
+        2145.066905440111,
+        4688.839127417099,
+        2034.8290707905903,
+        1275.0213236132486
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 9,
+      "title": "MiniMaxH3-多参视频",
+      "bounding": [
+        4350.878430179575,
+        4686.828362801022,
+        2116.764717354319,
+        1273.0229414040768
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    }
+  ],
+  "links": [
+    [
+      380,
+      254,
+      0,
+      252,
+      0,
+      "QWENLLAMA"
+    ],
+    [
+      382,
+      240,
+      0,
+      253,
+      1,
+      "STRING"
+    ],
+    [
+      384,
+      252,
+      0,
+      239,
+      0,
+      "STRING"
+    ],
+    [
+      381,
+      253,
+      1,
+      252,
+      10,
+      "STRING"
+    ],
+    [
+      502,
+      366,
+      0,
+      252,
+      2,
+      "IMAGE"
+    ],
+    [
+      503,
+      365,
+      0,
+      252,
+      3,
+      "IMAGE"
+    ]
+  ]
+}

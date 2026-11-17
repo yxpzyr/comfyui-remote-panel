@@ -25,19 +25,48 @@ public final class WorkflowVariants {
     private WorkflowVariants() {}
 
     public static JSONArray detect(JSONObject original) {
+        return detect(original, null);
+    }
+
+    public static JSONArray detect(JSONObject original, JSONObject objectInfo) {
         JSONArray result = new JSONArray();
         JSONObject ui = unwrap(original);
         JSONArray nodes = ui.optJSONArray("nodes"), groups = ui.optJSONArray("groups");
         if (nodes == null || groups == null || groups.length() == 0) return result;
+        Map<String, JSONObject> all = new LinkedHashMap<>();
+        Set<String> mediaRoots = new HashSet<>();
+        for (int i = 0; i < nodes.length(); i++) {
+            JSONObject node = nodes.optJSONObject(i); if (node == null) continue;
+            String id = String.valueOf(node.opt("id")); all.put(id, node);
+            if (isFinalOutput(node.optString("type")) && !TextOutputs.isTextSink(node.optString("type"))) mediaRoots.add(id);
+        }
+        Map<String, String> origins = linkOrigins(ui.optJSONArray("links") == null ? new JSONArray() : ui.optJSONArray("links"));
+        Set<String> mediaAncestors = new HashSet<>();
+        try { mediaAncestors = ancestors(all, origins, mediaRoots); } catch (Exception ignored) {}
 
         Map<Integer, List<String>> byGroup = new LinkedHashMap<>();
         Map<Integer, Boolean> active = new HashMap<>();
         for (int i = 0; i < groups.length(); i++) byGroup.put(i, new ArrayList<>());
         for (int i = 0; i < nodes.length(); i++) {
             JSONObject n = nodes.optJSONObject(i);
-            if (n == null || !isFinalOutput(n.optString("type", ""))) continue;
+            if (n == null) continue;
+            String type = n.optString("type", "");
+            JSONObject def = objectInfo == null ? null : objectInfo.optJSONObject(type);
+            if (!isFinalOutput(type) && !(def != null && def.optBoolean("output_node"))) continue;
+            boolean textSink = TextOutputs.isTextSink(type);
+            if (textSink && hasConnectedOutputs(n)) continue;
             int idx = mostSpecificContainingGroup(n, groups);
             if (idx < 0) continue; // No trustworthy mapping to a distinct function.
+            if (textSink) {
+                boolean shared = false;
+                try {
+                    for (String upstream : ancestors(all, origins, java.util.Collections.singleton(String.valueOf(n.opt("id"))))) {
+                        JSONObject source = all.get(upstream);
+                        if (mediaAncestors.contains(upstream) && source != null && mostSpecificContainingGroup(source, groups) == idx) { shared = true; break; }
+                    }
+                } catch (Exception ignored) {}
+                if (shared) continue; // A diagnostic text view on an existing media path is not a separate workflow.
+            }
             byGroup.get(idx).add(String.valueOf(n.opt("id")));
             if (n.optInt("mode", 0) == 0) active.put(idx, true);
         }
@@ -210,7 +239,8 @@ public final class WorkflowVariants {
             if (n == null) continue;
             String id = String.valueOf(n.opt("id"));
             all.put(id, n);
-            if (isFinalOutput(n.optString("type", ""))) {
+            if (targetOutputIds.contains(id) || (isFinalOutput(n.optString("type", "")) &&
+                    !(TextOutputs.isTextSink(n.optString("type")) && hasConnectedOutputs(n)))) {
                 n.put("mode", targetOutputIds.contains(id) ? 0 : 2);
             } else if (inside(n, selectedRect.optJSONArray("bounding"))) {
                 // Activate the chosen feature only. Outside it, preserve e.g. optional
@@ -316,7 +346,32 @@ public final class WorkflowVariants {
         // Treat these media-writing sinks as branch outputs when discovering collections.
         return t.contains("saveimage") || t.contains("saveanimated") ||
                 t.contains("savevideo") || t.contains("videocombine") ||
-                t.contains("savewebp") || t.contains("savegif");
+                t.contains("savewebp") || t.contains("savegif") || TextOutputs.isTextSink(type);
+    }
+
+    private static boolean hasConnectedOutputs(JSONObject node) {
+        JSONArray outputs = node.optJSONArray("outputs");
+        if (outputs != null) for (int i = 0; i < outputs.length(); i++) {
+            JSONObject output = outputs.optJSONObject(i);
+            JSONArray links = output == null ? null : output.optJSONArray("links");
+            if (links != null && links.length() > 0) return true;
+        }
+        return false;
+    }
+
+    static boolean discoverNewVariants(WorkflowProfile profile) {
+        if (profile == null || !profile.isCollection()) return false;
+        try {
+            JSONObject ui = profile.uiObjectOrNull(); if (ui == null) return false;
+            JSONArray detected = detect(ui); Set<String> existing = new HashSet<>();
+            for (int i = 0; i < profile.variants.length(); i++) existing.add(profile.variants.getJSONObject(i).optString("id"));
+            boolean changed = false;
+            for (int i = 0; i < detected.length(); i++) {
+                JSONObject variant = detected.getJSONObject(i);
+                if (existing.add(variant.optString("id"))) { profile.variants.put(variant); changed = true; }
+            }
+            return changed;
+        } catch (Exception error) { return false; }
     }
 
     private static int mostSpecificContainingGroup(JSONObject node, JSONArray groups) {

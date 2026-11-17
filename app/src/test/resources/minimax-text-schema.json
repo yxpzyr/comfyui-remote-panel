@@ -1,0 +1,603 @@
+{
+  "TE_text_display": {
+    "input": {
+      "required": {
+        "text": [
+          "STRING",
+          {
+            "multiline": true,
+            "default": ""
+          }
+        ]
+      },
+      "optional": {
+        "input_text": [
+          "STRING",
+          {
+            "forceInput": true,
+            "default": ""
+          }
+        ],
+        "use_edited_text": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ],
+        "edited_from_text": [
+          "STRING",
+          {
+            "default": ""
+          }
+        ]
+      },
+      "hidden": {
+        "unique_id": "UNIQUE_ID",
+        "extra_pnginfo": "EXTRA_PNGINFO"
+      }
+    },
+    "output": [
+      "STRING"
+    ],
+    "output_node": true,
+    "input_order": {
+      "required": [
+        "text"
+      ],
+      "optional": [
+        "input_text",
+        "use_edited_text",
+        "edited_from_text"
+      ],
+      "hidden": [
+        "unique_id",
+        "extra_pnginfo"
+      ]
+    }
+  },
+  "TE_prompt_text": {
+    "input": {
+      "required": {
+        "text": [
+          "STRING",
+          {
+            "multiline": true,
+            "default": ""
+          }
+        ],
+        "reference_labels": [
+          "STRING",
+          {
+            "multiline": true,
+            "default": ""
+          }
+        ]
+      }
+    },
+    "output": [
+      "STRING",
+      "TE_H3_REFERENCES"
+    ],
+    "output_node": false,
+    "input_order": {
+      "required": [
+        "text",
+        "reference_labels"
+      ]
+    }
+  },
+  "TE_H3_Prompt_Enhancer": {
+    "input": {
+      "required": {
+        "输入提示词": [
+          "STRING",
+          {
+            "default": "",
+            "multiline": true
+          }
+        ],
+        "任务类型": [
+          [
+            "全参考模式(Reference to Video)",
+            "文生视频(T2VA)",
+            "首帧图生视频(I2VA)",
+            "首尾帧视频(FL2VA)",
+            "尾帧图生视频(L2VA)"
+          ],
+          {
+            "default": "全参考模式(Reference to Video)"
+          }
+        ],
+        "视频时长": [
+          "FLOAT",
+          {
+            "default": 5.0,
+            "min": 1.0,
+            "max": 150.0,
+            "step": 0.5
+          }
+        ],
+        "参考素材说明": [
+          "STRING",
+          {
+            "default": "",
+            "multiline": true
+          }
+        ],
+        "增强方式": [
+          [
+            "本地模板",
+            "API增强"
+          ],
+          {
+            "default": "本地模板"
+          }
+        ],
+        "api_key": [
+          "STRING",
+          {
+            "default": "",
+            "multiline": false
+          }
+        ],
+        "api_base_url": [
+          "STRING",
+          {
+            "default": "",
+            "multiline": false
+          }
+        ],
+        "model": [
+          "STRING",
+          {
+            "default": "",
+            "multiline": false
+          }
+        ],
+        "max_output_tokens": [
+          "INT",
+          {
+            "default": 4096,
+            "min": 512,
+            "max": 32768,
+            "step": 256
+          }
+        ],
+        "temperature": [
+          "FLOAT",
+          {
+            "default": 0.6,
+            "min": 0.0,
+            "max": 2.0,
+            "step": 0.05
+          }
+        ]
+      },
+      "optional": {
+        "H3参考素材": [
+          "TE_H3_REFERENCES",
+          {}
+        ],
+        "timeout_s": [
+          "INT",
+          {
+            "default": 300,
+            "min": 30,
+            "max": 1800
+          }
+        ],
+        "绕过代理": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ]
+      }
+    },
+    "output": [
+      "STRING",
+      "STRING"
+    ],
+    "output_node": true,
+    "input_order": {
+      "required": [
+        "输入提示词",
+        "任务类型",
+        "视频时长",
+        "参考素材说明",
+        "增强方式",
+        "api_key",
+        "api_base_url",
+        "model",
+        "max_output_tokens",
+        "temperature"
+      ],
+      "optional": [
+        "H3参考素材",
+        "timeout_s",
+        "绕过代理"
+      ]
+    }
+  },
+  "QwenTE_ImageInfer": {
+    "input": {
+      "required": {
+        "qwen模型": [
+          "QWENLLAMA"
+        ],
+        "输入模式": [
+          [
+            "图片",
+            "逐帧",
+            "视频",
+            "文本"
+          ],
+          {
+            "default": "图片"
+          }
+        ],
+        "提示词": [
+          "STRING",
+          {
+            "default": "",
+            "multiline": true
+          }
+        ],
+        "系统提示词": [
+          "STRING",
+          {
+            "default": "",
+            "multiline": true
+          }
+        ],
+        "最多帧数": [
+          "INT",
+          {
+            "default": 24,
+            "min": 2,
+            "max": 1024,
+            "step": 1
+          }
+        ],
+        "最大边长": [
+          "INT",
+          {
+            "default": 1024,
+            "min": 128,
+            "max": 16384,
+            "step": 64
+          }
+        ],
+        "最大生成token": [
+          "INT",
+          {
+            "default": 1024,
+            "min": 20,
+            "max": 18446744073709551615,
+            "step": 1
+          }
+        ],
+        "温度": [
+          "FLOAT",
+          {
+            "default": 0.7,
+            "min": 0.0,
+            "max": 2.0,
+            "step": 0.01
+          }
+        ],
+        "top_p": [
+          "FLOAT",
+          {
+            "default": 0.9,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ],
+        "top_k": [
+          "INT",
+          {
+            "default": 20,
+            "min": 0,
+            "max": 200,
+            "step": 1
+          }
+        ],
+        "重复惩罚": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.5,
+            "max": 2.0,
+            "step": 0.01
+          }
+        ],
+        "频率惩罚": [
+          "FLOAT",
+          {
+            "default": 0.0,
+            "min": 0.0,
+            "max": 2.0,
+            "step": 0.01
+          }
+        ],
+        "存在惩罚": [
+          "FLOAT",
+          {
+            "default": 0.0,
+            "min": 0.0,
+            "max": 2.0,
+            "step": 0.01
+          }
+        ],
+        "seed": [
+          "INT",
+          {
+            "default": 0,
+            "min": 0,
+            "max": 18446744073709551615,
+            "step": 1,
+            "control_after_generate": true
+          }
+        ],
+        "输出think块": [
+          "BOOLEAN",
+          {
+            "default": true
+          }
+        ],
+        "生成后自动卸载模型": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ]
+      },
+      "optional": {
+        "skill加载器": [
+          "QWEN_TE_SKILL",
+          {}
+        ],
+        "图片": [
+          "IMAGE",
+          {}
+        ],
+        "图片2": [
+          "IMAGE",
+          {}
+        ],
+        "图片3": [
+          "IMAGE",
+          {}
+        ],
+        "图片4": [
+          "IMAGE",
+          {}
+        ],
+        "图片5": [
+          "IMAGE",
+          {}
+        ],
+        "图片6": [
+          "IMAGE",
+          {}
+        ],
+        "图片7": [
+          "IMAGE",
+          {}
+        ],
+        "图片8": [
+          "IMAGE",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "STRING"
+    ],
+    "output_node": false,
+    "input_order": {
+      "required": [
+        "qwen模型",
+        "输入模式",
+        "提示词",
+        "系统提示词",
+        "最多帧数",
+        "最大边长",
+        "最大生成token",
+        "温度",
+        "top_p",
+        "top_k",
+        "重复惩罚",
+        "频率惩罚",
+        "存在惩罚",
+        "seed",
+        "输出think块",
+        "生成后自动卸载模型"
+      ],
+      "optional": [
+        "skill加载器",
+        "图片",
+        "图片2",
+        "图片3",
+        "图片4",
+        "图片5",
+        "图片6",
+        "图片7",
+        "图片8"
+      ]
+    }
+  },
+  "QwenTE_ModelLoader": {
+    "input": {
+      "required": {
+        "模型系列": [
+          [
+            "Qwen3-VL",
+            "Qwen3.5-VL",
+            "Qwen3.6-VL",
+            "Qwen3.8-VL",
+            "Qwen3.8-Flash-Next"
+          ],
+          {
+            "default": "Qwen3.6-VL"
+          }
+        ],
+        "主模型": [
+          [
+            "Florence-2-base-ft\\model.safetensors",
+            "Florence-2-base-ft\\pytorch_model.bin",
+            "Florence-2-large-PromptGen-v2.0\\model.safetensors",
+            "Qwen3.5-4B-Q4_K_M.gguf",
+            "Qwen3.5-9B-Q8_0.gguf"
+          ],
+          {}
+        ],
+        "视觉投影mmproj": [
+          [
+            "无",
+            "Qwen3.5-4B-mmproj-BF16.gguf",
+            "mmproj-BF16.gguf"
+          ],
+          {
+            "default": "无"
+          }
+        ],
+        "启用思考": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ],
+        "保留历史think": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ],
+        "上下文长度": [
+          "INT",
+          {
+            "default": 8192,
+            "min": 1024,
+            "max": 327680,
+            "step": 256
+          }
+        ],
+        "GPU层数": [
+          "INT",
+          {
+            "default": -1,
+            "min": -1,
+            "max": 9999,
+            "step": 1
+          }
+        ],
+        "KV缓存K类型": [
+          [
+            "默认(F16)",
+            "q8_0"
+          ],
+          {
+            "default": "默认(F16)"
+          }
+        ],
+        "KV缓存V类型": [
+          [
+            "默认(F16)",
+            "q8_0"
+          ],
+          {
+            "default": "默认(F16)"
+          }
+        ],
+        "MoE专家上CPU": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ],
+        "前N层专家上CPU": [
+          "INT",
+          {
+            "default": 0,
+            "min": 0,
+            "max": 256,
+            "step": 1
+          }
+        ],
+        "Qwen3.8推理强度": [
+          [
+            "xhigh",
+            "medium",
+            "low"
+          ],
+          {
+            "default": "xhigh"
+          }
+        ],
+        "MTP推测解码": [
+          [
+            "关闭",
+            "开启"
+          ],
+          {
+            "default": "关闭"
+          }
+        ],
+        "MTP草稿token数": [
+          "INT",
+          {
+            "default": 2,
+            "min": 1,
+            "max": 8,
+            "step": 1
+          }
+        ],
+        "Flash Attention": [
+          [
+            "不开启",
+            "开启",
+            "关闭"
+          ],
+          {
+            "default": "不开启"
+          }
+        ],
+        "MTP草稿模型": [
+          [
+            "无"
+          ],
+          {
+            "default": "无"
+          }
+        ]
+      }
+    },
+    "output": [
+      "QWENLLAMA"
+    ],
+    "output_node": false,
+    "input_order": {
+      "required": [
+        "模型系列",
+        "主模型",
+        "视觉投影mmproj",
+        "启用思考",
+        "保留历史think",
+        "上下文长度",
+        "GPU层数",
+        "KV缓存K类型",
+        "KV缓存V类型",
+        "MoE专家上CPU",
+        "前N层专家上CPU",
+        "Qwen3.8推理强度",
+        "MTP推测解码",
+        "MTP草稿token数",
+        "Flash Attention",
+        "MTP草稿模型"
+      ]
+    }
+  }
+}

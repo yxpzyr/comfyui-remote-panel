@@ -104,6 +104,7 @@ public class MainActivity extends Activity {
     private String lastPreviewedPromptId = "";
     private volatile boolean screenVisible;
     private boolean latestSyncInFlight, queueCountInFlight;
+    private boolean textWorkflowMode;
     private String loadingOutputKey = "";
     private int outputLoadGeneration;
     private int restoredScrollY;
@@ -113,7 +114,7 @@ public class MainActivity extends Activity {
         if (job == null) return;
         if (JobRecord.COMPLETED.equals(job.status)) {
             statusText.setText("状态：" + job.workflowName + " 已完成 · " + job.message);
-            if (!job.outputRefs().isEmpty() && (!safe(job.promptId).equals(lastPreviewedPromptId) || currentOutputRefs.isEmpty())) {
+            if ((job.hasTextOutput() || job.expectsTextOutput || !job.outputRefs().isEmpty()) && (!safe(job.promptId).equals(lastPreviewedPromptId) || currentOutputRefs.isEmpty())) {
                 loadJobOutputs(job);
             }
         } else if (JobRecord.FAILED.equals(job.status)) {
@@ -240,7 +241,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.8.10 · 视频封面缓存 / 播放随时返回", 13, false);
+        TextView subtitle = text("V2.8.11 · 随机种子 / 文字提示词工作流", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -442,9 +443,10 @@ public class MainActivity extends Activity {
 
     private WorkflowProfile loadFullProfileOrNull(WorkflowProfile profile) {
         if (profile == null) return null;
-        if (!profile.metadataOnly) return profile;
         try {
-            return WorkflowStore.loadById(this, profile.id);
+            WorkflowProfile full = profile.metadataOnly ? WorkflowStore.loadById(this, profile.id) : profile;
+            if (WorkflowVariants.discoverNewVariants(full)) WorkflowStore.upsert(this, full);
+            return full;
         } catch (Exception e) {
             android.util.Log.e("MainActivity", "无法加载所选工作流 " + profile.id, e);
             return null;
@@ -1025,7 +1027,7 @@ public class MainActivity extends Activity {
         JSONObject json = new JSONObject(raw);
         boolean uiFormat = json.optJSONArray("nodes") != null ||
                 (json.optJSONObject("workflow") != null && json.optJSONObject("workflow").optJSONArray("nodes") != null);
-        JSONArray variants = uiFormat ? WorkflowVariants.detect(json) : new JSONArray();
+        JSONArray variants = uiFormat ? WorkflowVariants.detect(json, objectInfo) : new JSONArray();
         String initialVariant = variants.length() > 0 ? WorkflowVariants.initialVariantId(variants) : "";
         JSONObject prompt = variants.length() > 0
                 ? WorkflowVariants.compile(json, variants, initialVariant, server)
@@ -1139,6 +1141,8 @@ public class MainActivity extends Activity {
     }
 
     private void rebuildDynamicControls() {
+        try { textWorkflowMode = activeProfile != null && TextOutputs.expectsText(activeProfile.promptObject()); }
+        catch (Exception ignored) { textWorkflowMode = false; }
         rebuildInputControls();
         rebuildParameterControls();
         rebuildCollectionNodeInventory();
@@ -1167,7 +1171,8 @@ public class MainActivity extends Activity {
                 }
             }
             if (nodes.isEmpty()) {
-                inputList.addView(text("这个工作流没有检测到可从手机替换的图片或视频文件输入；绝对路径型视频加载器需要在电脑端配置。", 13, false));
+                inputList.addView(text(textWorkflowMode ? "文字提示词工作流：展开高级设置，在节点参数中填写大致内容，再点“生成提示词”。"
+                        : "这个工作流没有检测到可从手机替换的图片或视频文件输入；绝对路径型视频加载器需要在电脑端配置。", 13, false));
                 refreshSubmitEnabled();
                 return;
             }
@@ -1488,6 +1493,7 @@ public class MainActivity extends Activity {
 
     private void refreshSubmitEnabled() {
         if (submitButton == null) return;
+        submitButton.setText(textWorkflowMode ? "▶ 生成提示词" : "▶ 生成当前图");
         boolean ready = activeProfile != null && !variantSwitching;
         if (ready) {
             for (ImageBinding b : imageBindings) {
@@ -1893,6 +1899,32 @@ public class MainActivity extends Activity {
                 @Override public void onTextChanged(CharSequence s, int start, int before, int count) { onParameterWidgetChanged(b); }
                 @Override public void afterTextChanged(Editable s) {}
             });
+            if (f.kind == WorkflowUtils.FieldChoice.INT && SeedPolicy.isSeed(f.inputName)) {
+                LinearLayout seedActions = new LinearLayout(this);
+                Button dice = button("🎲 掷骰子");
+                Button random = button("每次随机（-1）");
+                seedActions.addView(dice, new LinearLayout.LayoutParams(0, dp(48), 1));
+                seedActions.addView(random, new LinearLayout.LayoutParams(0, dp(48), 1));
+                box.addView(seedActions);
+                box.addView(text("-1：每次提交自动随机；掷骰子：生成并显示一个固定种子。", 11, false));
+                dice.setOnClickListener(v -> {
+                    if (f.hasMax()) {
+                        try { ed.setText(Long.toString(SeedPolicy.roll(f.min, f.max))); }
+                        catch (Exception error) { showError("种子范围无效", error); }
+                    } else {
+                        dice.setEnabled(false);
+                        final String server = currentServer();
+                        pool.execute(() -> {
+                            try {
+                                long value = SeedPolicy.roll(f.classType, f.inputName, WorkflowUiConverter.getObjectInfoCached(server));
+                                runOnUiThread(() -> { if (!isDestroyed() && fieldBindings.contains(b)) ed.setText(Long.toString(value)); });
+                            } catch (Exception error) { runOnUiThread(() -> { if (!isDestroyed()) showError("无法随机种子", error); }); }
+                            finally { runOnUiThread(() -> dice.setEnabled(true)); }
+                        });
+                    }
+                });
+                random.setOnClickListener(v -> ed.setText("-1"));
+            }
         }
         b.initializing = false;
         parent.addView(box);
@@ -2150,7 +2182,10 @@ public class MainActivity extends Activity {
 
         if (value instanceof Number) {
             double n = ((Number) value).doubleValue();
-            if (f.hasMin() && n < f.min) throw new Exception(f.nodeLabel() + " · " + f.inputName + " 不能小于 " + f.min);
+            boolean autoSeed = f.kind == WorkflowUtils.FieldChoice.INT && SeedPolicy.isSeed(f.inputName) && n == -1;
+            if (f.kind == WorkflowUtils.FieldChoice.INT && SeedPolicy.isSeed(f.inputName) && n < -1)
+                throw new Exception("种子只支持 -1（每次随机）或非负固定数值");
+            if (!autoSeed && f.hasMin() && n < f.min) throw new Exception(f.nodeLabel() + " · " + f.inputName + " 不能小于 " + f.min);
             if (f.hasMax() && n > f.max) throw new Exception(f.nodeLabel() + " · " + f.inputName + " 不能大于 " + f.max);
         }
         if (f.kind == WorkflowUtils.FieldChoice.COMBO && !f.options.isEmpty() && !f.options.contains(String.valueOf(value))) {
@@ -2439,6 +2474,36 @@ public class MainActivity extends Activity {
         if (outputKey.equals(loadingOutputKey)) return;
         loadingOutputKey = outputKey;
         final int generation = ++outputLoadGeneration;
+        if (job.expectsTextOutput && !job.hasTextOutput() && job.outputRefs().isEmpty()) {
+            loadingOutputKey = ""; lastPreviewedPromptId = outputKey; currentOutputJob = job;
+            currentOutputRefs.clear(); outputBindings.clear(); outputList.removeAllViews();
+            outputList.addView(text("工作流已执行完成，但文本节点未返回内容；可在队列查看任务详情。", 13, false));
+            saveAllButton.setEnabled(false); return;
+        }
+        if (job.hasTextOutput() && job.textOutputsJson.equals("[]")) {
+            pool.execute(() -> {
+                try {
+                    JobRecord loaded = JobStore.loadTextResults(getApplicationContext(), job.localId);
+                    runOnUiThread(() -> {
+                        if (!screenVisible || isDestroyed() || generation != outputLoadGeneration) return;
+                        loadingOutputKey = ""; if (loaded != null) loadJobOutputs(loaded);
+                    });
+                } catch (Exception error) {
+                    runOnUiThread(() -> {
+                        if (!screenVisible || isDestroyed() || generation != outputLoadGeneration) return;
+                        loadingOutputKey = ""; statusText.setText("状态：文本结果读取失败");
+                    });
+                }
+            });
+            return;
+        }
+        if (job.hasTextOutput() && job.outputRefs().isEmpty()) {
+            loadingOutputKey = ""; lastPreviewedPromptId = outputKey;
+            currentOutputJob = job; currentOutputRefs.clear(); outputBindings.clear();
+            outputList.removeAllViews(); outputList.addView(TextResultView.create(this, job));
+            saveAllButton.setText("复制全部提示词"); saveAllButton.setEnabled(true);
+            return;
+        }
         final String serverForJob = job.server == null || job.server.isEmpty() ? currentServer() : job.server;
         pool.submit(() -> {
             try {
@@ -2592,6 +2657,9 @@ public class MainActivity extends Activity {
     }
 
     private void saveAllOutputs() {
+        if (currentOutputJob != null && currentOutputJob.hasTextOutput() && currentOutputRefs.isEmpty()) {
+            TextResultView.copy(this, TextOutputs.combined(currentOutputJob.textOutputsJson)); return;
+        }
         if (currentOutputRefs.isEmpty()) { toast("当前没有输出文件"); return; }
         final List<ImageRef> refs = new ArrayList<>(currentOutputRefs);
         final String serverForJob = currentOutputJob != null && currentOutputJob.server != null && !currentOutputJob.server.isEmpty()

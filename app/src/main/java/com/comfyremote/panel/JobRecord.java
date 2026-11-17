@@ -23,6 +23,11 @@ public final class JobRecord {
     public String localId;
     public String promptId;
     public String clientId = "";
+    public String textOutputsJson = "[]";
+    public String resolvedSeedsJson = "{}";
+    public boolean textResultSaved;
+    public boolean expectsTextOutput;
+    public boolean hasTextOutput() { return textResultSaved || !TextOutputs.combined(textOutputsJson).isEmpty(); }
     public String workflowId;
     public String workflowName;
     public String inputSummary;
@@ -124,6 +129,10 @@ public final class JobRecord {
             o.put("local_id", localId);
             o.put("prompt_id", promptId);
             o.put("client_id", clientId);
+            o.put("text_outputs_json", textOutputsJson);
+            o.put("text_result_saved", hasTextOutput());
+            o.put("resolved_seeds_json", resolvedSeedsJson);
+            o.put("expects_text_output", expectsTextOutput);
             o.put("workflow_id", workflowId);
             o.put("workflow_name", workflowName);
             o.put("input_summary", inputSummary);
@@ -153,6 +162,10 @@ public final class JobRecord {
         j.localId = o.optString("local_id", UUID.randomUUID().toString());
         j.promptId = o.optString("prompt_id", "");
         j.clientId = o.optString("client_id", "");
+        j.textOutputsJson = o.optString("text_outputs_json", "[]");
+        j.textResultSaved = o.optBoolean("text_result_saved", false);
+        j.resolvedSeedsJson = o.optString("resolved_seeds_json", "{}");
+        j.expectsTextOutput = o.optBoolean("expects_text_output", false);
         j.workflowId = o.optString("workflow_id", "");
         j.workflowName = o.optString("workflow_name", "工作流");
         j.inputSummary = o.optString("input_summary", "");

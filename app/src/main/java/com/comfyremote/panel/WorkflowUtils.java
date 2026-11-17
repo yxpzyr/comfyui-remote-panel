@@ -219,6 +219,13 @@ public final class WorkflowUtils {
             if (!outputNode) outputNode = looksLikeOutputNode(classType, title);
             if (outputNode) result.add(new OutputChoice(id, title, classType));
         }
+        Set<String> intermediate = new LinkedHashSet<>();
+        for (OutputChoice candidate : result) {
+            Set<String> upstream = outputAncestors(prompt, java.util.Collections.singleton(candidate.id));
+            upstream.remove(candidate.id);
+            intermediate.addAll(upstream);
+        }
+        result.removeIf(choice -> intermediate.contains(choice.id));
         result.sort((a, b) -> {
             try { return Integer.compare(Integer.parseInt(a.id), Integer.parseInt(b.id)); }
             catch (Exception ignored) { return a.id.compareToIgnoreCase(b.id); }
@@ -232,7 +239,7 @@ public final class WorkflowUtils {
         return c.contains("saveimage") || c.contains("previewimage") || c.contains("imagesave") ||
                 c.contains("imageoutput") || c.contains("outputimage") || c.contains("saveanimated") ||
                 c.contains("savewebp") || c.contains("savegif") || c.contains("savevideo") ||
-                c.contains("videocombine") || c.contains("saveaudio") || c.contains("savefile");
+                c.contains("videocombine") || c.contains("saveaudio") || c.contains("savefile") || TextOutputs.isTextSink(classType);
     }
 
     /** Remove unselected output/sink nodes from the prompt. Their upstream branches remain in the
@@ -242,10 +249,29 @@ public final class WorkflowUtils {
         JSONObject prompt = new JSONObject(original.toString());
         if (allOutputs == null || allOutputs.isEmpty()) return prompt;
         Set<String> selected = selectedIds == null ? new LinkedHashSet<>() : selectedIds;
+        Set<String> needed = outputAncestors(prompt, selected);
         for (OutputChoice choice : allOutputs) {
-            if (!selected.contains(choice.id)) prompt.remove(choice.id);
+            if (!selected.contains(choice.id) && !needed.contains(choice.id)) prompt.remove(choice.id);
         }
         return prompt;
+    }
+
+    private static Set<String> outputAncestors(JSONObject prompt, Set<String> roots) {
+        Set<String> seen = new LinkedHashSet<>();
+        java.util.ArrayDeque<String> pending = new java.util.ArrayDeque<>(roots);
+        while (!pending.isEmpty()) {
+            String id = pending.removeLast();
+            if (!seen.add(id)) continue;
+            JSONObject node = prompt.optJSONObject(id), inputs = node == null ? null : node.optJSONObject("inputs");
+            if (inputs == null) continue;
+            Iterator<String> names = inputs.keys();
+            while (names.hasNext()) {
+                JSONArray link = inputs.optJSONArray(names.next());
+                if (link != null && link.length() == 2 && prompt.optJSONObject(link.optString(0)) != null)
+                    pending.add(link.optString(0));
+            }
+        }
+        return seen;
     }
 
     public static String outputSummary(List<OutputChoice> outputs, Set<String> selectedIds) {

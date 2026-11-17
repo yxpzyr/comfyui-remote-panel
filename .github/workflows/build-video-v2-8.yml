@@ -1,8 +1,8 @@
-name: Validate and sign V2.8.10 video covers and responsive playback
+name: Validate and sign V2.8.11 random seeds and text workflows
 
 on:
   push:
-    branches: [ "fix/v2-8-10-video-covers-back" ]
+    branches: [ "feature/v2-8-11-seeds-text" ]
   workflow_dispatch:
 
 permissions:
@@ -53,7 +53,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ComfyRemote-V2.8.10-test-reports
+          name: ComfyRemote-V2.8.11-test-reports
           path: |
             app/build/reports/
             app/build/test-results/
@@ -75,6 +75,6 @@ jobs:
       - name: Upload signed release APK
         uses: actions/upload-artifact@v4
         with:
-          name: ComfyRemote-V2.8.10-signed
+          name: ComfyRemote-V2.8.11-signed
           path: app/build/outputs/apk/release/app-release.apk
 

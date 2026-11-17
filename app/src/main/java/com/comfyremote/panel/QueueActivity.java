@@ -281,6 +281,24 @@ public class QueueActivity extends Activity {
         card.addView(progressText);
 
         loadJobThumbnail(job, thumb);
+        if (job.hasTextOutput()) {
+            card.setOnClickListener(v -> TextResultView.show(this, job));
+            thumb.setOnClickListener(v -> TextResultView.show(this, job));
+            card.addView(text("点任务查看文本结果 · 支持复制提示词", 11, false));
+        }
+        if (job.resolvedSeedsJson != null && !job.resolvedSeedsJson.equals("{}")) {
+            try {
+                JSONObject seeds = new JSONObject(job.resolvedSeedsJson);
+                java.util.Iterator<String> names = seeds.keys();
+                StringBuilder line = new StringBuilder("实际种子："); int shown = 0;
+                while (names.hasNext() && shown++ < 3) {
+                    String key = names.next();
+                    if (shown > 1) line.append(" · ");
+                    line.append(seeds.optString(key));
+                }
+                card.addView(text(line.toString(), 11, false));
+            } catch (Exception ignored) {}
+        }
 
         List<ImageRef> outputs = job.outputRefs();
         ImageRef finalOutput = ImageRef.chooseFinalSaved(outputs);
@@ -408,6 +426,7 @@ public class QueueActivity extends Activity {
     }
 
     private void loadJobThumbnail(JobRecord job, ImageView target) {
+        if (job.hasTextOutput()) { target.setImageResource(android.R.drawable.ic_menu_edit); return; }
         List<ImageRef> refs = job.outputRefs();
         ImageRef finalRef = ImageRef.chooseFinalSaved(refs);
         if (JobRecord.COMPLETED.equals(job.status) && finalRef != null) {

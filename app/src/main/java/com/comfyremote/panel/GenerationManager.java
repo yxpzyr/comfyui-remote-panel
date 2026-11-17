@@ -104,12 +104,15 @@ public final class GenerationManager {
             // This runs off the main thread and only fetches schemas for suspect values.
             // Server-side validation remains authoritative if schema lookup is unavailable.
             boolean requiresVideoGuard = SaveVideoFormatGuard.hasSaveVideo(submittedPrompt);
+            boolean requiresSeedResolution = SeedPolicy.needsResolution(submittedPrompt);
+            JSONObject submissionInfo = null;
             boolean requiresDynamicCheck =
                     PromptValueNormalizer.needsRequiredDynamicInspection(submittedPrompt);
-            if (requiresVideoGuard || requiresDynamicCheck ||
+            if (requiresSeedResolution || requiresVideoGuard || requiresDynamicCheck ||
                     PromptValueNormalizer.needsComboNormalization(submittedPrompt)) {
                 try {
                     JSONObject objectInfo = WorkflowUiConverter.getObjectInfoCached(server);
+                    submissionInfo = objectInfo;
                     PromptValueNormalizer.normalizeComboValues(submittedPrompt, objectInfo);
                     // Guard ALL native SaveVideo nodes, not just schema fields marked
                     // COMFY_DYNAMICCOMBO_V3 / required. ComfyUI revisions can expose
@@ -135,11 +138,13 @@ public final class GenerationManager {
                     }
                     PromptValueNormalizer.ensureRequiredDynamicInputs(submittedPrompt, objectInfo);
                 } catch (Exception e) {
-                    if (requiresVideoGuard || requiresDynamicCheck)
-                        throw new Exception("视频保存节点参数检查失败：" + safeMessage(e), e);
+                    if (requiresSeedResolution || requiresVideoGuard || requiresDynamicCheck)
+                        throw new Exception("提交参数检查失败：" + safeMessage(e), e);
                     android.util.Log.w("GenerationManager", "跳过 COMBO 类型兼容预检查", e);
                 }
             }
+            JSONObject seeds = SeedPolicy.resolve(submittedPrompt, submissionInfo);
+            JobStore.freezeSubmission(context, localId, submittedPrompt, seeds);
             String promptId = api.queuePrompt(submittedPrompt);
             JobRecord afterSubmit = JobStore.find(context, localId);
             if (afterSubmit == null || afterSubmit.isTerminal()) {
@@ -257,6 +262,13 @@ public final class GenerationManager {
 
                     java.util.Set<String> allowedOutputs = current.selectedOutputNodeIds();
                     List<ImageRef> refs = api.parseAllImagesForPrompt(history, promptId, allowedOutputs);
+                    org.json.JSONArray texts = TextOutputs.parse(history, promptId, allowedOutputs);
+                    if (api.isHistoryCompleted(history, promptId) && (texts.length() > 0 || current.expectsTextOutput)) {
+                        JobStore.complete(context, localId, refs, texts,
+                                texts.length() > 0 ? "提示词生成完成，可查看或复制文本结果" : "执行已完成，文本节点未返回内容");
+                        notifyListeners(JobStore.find(context, localId));
+                        return;
+                    }
 
                     int before = observed.size();
                     int orderBefore = nextOrder;

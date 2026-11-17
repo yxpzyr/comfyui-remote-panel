@@ -92,6 +92,24 @@ public final class JobStore {
         }
     }
 
+    public static JobRecord loadTextResults(Context context, String localId) {
+        synchronized (LOCK) {
+            JobRecord job = find(context, localId);
+            if (job == null || !job.hasTextOutput()) return job;
+            try {
+                job.textOutputsJson = new String(Files.readAllBytes(textFile(context, localId).toPath()), StandardCharsets.UTF_8);
+                return job;
+            } catch (Exception error) { throw new IllegalStateException("文本结果读取失败，原任务记录已保留", error); }
+        }
+    }
+
+    private static File textFile(Context context, String id) {
+        if (id == null || !id.matches("[A-Za-z0-9_-]+")) throw new IllegalArgumentException("无效任务 ID");
+        File dir = new File(context.getFilesDir(), "text_outputs_v2811");
+        if (!dir.isDirectory() && !dir.mkdirs()) throw new IllegalStateException("无法创建文本结果目录");
+        return new File(dir, id + ".json");
+    }
+
     private static List<JobRecord> copies(List<JobRecord> source) {
         List<JobRecord> result = new ArrayList<>(source.size());
         for (JobRecord job : source) result.add(JobRecord.fromJson(job.toJson()));
@@ -215,10 +233,15 @@ public final class JobStore {
     }
 
     public static void complete(Context context, String localId, List<ImageRef> refs, String message) {
+        complete(context, localId, refs, new JSONArray(), message);
+    }
+
+    public static void complete(Context context, String localId, List<ImageRef> refs, JSONArray texts, String message) {
         update(context, localId, j -> {
             JSONArray a = new JSONArray();
             if (refs != null) for (ImageRef ref : refs) a.put(ref.toJson());
             j.outputRefsJson = a.toString();
+            j.textOutputsJson = texts == null ? "[]" : texts.toString();
             j.outputCount = refs == null ? 0 : refs.size();
             j.status = JobRecord.COMPLETED;
             j.progressPercent = 100;
@@ -226,6 +249,21 @@ public final class JobStore {
             j.completedAt = System.currentTimeMillis();
             if (j.startedAt <= 0) j.startedAt = j.promptSubmittedAt > 0 ? j.promptSubmittedAt : j.submittedAt;
         });
+    }
+
+    public static void freezeSubmission(Context context, String localId, JSONObject prompt, JSONObject seeds) {
+        synchronized (LOCK) {
+            List<JobRecord> jobs = list(context);
+            for (JobRecord job : jobs) if (job.localId.equals(localId)) {
+                job.promptJson = prompt.toString();
+                job.resolvedSeedsJson = seeds.toString();
+                job.expectsTextOutput = TextOutputs.expectsText(prompt);
+                job.updatedAt = System.currentTimeMillis();
+                save(context, jobs);
+                return;
+            }
+            throw new IllegalStateException("找不到任务快照，未提交");
+        }
     }
 
     /** Persist V2.3 first-seen output order while a task is still running. */
@@ -300,6 +338,10 @@ public final class JobStore {
             if (!live.contains(file.getName()) && !file.delete())
                 android.util.Log.w("JobStore", "无法清理已移除任务的提交快照");
         }
+        File[] results = new File(context.getFilesDir(), "text_outputs_v2811").listFiles((dir, name) -> name.matches("[A-Za-z0-9_-]+\\.json"));
+        if (results != null) for (File file : results) {
+            if (!live.contains(file.getName())) file.delete();
+        }
     }
 
     public static List<ImageRef> recentOutputRefs(Context context, int max) {
@@ -342,6 +384,10 @@ public final class JobStore {
         trim(list);
         try {
             for (JobRecord job : list) {
+                if (job.textOutputsJson != null && !job.textOutputsJson.equals("[]")) {
+                    atomicText(textFile(context, job.localId), job.textOutputsJson);
+                    job.textResultSaved = true; job.textOutputsJson = "[]";
+                }
                 if (job.promptJson != null && !job.promptJson.isEmpty()) {
                     atomicText(payloadFile(context, job.localId), job.promptJson);
                     job.submissionPayloadSaved = true;

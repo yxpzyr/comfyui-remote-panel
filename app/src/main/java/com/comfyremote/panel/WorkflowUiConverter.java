@@ -106,7 +106,14 @@ public final class WorkflowUiConverter {
                     if (link == null) continue;
                     ResolvedSource src = resolveSource(link.sourceId, link.sourceSlot, nodeById, linkById, new HashSet<>());
                     if (src.absent) continue;
-                    if (src.literalSet) apiInputs.put(name, src.literal);
+                    if (src.literalSet) {
+                        apiInputs.put(name, src.literal);
+                        if (SeedPolicy.isSeed(name) && src.nodeId != null) {
+                            JSONObject sources = meta.optJSONObject("panel_seed_sources");
+                            if (sources == null) { sources = new JSONObject(); meta.put("panel_seed_sources", sources); }
+                            sources.put(name, src.nodeId);
+                        }
+                    }
                     else apiInputs.put(name, new JSONArray().put(src.nodeId).put(src.slot));
                     connectedNames.add(name);
                 }
@@ -233,10 +240,10 @@ public final class WorkflowUiConverter {
             if (literal == null || literal == JSONObject.NULL) throw new JSONException("常量节点 " + nodeId + " 没有可解析的值");
             if (type.toLowerCase(Locale.ROOT).contains("seed (rgthree)")) {
                 long seed = literal instanceof Number ? ((Number) literal).longValue() : -1L;
-                if (seed < 0) seed = (System.nanoTime() & 0xFFFFFFFFFFFFL);
+                if (seed < -1) seed = -1;
                 literal = seed;
             }
-            return ResolvedSource.literal(literal);
+            return ResolvedSource.literal(nodeId, literal);
         }
         if (mode == 2) throw new JSONException("节点 " + nodeId + "（" + type + "）处于禁用模式，但仍被其他节点引用。请在 ComfyUI 中启用它或断开连接。");
         if (mode == 4 || isReroute(type)) {
@@ -410,6 +417,7 @@ public final class WorkflowUiConverter {
             String t = def.type.toUpperCase(Locale.ROOT);
             if (("INT".equals(t) || "FLOAT".equals(t) || "NUMBER".equals(t)) && value instanceof Number) {
                 double n = ((Number) value).doubleValue();
+                if ("INT".equals(t) && SeedPolicy.isSeed(def.name) && n == -1) return -1L;
                 if ((def.hasMin && n < def.minValue) || (def.hasMax && n > def.maxValue)) {
                     return fallbackValue(def);
                 }
@@ -615,7 +623,7 @@ public final class WorkflowUiConverter {
             this.nodeId = nodeId; this.slot = slot; this.literalSet = literalSet; this.absent = absent; this.literal = literal;
         }
         static ResolvedSource connection(String id, int slot) { return new ResolvedSource(id, slot, false, false, null); }
-        static ResolvedSource literal(Object value) { return new ResolvedSource(null, 0, true, false, value); }
+        static ResolvedSource literal(String id, Object value) { return new ResolvedSource(id, 0, true, false, value); }
         static ResolvedSource absent() { return new ResolvedSource(null, 0, false, true, null); }
     }
 
