@@ -136,7 +136,7 @@ public class ReferenceSelectionNativeTest {
                     assertEquals(round, received.size()); assertOnlyA(received.get(round - 1));
                 }
                 File dir = new File("/sdcard/Pictures/ComfyRemoteValidation"); dir.mkdirs();
-                try (Writer out = new OutputStreamWriter(new FileOutputStream(new File(dir, "reference-requests.json")), StandardCharsets.UTF_8)) {
+                try (Writer out = new OutputStreamWriter(new FileOutputStream(new File(app().getFilesDir(), "reference-requests.json")), StandardCharsets.UTF_8)) {
                     out.write(new JSONArray(received).toString(2));
                 }
                 try (OutputStream out = new FileOutputStream(new File(dir, "reference-switches.png"))) {
