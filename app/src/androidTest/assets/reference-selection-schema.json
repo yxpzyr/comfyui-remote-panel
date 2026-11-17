@@ -1,0 +1,63 @@
+{
+  "LoadImage": {
+    "output": [
+      "IMAGE",
+      "MASK"
+    ],
+    "input": {
+      "required": {
+        "image": [
+          [
+            "reference_A.png",
+            "original_C.png",
+            "mobile_A.png"
+          ],
+          {
+            "image_upload": true
+          }
+        ]
+      }
+    }
+  },
+  "TestReferenceVideo": {
+    "output": [
+      "IMAGE"
+    ],
+    "input": {
+      "required": {
+        "prompt": [
+          "STRING",
+          {
+            "default": "",
+            "multiline": true
+          }
+        ]
+      },
+      "optional": {
+        "ref_images.ref_image_0": [
+          "IMAGE"
+        ],
+        "ref_images.ref_image_1": [
+          "IMAGE"
+        ]
+      }
+    }
+  },
+  "SaveImage": {
+    "output": [],
+    "output_node": true,
+    "input": {
+      "required": {
+        "images": [
+          "IMAGE"
+        ],
+        "filename_prefix": [
+          "STRING",
+          {
+            "default": "reference_test"
+          }
+        ]
+      }
+    }
+  }
+}

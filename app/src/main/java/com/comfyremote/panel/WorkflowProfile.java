@@ -262,6 +262,45 @@ public final class WorkflowProfile {
         return new JSONObject(promptJson);
     }
 
+    public WorkflowProfile submissionSnapshot() throws org.json.JSONException {
+        return fromJson(new JSONObject(toJson().toString()));
+    }
+
+    /** Repair saved execution graphs whose reference switches disagree with their loaders. Runs off the UI thread. */
+    public JSONObject submissionPrompt(String server) throws Exception {
+        JSONObject saved = promptObject();
+        if (!isCollection()) return saved;
+        JSONObject ui = uiObjectOrNull();
+        boolean refresh = false;
+        for (WorkflowUtils.NodeChoice image : WorkflowVariants.optionalImageInputs(ui, variants, activeVariantId)) {
+            if (saved.has(image.id) != isAuxImageEnabled(image.id)) refresh = true;
+        }
+        if (!refresh) return saved;
+        java.util.Set<String> images = new java.util.HashSet<>();
+        java.util.Iterator<String> ids = enabledAuxImages.keys();
+        while (ids.hasNext()) {
+            String id = ids.next();
+            if (isAuxImageEnabled(id)) images.add(id);
+        }
+        JSONObject repaired = WorkflowVariants.compile(ui, variants, activeVariantId, server, images, auxLoRAIds());
+        java.util.Iterator<String> nodes = repaired.keys();
+        while (nodes.hasNext()) {
+            String id = nodes.next();
+            JSONObject prior = saved.optJSONObject(id);
+            JSONObject oldInputs = prior == null ? null : prior.optJSONObject("inputs");
+            JSONObject inputs = repaired.getJSONObject(id).optJSONObject("inputs");
+            if (oldInputs == null || inputs == null) continue;
+            java.util.Iterator<String> names = inputs.keys();
+            while (names.hasNext()) {
+                String name = names.next();
+                Object value = oldInputs.opt(name);
+                if (value != null && value != JSONObject.NULL && !(value instanceof JSONArray))
+                    inputs.put(name, value);
+            }
+        }
+        return repaired;
+    }
+
     public JSONObject uiObjectOrNull() throws Exception {
         return uiJson == null || uiJson.trim().isEmpty() ? null : new JSONObject(uiJson);
     }

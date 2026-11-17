@@ -1,0 +1,161 @@
+{
+  "nodes": [
+    {
+      "id": 308,
+      "type": "LoadImage",
+      "pos": [
+        40,
+        40
+      ],
+      "mode": 4,
+      "inputs": [],
+      "widgets_values": [
+        "reference_A.png",
+        "image"
+      ]
+    },
+    {
+      "id": 295,
+      "type": "LoadImage",
+      "pos": [
+        270,
+        40
+      ],
+      "mode": 4,
+      "inputs": [],
+      "widgets_values": [
+        "original_C.png",
+        "image"
+      ]
+    },
+    {
+      "id": 316,
+      "type": "TestReferenceVideo",
+      "pos": [
+        500,
+        40
+      ],
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "ref_images.ref_image_0",
+          "type": "IMAGE",
+          "link": 1
+        },
+        {
+          "name": "ref_images.ref_image_1",
+          "type": "IMAGE",
+          "link": 2
+        }
+      ],
+      "widgets_values": [
+        "Friends walking in a park"
+      ]
+    },
+    {
+      "id": 285,
+      "type": "SaveImage",
+      "pos": [
+        650,
+        300
+      ],
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 3
+        }
+      ],
+      "widgets_values": [
+        "reference_test"
+      ]
+    },
+    {
+      "id": 900,
+      "type": "TestReferenceVideo",
+      "pos": [
+        1050,
+        40
+      ],
+      "mode": 0,
+      "inputs": [],
+      "widgets_values": [
+        "Other scene"
+      ]
+    },
+    {
+      "id": 901,
+      "type": "SaveImage",
+      "pos": [
+        1250,
+        300
+      ],
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 4
+        }
+      ],
+      "widgets_values": [
+        "other_test"
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "title": "Reference video",
+      "bounding": [
+        0,
+        0,
+        850,
+        700
+      ]
+    },
+    {
+      "title": "Other feature",
+      "bounding": [
+        1000,
+        0,
+        600,
+        700
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      308,
+      0,
+      316,
+      0,
+      "IMAGE"
+    ],
+    [
+      2,
+      295,
+      0,
+      316,
+      1,
+      "IMAGE"
+    ],
+    [
+      3,
+      316,
+      0,
+      285,
+      0,
+      "IMAGE"
+    ],
+    [
+      4,
+      900,
+      0,
+      901,
+      0,
+      "IMAGE"
+    ]
+  ]
+}

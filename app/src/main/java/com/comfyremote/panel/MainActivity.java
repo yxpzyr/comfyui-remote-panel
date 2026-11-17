@@ -241,7 +241,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.8.11 · 随机种子 / 文字提示词工作流", 13, false);
+        TextView subtitle = text("V2.8.12 · 参考图关闭状态修复", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -1220,11 +1220,12 @@ public class MainActivity extends Activity {
                     });
                 }
                 b.replaceSwitch = new Switch(this);
-                b.replaceSwitch.setText("替换此输入");
+                b.replaceSwitch.setText("替换此输入（关闭则保留工作流原输入）");
                 b.replaceSwitch.setChecked(branchEnabled && activeProfile.savedReplaceEnabled(key, true));
                 b.replaceSwitch.setEnabled(branchEnabled);
                 box.addView(b.replaceSwitch);
                 b.preview = previewImage();
+                b.preview.setAlpha(branchEnabled ? 1f : 0.35f);
                 box.addView(b.preview, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(178)));
                 if (n.videoInput) {
                     b.videoInfo = text("▶ 视频输入 · 支持 MP4 / WebM / MKV / MOV / M4V / AVI", 11, false);
@@ -1265,6 +1266,7 @@ public class MainActivity extends Activity {
                 updateMaskUi(b);
 
                 b.uploadState = text(b.uri == null ? (n.videoInput ? "等待选择视频" : "等待选择图片") : (b.replaceSwitch.isChecked() ? "准备上传…" : "已记住文件，但当前保留工作流原输入"), 11, false);
+                if (!branchEnabled) b.uploadState.setText("此参考图已关闭，不参与生成；已选文件仅保留");
                 b.uploadState.setTextColor(ThemeManager.muted(this));
                 b.uploadState.setPadding(0, dp(5), 0, 0);
                 box.addView(b.uploadState);
@@ -2228,10 +2230,10 @@ public class MainActivity extends Activity {
         saveOutputSelection();
         captureSessionInputs();
 
-        final WorkflowProfile profile = activeProfile;
+        final WorkflowProfile profile;
         final List<ImageJob> imageJobs = snapshotImageJobs();
         final List<FieldOverride> overrides;
-        try { overrides = snapshotFieldOverrides(); }
+        try { profile = activeProfile.submissionSnapshot(); overrides = snapshotFieldOverrides(); }
         catch (Exception e) { showError("参数不合法", e); return; }
 
         for (ImageJob j : imageJobs) {
@@ -2248,39 +2250,44 @@ public class MainActivity extends Activity {
             }
         }
 
-        try {
-            JSONObject prompt = new JSONObject(profile.promptJson); // V2.0: reusable compiled prompt; output sinks are filtered per submission
-            applyFieldOverrides(prompt, overrides);
-            List<WorkflowUtils.OutputChoice> availableOutputs = profile.outputChoices();
-            Set<String> selectedOutputs = profile.selectedOutputNodeIds();
-            if (!availableOutputs.isEmpty()) {
-                if (selectedOutputs.isEmpty()) throw new Exception("至少选择一个输出节点");
-                prompt = WorkflowUtils.keepSelectedOutputNodes(prompt, availableOutputs, selectedOutputs);
-            }
-            for (ImageJob b : imageJobs) {
-                if (!b.replace) continue;
-                WorkflowUtils.setInputValue(prompt, b.choice.id, b.choice.inputName, b.remoteFilename);
-            }
+        final String server = currentServer();
+        pool.submit(() -> {
+            try {
+                JSONObject prompt = profile.submissionPrompt(server);
+                applyFieldOverrides(prompt, overrides);
+                List<WorkflowUtils.OutputChoice> availableOutputs = profile.outputChoices();
+                Set<String> selectedOutputs = profile.selectedOutputNodeIds();
+                if (!availableOutputs.isEmpty()) {
+                    if (selectedOutputs.isEmpty()) throw new Exception("至少选择一个输出节点");
+                    prompt = WorkflowUtils.keepSelectedOutputNodes(prompt, availableOutputs, selectedOutputs);
+                }
+                for (ImageJob b : imageJobs) {
+                    if (!b.replace) continue;
+                    WorkflowUtils.setInputValue(prompt, b.choice.id, b.choice.inputName, b.remoteFilename);
+                }
 
-            final String server = currentServer();
-            final String previewUri = firstInputUri(imageJobs);
-            final JobRecord record = JobRecord.create(profile.id, profile.name, buildInputSummary(imageJobs),
-                    previewUri, server, prompt.toString());
-            record.selectedOutputNodeIdsJson = new JSONArray(selectedOutputs).toString();
-            record.outputSelectionSummary = WorkflowUtils.outputSummary(availableOutputs, selectedOutputs);
-            JobStore.add(this, record);
-            GenerationManager.notifySubmitted(this, record.localId);
-            GenerationManager.enqueueSubmission(this, record.localId);
+                final String previewUri = firstInputUri(imageJobs);
+                final boolean textMode = TextOutputs.expectsText(prompt);
+                final JobRecord record = JobRecord.create(profile.id, profile.name, buildInputSummary(imageJobs),
+                        previewUri, server, prompt.toString());
+                record.selectedOutputNodeIdsJson = new JSONArray(selectedOutputs).toString();
+                record.outputSelectionSummary = WorkflowUtils.outputSummary(availableOutputs, selectedOutputs);
+                JobStore.add(this, record);
+                GenerationManager.notifySubmitted(this, record.localId);
+                GenerationManager.enqueueSubmission(this, record.localId);
 
-            // V2.1: keep the chosen input image visible and persisted for this workflow.
-            statusText.setText(textWorkflowMode ? "状态：已加入提示词生成队列，输入内容已保留"
-                    : "状态：已加入提交队列 · 当前图片/视频输入已保留，可再次处理或更换文件");
-            refreshQueueButton();
-            refreshSubmitEnabled();
-            toast("已加入队列");
-        } catch (Exception e) {
-            showError("准备任务失败", e);
-        }
+                // V2.1: keep the chosen input image visible and persisted for this workflow.
+                runOnUiThread(() -> {
+                    statusText.setText(textMode ? "状态：已加入提示词生成队列，输入内容已保留"
+                            : "状态：已加入提交队列 · 当前图片/视频输入已保留，可再次处理或更换文件");
+                    refreshQueueButton();
+                    refreshSubmitEnabled();
+                    toast("已加入队列");
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> showError("准备任务失败", e));
+            }
+        });
     }
 
     private void confirmBatchGeneration(ImageBinding target, List<Uri> uris) {
@@ -2304,7 +2311,9 @@ public class MainActivity extends Activity {
         saveOutputSelection();
         captureSessionInputs();
 
-        final WorkflowProfile profile = activeProfile;
+        final WorkflowProfile profile;
+        try { profile = activeProfile.submissionSnapshot(); }
+        catch (Exception e) { showError("准备任务失败", e); return; }
         final String profileId = profile.id;
         final String targetKey = inputKey(target.choice);
         final int targetIndex = target.index;
@@ -2355,7 +2364,7 @@ public class MainActivity extends Activity {
                         }
                     }
 
-                    JSONObject prompt = new JSONObject(profile.promptJson);
+                    JSONObject prompt = profile.submissionPrompt(server);
                     applyFieldOverrides(prompt, overrides);
                     if (!availableOutputs.isEmpty()) {
                         prompt = WorkflowUtils.keepSelectedOutputNodes(prompt, availableOutputs, selectedOutputs);

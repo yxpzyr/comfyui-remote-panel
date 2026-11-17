@@ -231,6 +231,10 @@ public final class WorkflowVariants {
         JSONObject selectedRect = groups.optJSONObject(selectedGroup);
         if (selectedRect == null) throw new JSONException("合集分组信息已损坏");
 
+        Set<String> eligible = new HashSet<>();
+        for (WorkflowUtils.NodeChoice input : optionalImageInputs(original, variants, variantId))
+            eligible.add(input.id);
+
         Set<String> targetOutputIds = new HashSet<>();
         for (int i = 0; i < outputs.length(); i++) targetOutputIds.add(outputs.optString(i, ""));
         Map<String, JSONObject> all = new LinkedHashMap<>();
@@ -245,7 +249,7 @@ public final class WorkflowVariants {
             } else if (inside(n, selectedRect.optJSONArray("bounding"))) {
                 // Activate the chosen feature only. Outside it, preserve e.g. optional
                 // bypassed LoRA, reference-image and preprocessing groups as authored.
-                if (n.optInt("mode", 0) == 4) n.put("mode", 0);
+                if (n.optInt("mode", 0) == 4 && !eligible.contains(id)) n.put("mode", 0);
             }
         }
 
@@ -262,8 +266,6 @@ public final class WorkflowVariants {
 
         // Activate only bypassed nodes on the path from an opted-in LoadImage to its
         // first normally active consumer. Unrelated LoRA/reference groups retain mode=4.
-        Set<String> eligible = new HashSet<>();
-        for (WorkflowUtils.NodeChoice input : optionalImageInputs(original, variants, variantId)) eligible.add(input.id);
         Map<String, Set<String>> consumers = new HashMap<>();
         for (int i = 0; i < links.length(); i++) {
             JSONArray a = links.optJSONArray(i);
