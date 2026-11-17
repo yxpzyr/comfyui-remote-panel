@@ -63,9 +63,11 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none -no-snapshot
           disable-animations: true
           script: |
+            adb logcat -G 4M
             gradle connectedDebugAndroidTest --stacktrace
             adb pull /sdcard/Pictures/ComfyRemoteValidation device-validation
-            adb exec-out run-as com.comfyremote.panel cat files/reference-requests.json > device-validation/reference-requests.json
+            adb logcat -d -v raw -s ReferenceSelectionValidation:I > device-validation/reference-requests.log
+            python3 scripts/extract_reference_requests.py device-validation/reference-requests.log device-validation/reference-requests.json
       - name: Upload test reports and native cover evidence
         if: always()
         uses: actions/upload-artifact@v4

@@ -136,6 +136,7 @@ public class ReferenceSelectionNativeTest {
                     assertEquals(round, received.size()); assertOnlyA(received.get(round - 1));
                 }
                 File dir = new File("/sdcard/Pictures/ComfyRemoteValidation"); dir.mkdirs();
+                android.util.Log.i("ReferenceSelectionValidation", "REFERENCE_REQUESTS=" + new JSONArray(received));
                 try (Writer out = new OutputStreamWriter(new FileOutputStream(new File(app().getFilesDir(), "reference-requests.json")), StandardCharsets.UTF_8)) {
                     out.write(new JSONArray(received).toString(2));
                 }
