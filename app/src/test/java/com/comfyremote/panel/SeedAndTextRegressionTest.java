@@ -153,7 +153,7 @@ public class SeedAndTextRegressionTest {
     }
     @Test public void textResultsParseOnlySelectedNodesAndNeverMediaFilenamesOrPromptGraphs() throws Exception {
         JSONObject history = new JSONObject("{\"p\":{\"status\":{\"completed\":true,\"status_str\":\"success\"},\"outputs\":{"
-                + "\"239\":{\"text\":[\"第一行\",\"第二行\"],\"images\":[{\"filename\":\"not-text.png\"}]},"
+                + "\"239\":{\"text\":[\"第一行\",\"第二行\"],\"input_text\":[\"第一行\",\"第二行\"],\"images\":[{\"filename\":\"not-text.png\"}]},"
                 + "\"253\":{\"text\":[\"intermediate template\"]}}}}");
         JSONArray texts = TextOutputs.parse(history, "p", Collections.singleton("239"));
         assertEquals(1, texts.length()); assertEquals("第一行\n第二行", texts.getJSONObject(0).getString("text"));

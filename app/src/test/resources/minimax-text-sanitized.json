@@ -1,176 +1,34 @@
 {
   "nodes": [
     {
-      "id": 254,
-      "type": "QwenTE_ModelLoader",
+      "id": 240,
+      "type": "TE_prompt_text",
       "pos": [
-        7801.69347603463,
-        4942.626679723765
+        7383.961141810073,
+        4942.1065973696395
       ],
       "mode": 4,
       "inputs": [],
       "outputs": [
         {
-          "name": "qwen模型",
-          "type": "QWENLLAMA",
+          "name": "text",
+          "type": "STRING",
           "links": [
-            380
+            382
           ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "QwenTE_ModelLoader"
-      },
-      "widgets_values": [
-        "Qwen3.5-VL",
-        "Qwen3.5-4B-Q4_K_M.gguf",
-        "Qwen3.5-4B-mmproj-BF16.gguf",
-        false,
-        false,
-        23296,
-        -1,
-        "默认(F16)",
-        "默认(F16)",
-        false,
-        0,
-        "xhigh",
-        "关闭",
-        2,
-        "不开启",
-        "无"
-      ]
-    },
-    {
-      "id": 193,
-      "type": "SaveVideo",
-      "pos": [
-        -378.7728014514954,
-        5045.355171658802
-      ],
-      "mode": 4,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "video",
-          "type": "VIDEO",
-          "links": []
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "SaveVideo"
-      },
-      "widgets_values": [
-        "两位角色在公园交流，镜头缓慢推进。",
-        "两位角色在公园交流，镜头缓慢推进。",
-        "两位角色在公园交流，镜头缓慢推进。",
-        "两位角色在公园交流，镜头缓慢推进。"
-      ]
-    },
-    {
-      "id": 189,
-      "type": "SaveVideo",
-      "pos": [
-        1489.8622128613001,
-        5035.425028997236
-      ],
-      "mode": 4,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "video",
-          "type": "VIDEO",
-          "links": []
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "SaveVideo"
-      },
-      "widgets_values": [
-        "两位角色在公园交流，镜头缓慢推进。",
-        "两位角色在公园交流，镜头缓慢推进。",
-        "两位角色在公园交流，镜头缓慢推进。",
-        "两位角色在公园交流，镜头缓慢推进。"
-      ]
-    },
-    {
-      "id": 253,
-      "type": "TE_H3_Prompt_Enhancer",
-      "pos": [
-        7384.698360383213,
-        5405.85439268772
-      ],
-      "mode": 4,
-      "inputs": [
+        },
         {
           "name": "H3参考素材",
-          "shape": 7,
           "type": "TE_H3_REFERENCES",
-          "link": null
-        },
-        {
-          "name": "输入提示词",
-          "type": "STRING",
-          "widget": {
-            "name": "输入提示词"
-          },
-          "link": 382
-        }
-      ],
-      "outputs": [
-        {
-          "name": "增强提示词(API)",
-          "type": "STRING",
-          "links": []
-        },
-        {
-          "name": "提示词模版(本地)",
-          "type": "STRING",
-          "links": [
-            381
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "TE_H3_Prompt_Enhancer"
-      },
-      "widgets_values": [
-        "两位角色在公园交流，镜头缓慢推进。",
-        "全参考模式(Reference to Video)",
-        10,
-        "",
-        "本地模板",
-        "",
-        "",
-        "",
-        4096,
-        0.6,
-        300,
-        false
-      ]
-    },
-    {
-      "id": 285,
-      "type": "SaveVideo",
-      "pos": [
-        5836.938022739442,
-        4787.370037373488
-      ],
-      "mode": 4,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "video",
-          "type": "VIDEO",
           "links": []
         }
       ],
       "properties": {
-        "Node name for S&R": "SaveVideo"
+        "Node name for S&R": "TE_prompt_text"
       },
       "widgets_values": [
         "两位角色在公园交流，镜头缓慢推进。",
-        "两位角色在公园交流，镜头缓慢推进。",
-        "两位角色在公园交流，镜头缓慢推进。",
+        "",
         "两位角色在公园交流，镜头缓慢推进。"
       ]
     },
@@ -283,43 +141,63 @@
       ]
     },
     {
-      "id": 240,
-      "type": "TE_prompt_text",
-      "pos": [
-        7383.961141810073,
-        4942.1065973696395
-      ],
-      "mode": 4,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "text",
-          "type": "STRING",
-          "links": [
-            382
-          ]
-        },
-        {
-          "name": "H3参考素材",
-          "type": "TE_H3_REFERENCES",
-          "links": []
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "TE_prompt_text"
-      },
-      "widgets_values": [
-        "两位角色在公园交流，镜头缓慢推进。",
-        "",
-        "两位角色在公园交流，镜头缓慢推进。"
-      ]
-    },
-    {
       "id": 258,
       "type": "SaveVideo",
       "pos": [
         3573.1720966088756,
         4811.363555175927
+      ],
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveVideo"
+      },
+      "widgets_values": [
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。"
+      ]
+    },
+    {
+      "id": 193,
+      "type": "SaveVideo",
+      "pos": [
+        -378.7728014514954,
+        5045.355171658802
+      ],
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveVideo"
+      },
+      "widgets_values": [
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。"
+      ]
+    },
+    {
+      "id": 189,
+      "type": "SaveVideo",
+      "pos": [
+        1489.8622128613001,
+        5035.425028997236
       ],
       "mode": 4,
       "inputs": [],
@@ -404,6 +282,62 @@
       ]
     },
     {
+      "id": 253,
+      "type": "TE_H3_Prompt_Enhancer",
+      "pos": [
+        7384.698360383213,
+        5405.85439268772
+      ],
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "H3参考素材",
+          "shape": 7,
+          "type": "TE_H3_REFERENCES",
+          "link": null
+        },
+        {
+          "name": "输入提示词",
+          "type": "STRING",
+          "widget": {
+            "name": "输入提示词"
+          },
+          "link": 382
+        }
+      ],
+      "outputs": [
+        {
+          "name": "增强提示词(API)",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "提示词模版(本地)",
+          "type": "STRING",
+          "links": [
+            381
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TE_H3_Prompt_Enhancer"
+      },
+      "widgets_values": [
+        "两位角色在公园交流，镜头缓慢推进。",
+        "全参考模式(Reference to Video)",
+        10,
+        "",
+        "本地模板",
+        "",
+        "",
+        "",
+        4096,
+        0.6,
+        300,
+        false
+      ]
+    },
+    {
       "id": 365,
       "type": "LoadImage",
       "pos": [
@@ -432,6 +366,72 @@
       "widgets_values": [
         "example.png",
         "example.png"
+      ]
+    },
+    {
+      "id": 285,
+      "type": "SaveVideo",
+      "pos": [
+        5836.938022739442,
+        4787.370037373488
+      ],
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveVideo"
+      },
+      "widgets_values": [
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。",
+        "两位角色在公园交流，镜头缓慢推进。"
+      ]
+    },
+    {
+      "id": 254,
+      "type": "QwenTE_ModelLoader",
+      "pos": [
+        7801.69347603463,
+        4942.626679723765
+      ],
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "qwen模型",
+          "type": "QWENLLAMA",
+          "links": [
+            380
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "QwenTE_ModelLoader"
+      },
+      "widgets_values": [
+        "Qwen3.5-VL",
+        "Qwen3.5-4B-Q4_K_M.gguf",
+        "Qwen3.5-4B-mmproj-BF16.gguf",
+        false,
+        false,
+        23296,
+        -1,
+        "默认(F16)",
+        "默认(F16)",
+        false,
+        0,
+        "xhigh",
+        "关闭",
+        2,
+        "不开启",
+        "无"
       ]
     }
   ],

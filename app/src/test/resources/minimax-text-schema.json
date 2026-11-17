@@ -1,4 +1,28 @@
 {
+  "LoadImage": {
+    "input": {
+      "required": {
+        "image": [
+          [
+            "example.png"
+          ],
+          {
+            "image_upload": true
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "image"
+      ]
+    },
+    "output": [
+      "IMAGE",
+      "MASK"
+    ],
+    "output_node": false
+  },
   "TE_text_display": {
     "input": {
       "required": {
