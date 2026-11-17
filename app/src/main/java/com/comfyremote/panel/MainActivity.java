@@ -386,7 +386,7 @@ public class MainActivity extends Activity {
         refreshOutputBtn.setOnClickListener(v -> refreshOutputMetadataAsync(true));
 
         LinearLayout outputCard = cardWithTopMargin(root);
-        outputCard.addView(sectionTitle("最近完成输出 · 最终图"));
+        outputCard.addView(sectionTitle("最近完成输出"));
         outputList = new LinearLayout(this);
         outputList.setOrientation(LinearLayout.VERTICAL);
         outputCard.addView(outputList);
@@ -1913,17 +1913,18 @@ public class MainActivity extends Activity {
                         catch (Exception error) { showError("种子范围无效", error); }
                     } else {
                         dice.setEnabled(false);
+                        final long request = ++b.seedRequest;
                         final String server = currentServer();
                         pool.execute(() -> {
                             try {
                                 long value = SeedPolicy.roll(f.classType, f.inputName, WorkflowUiConverter.getObjectInfoCached(server));
-                                runOnUiThread(() -> { if (!isDestroyed() && fieldBindings.contains(b)) ed.setText(Long.toString(value)); });
-                            } catch (Exception error) { runOnUiThread(() -> { if (!isDestroyed()) showError("无法随机种子", error); }); }
+                                runOnUiThread(() -> { if (!isDestroyed() && fieldBindings.contains(b) && request == b.seedRequest) ed.setText(Long.toString(value)); });
+                            } catch (Exception error) { runOnUiThread(() -> { if (!isDestroyed() && fieldBindings.contains(b) && request == b.seedRequest) showError("无法随机种子", error); }); }
                             finally { runOnUiThread(() -> dice.setEnabled(true)); }
                         });
                     }
                 });
-                random.setOnClickListener(v -> ed.setText("-1"));
+                random.setOnClickListener(v -> { b.seedRequest++; ed.setText("-1"); });
             }
         }
         b.initializing = false;
@@ -1932,6 +1933,7 @@ public class MainActivity extends Activity {
 
     private void onParameterWidgetChanged(FieldBinding b) {
         if (b == null || b.initializing || activeProfile == null) return;
+        b.seedRequest++;
         String key = WorkflowProfile.overrideKey(b.choice.nodeId, b.choice.inputName);
         Object value = readFieldValueLenient(b);
         if (valuesEquivalent(value, b.baselineValue)) transientParameterValues.remove(key);
@@ -2271,7 +2273,8 @@ public class MainActivity extends Activity {
             GenerationManager.enqueueSubmission(this, record.localId);
 
             // V2.1: keep the chosen input image visible and persisted for this workflow.
-            statusText.setText("状态：已加入提交队列 · 当前图片/视频输入已保留，可再次处理或更换文件");
+            statusText.setText(textWorkflowMode ? "状态：已加入提示词生成队列，输入内容已保留"
+                    : "状态：已加入提交队列 · 当前图片/视频输入已保留，可再次处理或更换文件");
             refreshQueueButton();
             refreshSubmitEnabled();
             toast("已加入队列");
@@ -2987,6 +2990,7 @@ public class MainActivity extends Activity {
     }
 
     private static final class FieldBinding {
+        long seedRequest;
         final WorkflowUtils.FieldChoice choice;
         EditText editView;
         Switch switchView;

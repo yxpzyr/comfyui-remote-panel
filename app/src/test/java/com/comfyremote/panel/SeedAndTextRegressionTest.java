@@ -200,4 +200,53 @@ public class SeedAndTextRegressionTest {
             assertTrue(((List<?>)field(activity,"currentOutputRefs")).isEmpty());
         } finally { controller.pause().stop().destroy(); }
     }
+    @Test public void changingToAutoSeedWhileDiceSchemaLoadsKeepsTheLatestChoice() throws Exception {
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        try (MockWebServer server = new MockWebServer()) {
+            JSONObject info = samplerInfo(10000);
+            server.setDispatcher(new Dispatcher() {
+                @Override public MockResponse dispatch(RecordedRequest request) throws InterruptedException {
+                    release.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                    return new MockResponse().setBody(info.toString());
+                }
+            });
+            server.start();
+            app().getSharedPreferences("comfy_remote",0).edit().putString("server",server.url("/").toString()).commit();
+            WorkflowProfile profile = WorkflowProfile.create("async dice", sampler(123), null);
+            WorkflowStore.upsert(app(),profile); WorkflowStore.setActiveId(app(),profile.id);
+            ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup();
+            try {
+                MainActivity activity=controller.get(); LinearLayout box=new LinearLayout(activity);
+                WorkflowUtils.FieldChoice choice=new WorkflowUtils.FieldChoice("1","seed","Seed","TestSeedSampler",
+                        WorkflowUtils.FieldChoice.INT,123L);
+                Method add=MainActivity.class.getDeclaredMethod("addParameterField",LinearLayout.class,WorkflowUtils.FieldChoice.class);
+                add.setAccessible(true);add.invoke(activity,box,choice);
+                List<?> bindings=(List<?>)field(activity,"fieldBindings");Object binding=bindings.get(bindings.size()-1);
+                EditText editor=(EditText)field(binding,"editView");
+                Button dice=button(box,"🎲 掷骰子");dice.performClick();
+                assertNotNull(server.takeRequest(3,java.util.concurrent.TimeUnit.SECONDS));
+                button(box,"每次随机（-1）").performClick();release.countDown();
+                for(int i=0;!dice.isEnabled()&&i<300;i++){
+                    Thread.sleep(10);Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+                }
+                assertTrue(dice.isEnabled());assertEquals("-1",editor.getText().toString());
+            } finally {release.countDown();controller.pause().stop().destroy();}
+        }
+    }
+    @Test public void largeTextResultsStayOutsideTheProgressIndexAndClearWithTheirTask() throws Exception {
+        JobRecord job=JobRecord.create("wf","large text","","","8188","{}");JobStore.add(app(),job);
+        String content="文本".repeat(100000);
+        JobStore.complete(app(),job.localId,Collections.emptyList(),
+                new JSONArray().put(new JSONObject().put("text",content)),"done");
+        JobRecord metadata=JobStore.find(app(),job.localId);
+        assertTrue(metadata.hasTextOutput());assertEquals("[]",metadata.textOutputsJson);
+        java.io.File file=new java.io.File(new java.io.File(app().getFilesDir(),"text_outputs_v2811"),job.localId+".json");
+        assertTrue(file.setLastModified(1000000));
+        JobStore.updateProgress(app(),job.localId,50,"1","done");
+        assertEquals(1000000,file.lastModified());
+        String index=app().getSharedPreferences("comfy_remote",0).getString("generation_jobs_v18","");
+        assertTrue(index.length()<5000);
+        assertEquals(content,TextOutputs.combined(JobStore.loadTextResults(app(),job.localId).textOutputsJson));
+        JobStore.clearFinished(app());assertFalse(file.exists());
+    }
 }

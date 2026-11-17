@@ -90,7 +90,8 @@ public class SeedTextNativeIntegrationTest {
                 AtomicReference<EditText> seedEditor=new AtomicReference<>();
                 instrumentation().runOnMainSync(() -> {
                     try {
-                        set(activity,"parameterObjectInfo",schema); set(activity,"advancedExpanded",true);
+                        set(activity,"parameterObjectInfo",schema); set(activity,"parameterMetadataProfileId",profile.id);
+                        set(activity,"advancedExpanded",true);
                         ((Set<String>)field(activity,"expandedParameterNodes")).add("1");
                         invoke(activity,"rebuildParameterControls"); invoke(activity,"applyAdvancedVisibility");
                         Button dice=button(activity.getWindow().getDecorView(),"🎲 掷骰子");
@@ -106,6 +107,11 @@ public class SeedTextNativeIntegrationTest {
                         assertEquals("-1",seedEditor.get().getText().toString());
                         dice.requestRectangleOnScreen(new Rect(0,0,dice.getWidth(),dice.getHeight()),true);
                     } catch(Exception e) { throw new RuntimeException(e); }
+                });
+                instrumentation().waitForIdleSync();
+                instrumentation().runOnMainSync(() -> {
+                    Button dice=button(activity.getWindow().getDecorView(),"🎲 掷骰子");
+                    dice.requestRectangleOnScreen(new Rect(0,0,dice.getWidth(),dice.getHeight()),true);
                 });
                 screenshot("seed-controls.png");
                 for(int count=1;count<=2;count++) {
