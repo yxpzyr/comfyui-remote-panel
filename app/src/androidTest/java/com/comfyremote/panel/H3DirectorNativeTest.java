@@ -116,6 +116,7 @@ public class H3DirectorNativeTest {
                 Intent result=new Intent().setData(Uri.fromFile(chosen)).setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 IntentFilter pickerFilter=new IntentFilter(Intent.ACTION_OPEN_DOCUMENT);
                 pickerFilter.addCategory(Intent.CATEGORY_OPENABLE);
+                pickerFilter.addDataType("image/*");
                 Instrumentation.ActivityMonitor monitor=inst().addMonitor(pickerFilter,new Instrumentation.ActivityResult(android.app.Activity.RESULT_OK,result),true);
                 inst().runOnMainSync(()->{
                     Button choose=activity.getWindow().getDecorView().findViewWithTag("h3-image-shared-images-0");assertNotNull(choose);choose.performClick();
