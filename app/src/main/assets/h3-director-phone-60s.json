@@ -1,0 +1,98 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "Minimax_H3\\minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    }
+  },
+  "4": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    }
+  },
+  "5": {
+    "class_type": "MiniMaxH3Director",
+    "inputs": {
+      "task_type": "t2v — 文生视频(Text to Video)",
+      "global_prompt": "integrated_multimodal_description: [Shot 1] A single continuous live-action shot at water level on a quiet garden pond in soft afternoon daylight. One small toy sailboat with a vivid yellow wooden hull, a single white triangular sail and a short brown mast drifts slowly across the gently rippling water. The camera tracks sideways smoothly at the same slow speed, keeping the entire boat centered and the same apparent size. Green reeds and a low stone bank remain softly focused in the background. The hull, sail, mast, daylight, water level and direction of movement stay consistent throughout. The sail flutters subtly, soft ripples spread from the hull, and moving reflections shimmer naturally. The motion continues at a steady pace without a scene transition, jump cut, change of viewpoint or time lapse. No people or text.\noverall_soundscape: Quiet continuous pond ambience, gentle water lapping, a light breeze rustling the reeds and occasional distant birds. No speech.\nnon_diegetic_music: N/A",
+      "bd_grp_sample": "采样设置",
+      "cfg": 1.0,
+      "seed": -1,
+      "frame_rate": 24.0,
+      "width": 864,
+      "height": 480,
+      "ref_max_size": 864,
+      "total_frames": 1475,
+      "timeline_data": "{\"version\": 4, \"timelineMode\": \"prompt_batch\", \"editMode\": \"segment\", \"totalFrames\": 1475, \"frameRate\": 24, \"width\": 864, \"height\": 480, \"refMaxSize\": 864, \"output\": {\"mode\": \"fixed\", \"width\": 864, \"height\": 480, \"longEdge\": 864, \"maxExportFrames\": 0, \"exportMode\": \"segments\", \"audioMode\": \"generate\", \"refImageSize\": \"match\", \"continuityEnabled\": true, \"continuityOverlapFrames\": 22, \"continuityMode\": \"guide\", \"continuityKeepTail\": false}, \"videoClips\": [], \"video\": {\"fileName\": \"\", \"videoFile\": \"\", \"subfolder\": \"\", \"type\": \"input\", \"frames\": [], \"frameMap\": []}, \"global\": {\"taskType\": \"t2v — 文生视频(Text to Video)\", \"prompt\": \"integrated_multimodal_description: [Shot 1] A single continuous live-action shot at water level on a quiet garden pond in soft afternoon daylight. One small toy sailboat with a vivid yellow wooden hull, a single white triangular sail and a short brown mast drifts slowly across the gently rippling water. The camera tracks sideways smoothly at the same slow speed, keeping the entire boat centered and the same apparent size. Green reeds and a low stone bank remain softly focused in the background. The hull, sail, mast, daylight, water level and direction of movement stay consistent throughout. The sail flutters subtly, soft ripples spread from the hull, and moving reflections shimmer naturally. The motion continues at a steady pace without a scene transition, jump cut, change of viewpoint or time lapse. No people or text.\\noverall_soundscape: Quiet continuous pond ambience, gentle water lapping, a light breeze rustling the reeds and occasional distant birds. No speech.\\nnon_diegetic_music: N/A\", \"refs\": [], \"referenceVideo\": {}, \"continuousReference\": false, \"commonEnabled\": false}, \"segments\": [{\"id\": \"s0\", \"start\": 0, \"length\": 243, \"frameCount\": 243, \"prompt\": \"integrated_multimodal_description: [Shot 1] A single continuous live-action shot at water level on a quiet garden pond in soft afternoon daylight. One small toy sailboat with a vivid yellow wooden hull, a single white triangular sail and a short brown mast drifts slowly across the gently rippling water. The camera tracks sideways smoothly at the same slow speed, keeping the entire boat centered and the same apparent size. Green reeds and a low stone bank remain softly focused in the background. The hull, sail, mast, daylight, water level and direction of movement stay consistent throughout. The sail flutters subtly, soft ripples spread from the hull, and moving reflections shimmer naturally. The motion continues at a steady pace without a scene transition, jump cut, change of viewpoint or time lapse. No people or text.\\noverall_soundscape: Quiet continuous pond ambience, gentle water lapping, a light breeze rustling the reeds and occasional distant birds. No speech.\\nnon_diegetic_music: N/A\", \"taskType\": \"t2v — 文生视频(Text to Video)\", \"refs\": [], \"referenceVideo\": {}, \"continuityFromPrev\": false}, {\"id\": \"s1\", \"start\": 243, \"length\": 243, \"frameCount\": 243, \"prompt\": \"integrated_multimodal_description: [Shot 1] A single continuous live-action shot at water level on a quiet garden pond in soft afternoon daylight. One small toy sailboat with a vivid yellow wooden hull, a single white triangular sail and a short brown mast drifts slowly across the gently rippling water. The camera tracks sideways smoothly at the same slow speed, keeping the entire boat centered and the same apparent size. Green reeds and a low stone bank remain softly focused in the background. The hull, sail, mast, daylight, water level and direction of movement stay consistent throughout. The sail flutters subtly, soft ripples spread from the hull, and moving reflections shimmer naturally. The motion continues at a steady pace without a scene transition, jump cut, change of viewpoint or time lapse. No people or text.\\noverall_soundscape: Quiet continuous pond ambience, gentle water lapping, a light breeze rustling the reeds and occasional distant birds. No speech.\\nnon_diegetic_music: N/A\", \"taskType\": \"t2v — 文生视频(Text to Video)\", \"refs\": [], \"referenceVideo\": {}, \"continuityFromPrev\": true}, {\"id\": \"s2\", \"start\": 486, \"length\": 243, \"frameCount\": 243, \"prompt\": \"integrated_multimodal_description: [Shot 1] A single continuous live-action shot at water level on a quiet garden pond in soft afternoon daylight. One small toy sailboat with a vivid yellow wooden hull, a single white triangular sail and a short brown mast drifts slowly across the gently rippling water. The camera tracks sideways smoothly at the same slow speed, keeping the entire boat centered and the same apparent size. Green reeds and a low stone bank remain softly focused in the background. The hull, sail, mast, daylight, water level and direction of movement stay consistent throughout. The sail flutters subtly, soft ripples spread from the hull, and moving reflections shimmer naturally. The motion continues at a steady pace without a scene transition, jump cut, change of viewpoint or time lapse. No people or text.\\noverall_soundscape: Quiet continuous pond ambience, gentle water lapping, a light breeze rustling the reeds and occasional distant birds. No speech.\\nnon_diegetic_music: N/A\", \"taskType\": \"t2v — 文生视频(Text to Video)\", \"refs\": [], \"referenceVideo\": {}, \"continuityFromPrev\": true}, {\"id\": \"s3\", \"start\": 729, \"length\": 243, \"frameCount\": 243, \"prompt\": \"integrated_multimodal_description: [Shot 1] A single continuous live-action shot at water level on a quiet garden pond in soft afternoon daylight. One small toy sailboat with a vivid yellow wooden hull, a single white triangular sail and a short brown mast drifts slowly across the gently rippling water. The camera tracks sideways smoothly at the same slow speed, keeping the entire boat centered and the same apparent size. Green reeds and a low stone bank remain softly focused in the background. The hull, sail, mast, daylight, water level and direction of movement stay consistent throughout. The sail flutters subtly, soft ripples spread from the hull, and moving reflections shimmer naturally. The motion continues at a steady pace without a scene transition, jump cut, change of viewpoint or time lapse. No people or text.\\noverall_soundscape: Quiet continuous pond ambience, gentle water lapping, a light breeze rustling the reeds and occasional distant birds. No speech.\\nnon_diegetic_music: N/A\", \"taskType\": \"t2v — 文生视频(Text to Video)\", \"refs\": [], \"referenceVideo\": {}, \"continuityFromPrev\": true}, {\"id\": \"s4\", \"start\": 972, \"length\": 243, \"frameCount\": 243, \"prompt\": \"integrated_multimodal_description: [Shot 1] A single continuous live-action shot at water level on a quiet garden pond in soft afternoon daylight. One small toy sailboat with a vivid yellow wooden hull, a single white triangular sail and a short brown mast drifts slowly across the gently rippling water. The camera tracks sideways smoothly at the same slow speed, keeping the entire boat centered and the same apparent size. Green reeds and a low stone bank remain softly focused in the background. The hull, sail, mast, daylight, water level and direction of movement stay consistent throughout. The sail flutters subtly, soft ripples spread from the hull, and moving reflections shimmer naturally. The motion continues at a steady pace without a scene transition, jump cut, change of viewpoint or time lapse. No people or text.\\noverall_soundscape: Quiet continuous pond ambience, gentle water lapping, a light breeze rustling the reeds and occasional distant birds. No speech.\\nnon_diegetic_music: N/A\", \"taskType\": \"t2v — 文生视频(Text to Video)\", \"refs\": [], \"referenceVideo\": {}, \"continuityFromPrev\": true}, {\"id\": \"s5\", \"start\": 1215, \"length\": 260, \"frameCount\": 260, \"prompt\": \"integrated_multimodal_description: [Shot 1] A single continuous live-action shot at water level on a quiet garden pond in soft afternoon daylight. One small toy sailboat with a vivid yellow wooden hull, a single white triangular sail and a short brown mast drifts slowly across the gently rippling water. The camera tracks sideways smoothly at the same slow speed, keeping the entire boat centered and the same apparent size. Green reeds and a low stone bank remain softly focused in the background. The hull, sail, mast, daylight, water level and direction of movement stay consistent throughout. The sail flutters subtly, soft ripples spread from the hull, and moving reflections shimmer naturally. The motion continues at a steady pace without a scene transition, jump cut, change of viewpoint or time lapse. No people or text.\\noverall_soundscape: Quiet continuous pond ambience, gentle water lapping, a light breeze rustling the reeds and occasional distant birds. No speech.\\nnon_diegetic_music: N/A\", \"taskType\": \"t2v — 文生视频(Text to Video)\", \"refs\": [], \"referenceVideo\": {}, \"continuityFromPrev\": true}]}",
+      "bd_grp_advanced": "高级采样",
+      "steps": 8,
+      "sampler": "euler",
+      "scheduler": "simple",
+      "shift_video": 12.0,
+      "shift_audio": 3.0,
+      "bd_grp_perf": "性能",
+      "clear_vram_between_segments": true,
+      "clear_vram_before_refine": false,
+      "clear_vram_before_face_refine": false,
+      "cache_frames_codec": "ffv1",
+      "export_source_images": false,
+      "export_pre_face_refine": false,
+      "cache_name": "mobile_template_60s",
+      "model": [
+        "12",
+        0
+      ],
+      "clip": [
+        "2",
+        0
+      ],
+      "video_vae": [
+        "3",
+        0
+      ],
+      "audio_vae": [
+        "4",
+        0
+      ]
+    }
+  },
+  "12": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "lora_name": "minimax_h3\\minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+      "strength_model": 1.0
+    }
+  },
+  "comfyremote_h3_video": {
+    "class_type": "ComfyRemoteH3VideoOutput",
+    "inputs": {
+      "report": [
+        "5",
+        5
+      ],
+      "expected_segments": 6,
+      "frame_rate": 24,
+      "request_id": ""
+    }
+  }
+}

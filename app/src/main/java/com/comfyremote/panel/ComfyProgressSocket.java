@@ -17,6 +17,7 @@ public final class ComfyProgressSocket {
         void onProgress(String promptId, int value, int max, String node);
         void onExecuting(String promptId, String node);
         void onExecutionStart(String promptId);
+        default void onDirectorProgress(String promptId, String node, int percent, String message) {}
     }
 
     public interface Handle { void close(); default boolean isOpen() { return false; } }
@@ -53,6 +54,16 @@ public final class ComfyProgressSocket {
                         listener.onExecuting(promptId, data.isNull("node") ? "" : data.optString("node", ""));
                     } else if ("execution_start".equals(type)) {
                         listener.onExecutionStart(promptId);
+                    } else if ("minimax_director_progress".equals(type)) {
+                        double max = Math.max(1, data.optDouble("overall_max", 1));
+                        int percent = (int) Math.round(94 * data.optDouble("overall_value", 0) / max);
+                        int total = data.optInt("segment_total", 0), segment = data.optInt("segment", 1);
+                        String phase = data.optString("phase_label", data.optString("phase", "生成"));
+                        String message = total > 0 ? "分镜 " + segment + "/" + total + " · " + phase : "正在解析导演台时间轴";
+                        listener.onDirectorProgress(promptId, data.optString("node_id"), Math.max(0, Math.min(94, percent)), message);
+                    } else if ("comfyremote_h3_progress".equals(type)) {
+                        listener.onDirectorProgress(promptId, data.optString("node_id"),
+                                Math.max(94, Math.min(99, data.optInt("percent", 95))), data.optString("message", "合成完整视频"));
                     }
                 } catch (Exception ignored) {}
             }

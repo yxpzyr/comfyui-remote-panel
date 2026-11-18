@@ -14,6 +14,8 @@
         <activity android:name=".WorkflowLibraryActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity android:name=".TaskOutputActivity" />
         <activity android:name=".QueueActivity" />
+        <activity android:name=".H3DirectorActivity" android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize" android:exported="false" />
         <activity
             android:name=".MaskEditorActivity"
             android:screenOrientation="portrait"

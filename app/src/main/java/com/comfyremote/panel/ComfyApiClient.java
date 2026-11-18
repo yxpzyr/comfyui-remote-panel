@@ -316,6 +316,12 @@ public class ComfyApiClient {
         return new JSONObject(r.text());
     }
 
+    public JSONObject getNodeInfo(String nodeType) throws Exception {
+        String name = java.net.URLEncoder.encode(nodeType, "UTF-8");
+        HttpResult r = getAny(new String[]{"/object_info/" + name, "/api/object_info/" + name}, 8000, 15000);
+        return new JSONObject(r.text());
+    }
+
     /**
      * V2.7 gallery-only streaming history reader. ComfyUI history embeds entire execution
      * prompts; loading 300 prompts as a JSONObject can exhaust a phone's heap. Skip all large

@@ -280,6 +280,9 @@ public class MainActivity extends Activity {
         workflowTip.setTextColor(ThemeManager.muted(this));
         workflowTip.setPadding(0, dp(6), 0, 0);
         workflowCard.addView(workflowTip);
+        Button directorEntry = button("H3 导演台 · 分镜与长片");
+        workflowCard.addView(directorEntry);
+        directorEntry.setOnClickListener(v -> showDirectorMenu());
         importBtn.setOnClickListener(v -> showWorkflowImportMenu());
         listBtn.setOnClickListener(v -> openWorkflowLibrary(null));
         manageBtn.setOnClickListener(v -> manageCurrentWorkflow());
@@ -2223,7 +2226,53 @@ public class MainActivity extends Activity {
         return out;
     }
 
+    private void launchDirector(String profileId) {
+        getSharedPreferences("h3_director_drafts_v1", MODE_PRIVATE).edit().putString("last_workflow", profileId).apply();
+        startActivity(new Intent(this, H3DirectorActivity.class)
+                .putExtra("workflow_id", profileId).putExtra("server", currentServer()));
+    }
+
+    private void showDirectorMenu() {
+        java.util.ArrayList<String> labels = new java.util.ArrayList<>();
+        java.util.ArrayList<String> targets = new java.util.ArrayList<>();
+        try {
+            if (activeProfile != null && H3DirectorPlan.hasDirector(activeProfile.promptObject())) {
+                labels.add("编辑当前导演台项目"); targets.add(activeProfile.id);
+            }
+        } catch (Exception ignored) {}
+        String recent = getSharedPreferences("h3_director_drafts_v1", MODE_PRIVATE).getString("last_workflow", "");
+        if (!recent.isEmpty() && !targets.contains(recent)) {
+            labels.add("继续上次导演台项目"); targets.add(recent);
+        }
+        labels.add("新建两段练习（约10秒）"); targets.add("asset:h3-director-phone-10s.json");
+        labels.add("新建六段项目（约一分钟）"); targets.add("asset:h3-director-phone-60s.json");
+        new AlertDialog.Builder(this).setTitle("H3 手机导演台")
+                .setItems(labels.toArray(new String[0]), (dialog, which) -> {
+                    String target = targets.get(which);
+                    try {
+                        if (target.startsWith("asset:")) {
+                            String name = target.substring(6);
+                            byte[] bytes;
+                            try (java.io.InputStream input = getAssets().open(name);
+                                 java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
+                                byte[] buffer = new byte[8192]; int count;
+                                while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+                                bytes = output.toByteArray();
+                            }
+                            WorkflowProfile created = WorkflowProfile.create(name.contains("60s") ? "H3导演台·一分钟项目" : "H3导演台·两段练习",
+                                    new JSONObject(new String(bytes, java.nio.charset.StandardCharsets.UTF_8)), null);
+                            WorkflowStore.upsert(this, created); launchDirector(created.id);
+                        } else launchDirector(target);
+                    } catch (Exception error) { showError("打开导演台", error); }
+                }).setNegativeButton("取消", null).show();
+    }
+
     private void submitGeneration() {
+        try {
+            if (activeProfile != null && H3DirectorPlan.hasDirector(activeProfile.promptObject())) {
+                launchDirector(activeProfile.id); return;
+            }
+        } catch (Exception error) { showError("打开导演台", error); return; }
         if (variantSwitching) { toast("正在切换合集功能，请稍候"); return; }
         if (activeProfile == null) { toast("请先导入或选择工作流"); return; }
         saveAddress();

@@ -1,0 +1,677 @@
+{
+  "MiniMaxH3Director": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {
+            "tooltip": "MiniMax H3 UNET (UNETLoader)."
+          }
+        ],
+        "video_vae": [
+          "VAE",
+          {
+            "tooltip": "MiniMax H3 video VAE (minimax_h3_video_vae)."
+          }
+        ],
+        "audio_vae": [
+          "VAE",
+          {
+            "tooltip": "MiniMax H3 audio VAE (minimax_h3_audio_vae). Required for r2v / v2v / rv2v."
+          }
+        ],
+        "clip": [
+          "CLIP",
+          {
+            "tooltip": "CLIPLoader type=minimax (qwen3vl)."
+          }
+        ],
+        "task_type": [
+          [
+            "t2v — 文生视频(Text to Video)",
+            "i2v — 图生视频(Image to Video)",
+            "fl2v — 首尾帧生视频(First-Last Frame)",
+            "r2v — 参考主体生视频(Reference to Video)",
+            "v2v — 视频转视频(Video to Video)",
+            "rv2v — 参考素材改视频(Reference Video Edit)",
+            "mixed — 混合模式(Mixed Segments)"
+          ],
+          {
+            "default": "t2v — 文生视频(Text to Video)",
+            "tooltip": "MiniMax H3 支持 t2v / i2v / fl2v / r2v / v2v / rv2v / mixed。提示词直接送入 MiniMaxH3ImageToVideo 或 MiniMaxH3ReferenceToVideo（内部 tokenize）。mixed 为每段自选 t2v/i2v/fl2v/r2v；r2v 用 <Picture 1>；v2v/rv2v 为源视频时间轴编辑（自动绑定 <Video 1>）；rv2v 另可挂参考图。"
+          }
+        ],
+        "global_prompt": [
+          "STRING",
+          {
+            "default": "A cinematic scene with natural motion and synchronized ambience",
+            "multiline": true,
+            "tooltip": "User prompt — sent directly to MiniMaxH3ImageToVideo / ReferenceToVideo. r2v: <Picture 1>. v2v: source-timeline edit (<Video 1>). rv2v: source timeline + reference images (<Video 1> + <Picture N>)."
+          }
+        ],
+        "bd_grp_sample": [
+          "BDGROUP",
+          {
+            "default": "采样设置"
+          }
+        ],
+        "cfg": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.0,
+            "max": 30.0,
+            "step": 0.01,
+            "tooltip": "CFG for KSampler."
+          }
+        ],
+        "seed": [
+          "INT",
+          {
+            "default": 0,
+            "min": 0,
+            "max": 18446744073709551615,
+            "control_after_generate": true,
+            "tooltip": "Random seed for sampling."
+          }
+        ],
+        "frame_rate": [
+          "FLOAT",
+          {
+            "default": 24.0,
+            "min": 1.0,
+            "max": 240.0,
+            "step": 0.01,
+            "tooltip": "Timeline / output FPS (H3 trained at 24)."
+          }
+        ],
+        "width": [
+          "INT",
+          {
+            "default": 864,
+            "min": 32,
+            "max": 8192,
+            "step": 32
+          }
+        ],
+        "height": [
+          "INT",
+          {
+            "default": 480,
+            "min": 32,
+            "max": 8192,
+            "step": 32
+          }
+        ],
+        "ref_max_size": [
+          "INT",
+          {
+            "default": 864,
+            "min": 32,
+            "max": 8192,
+            "step": 32
+          }
+        ],
+        "total_frames": [
+          "INT",
+          {
+            "default": 124,
+            "min": 5,
+            "max": 100000,
+            "tooltip": "Frame count at 24 fps; snapped to MiniMax 17k+5 grid (124 ≈ 5s)."
+          }
+        ],
+        "timeline_data": [
+          "STRING",
+          {
+            "default": "",
+            "multiline": true,
+            "tooltip": "Internal — video, segments, refs (populated by UI)."
+          }
+        ]
+      },
+      "optional": {
+        "i2v_groups": [
+          "MMX_DIR_GROUP",
+          {
+            "tooltip": "External Image to Video group(s) (t2v / i2v / fl2v). When connected, overrides UI cards for execution (external priority). Connect Group (Image to Video).group, or Groups Combine."
+          }
+        ],
+        "r2v_groups": [
+          "MMX_DIR_GROUP",
+          {
+            "tooltip": "External Reference to Video group(s). When connected, overrides UI cards for execution (external priority). Connect Group (Reference to Video).group, or Groups Combine."
+          }
+        ],
+        "semantic_bridge": [
+          "MMX_DIR_SEMANTIC_BRIDGE",
+          {
+            "tooltip": "Optional Semantic Bridge node (above SelfLift). When connected, official cond tokens are rewritten with the student MLP (RMS-norm → residual mix). Unconnected = identical. Distilled on FL2VA; r2v / v2v / rv2v is forced-compat — use with care."
+          }
+        ],
+        "selflift": [
+          "MMX_DIR_SELFLIFT",
+          {
+            "tooltip": "Optional SelfLift node (above Refine). When connected, first-pass is low-res prefix + 3D lift + high-res tail on this Director canvas. Unconnected = current single-stage sample. Refine may still upscale afterward (e.g. 1.0MP first pass → 2.0MP). Timeline continuity keeps native low-res carry + high-res pin. Euler only."
+          }
+        ],
+        "refine": [
+          "MMX_DIR_REFINE",
+          {
+            "tooltip": "Optional Refine node. When connected, each segment runs a second sample pass (same-size refine, or upscale then sample). Wire a MODEL into Refine.refine_model to use a different UNET for that pass; unwired uses this Director model. images is the refined result; images_pre_refine is the first pass. Unconnected = single-pass (current behavior)."
+          }
+        ],
+        "face_refine": [
+          "MMX_DIR_FACE_REFINE",
+          {
+            "tooltip": "Optional FaceRefine node. When connected, Director tracks the face on the final decoded frames (after Refine if that is also wired), re-samples the crop, and pastes the face back. images is after stitch; images_pre_face_refine is before stitch when「输出修脸前」is on (otherwise that output is blocked). Unconnected = no face pass (that output stays blocked)."
+          }
+        ],
+        "bd_grp_advanced": [
+          "BDGROUP",
+          {
+            "default": "高级采样"
+          }
+        ],
+        "steps": [
+          "INT",
+          {
+            "default": 25,
+            "min": 1,
+            "max": 200,
+            "tooltip": "一采步数（官方模板 25）。接了 sigmas 口后忽略此项，改用外接噪声表。"
+          }
+        ],
+        "sampler": [
+          [
+            "euler",
+            "euler_cfg_pp",
+            "euler_ancestral",
+            "euler_ancestral_cfg_pp",
+            "heun",
+            "heunpp2",
+            "exp_heun_2_x0",
+            "exp_heun_2_x0_sde",
+            "dpm_2",
+            "dpm_2_ancestral",
+            "lms",
+            "dpm_fast",
+            "dpm_adaptive",
+            "dpmpp_2s_ancestral",
+            "dpmpp_2s_ancestral_cfg_pp",
+            "dpmpp_sde",
+            "dpmpp_sde_gpu",
+            "dpmpp_2m",
+            "dpmpp_2m_cfg_pp",
+            "dpmpp_2m_sde",
+            "dpmpp_2m_sde_gpu",
+            "dpmpp_2m_sde_heun",
+            "dpmpp_2m_sde_heun_gpu",
+            "dpmpp_3m_sde",
+            "dpmpp_3m_sde_gpu",
+            "ddpm",
+            "lcm",
+            "ipndm",
+            "ipndm_v",
+            "deis",
+            "cfgpp_ud10_ab",
+            "res_multistep",
+            "res_multistep_cfg_pp",
+            "res_multistep_ancestral",
+            "res_multistep_ancestral_cfg_pp",
+            "gradient_estimation",
+            "gradient_estimation_cfg_pp",
+            "er_sde",
+            "seeds_2",
+            "seeds_3",
+            "sa_solver",
+            "sa_solver_pece",
+            "ddim",
+            "uni_pc",
+            "uni_pc_bh2"
+          ],
+          {
+            "default": "res_multistep",
+            "tooltip": "Official template: KSamplerSelect res_multistep."
+          }
+        ],
+        "scheduler": [
+          [
+            "simple",
+            "sgm_uniform",
+            "karras",
+            "exponential",
+            "ddim_uniform",
+            "beta",
+            "normal",
+            "linear_quadratic",
+            "kl_optimal"
+          ],
+          {
+            "default": "simple",
+            "tooltip": "一采调度器（官方模板 simple）。接了 sigmas 口后忽略此项，改用外接噪声表。"
+          }
+        ],
+        "shift_video": [
+          "FLOAT",
+          {
+            "default": 12.0,
+            "min": 0.01,
+            "max": 100.0,
+            "step": 0.01,
+            "tooltip": "MiniMaxH3SigmaShift shift_video."
+          }
+        ],
+        "shift_audio": [
+          "FLOAT",
+          {
+            "default": 3.0,
+            "min": 0.01,
+            "max": 100.0,
+            "step": 0.01,
+            "tooltip": "MiniMaxH3SigmaShift shift_audio."
+          }
+        ],
+        "bd_grp_perf": [
+          "BDGROUP",
+          {
+            "default": "性能"
+          }
+        ],
+        "clear_vram_between_segments": [
+          "BOOLEAN",
+          {
+            "default": true,
+            "tooltip": "段间清理显存：每段结束后卸载模型并清空 CUDA 缓存。"
+          }
+        ],
+        "clear_vram_before_refine": [
+          "BOOLEAN",
+          {
+            "default": false,
+            "tooltip": "二采前清理显存：一采结束后、放大或二采开始前卸载模型并清空 CUDA 缓存。默认关。24GB 或一采/二采不同 UNET 时勾上，可降低二采峰值，但每段会多一次加载。"
+          }
+        ],
+        "clear_vram_before_face_refine": [
+          "BOOLEAN",
+          {
+            "default": false,
+            "tooltip": "脸修前清理显存：成片解码后、FaceRefine 开始前卸载模型并清空 CUDA 缓存。默认关。未接 FaceRefine 时无效。24GB 或解码后立刻 OOM 时勾上，但每段会多一次加载。"
+          }
+        ],
+        "cache_frames_codec": [
+          [
+            "raw",
+            "ffv1"
+          ],
+          {
+            "default": "raw",
+            "tooltip": "分段缓存的像素帧怎么存。raw：uint8 .pt，读写快，磁盘大。ffv1：无损压缩，体积大约三分之一，命中和写入都会多一次编解码。两种都能读；某一段被重新写入时才换成当前选项。latent / 音频缓存不受影响。"
+          }
+        ],
+        "export_source_images": [
+          "BOOLEAN",
+          {
+            "default": false,
+            "tooltip": "将时间轴原片解码到独立的 source_images 输出口；需将 source_images 另接预览/合成节点才能查看，不会改变主 images。默认关以节省内存。"
+          }
+        ],
+        "export_pre_face_refine": [
+          "BOOLEAN",
+          {
+            "default": false,
+            "tooltip": "将修脸前的视频输出到 images_pre_face_refine，方便和 images 对比。分段导出时同时写入 seg_XXXX_facepre.mp4。默认关：该口阻断、下游不执行，也不占成片内存。未接 FaceRefine 时无效。"
+          }
+        ],
+        "cache_name": [
+          "STRING",
+          {
+            "default": "",
+            "tooltip": "分段缓存目录：output/minimax_seg_cache/<这个名字>_<节点id>/。留空 = 只用节点 id（旧行为，已有缓存目录不变）。填了名字后，同一张图里的不同导演台、以及节点 id 不同的工作流会分开存放。复制工作流后节点 id 通常不变，名字也相同的话仍然共用一个目录；要隔开就改名字。非法字符 / \\ : * ? \" < > | 会自动替换成下划线。"
+          }
+        ],
+        "sigmas": [
+          "SIGMAS",
+          {
+            "forceInput": true,
+            "tooltip": "可选。一采噪声表，接 BasicScheduler 或 ManualSigmas。接线后覆盖导演台「步数」和「调度器」（采样器下拉仍有效）。BasicScheduler 请接 SigmaShift 之后的同一套 H3 MODEL。不接则仍用步数 + 调度器、denoise=1 自动算表。"
+          }
+        ]
+      },
+      "hidden": {
+        "unique_id": "UNIQUE_ID"
+      }
+    },
+    "input_order": {
+      "required": [
+        "model",
+        "video_vae",
+        "audio_vae",
+        "clip",
+        "task_type",
+        "global_prompt",
+        "bd_grp_sample",
+        "cfg",
+        "seed",
+        "frame_rate",
+        "width",
+        "height",
+        "ref_max_size",
+        "total_frames",
+        "timeline_data"
+      ],
+      "optional": [
+        "i2v_groups",
+        "r2v_groups",
+        "semantic_bridge",
+        "selflift",
+        "refine",
+        "face_refine",
+        "bd_grp_advanced",
+        "steps",
+        "sampler",
+        "scheduler",
+        "shift_video",
+        "shift_audio",
+        "bd_grp_perf",
+        "clear_vram_between_segments",
+        "clear_vram_before_refine",
+        "clear_vram_before_face_refine",
+        "cache_frames_codec",
+        "export_source_images",
+        "export_pre_face_refine",
+        "cache_name",
+        "sigmas"
+      ],
+      "hidden": [
+        "unique_id"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "IMAGE",
+      "AUDIO",
+      "FLOAT",
+      "INT",
+      "IMAGE",
+      "STRING",
+      "IMAGE",
+      "IMAGE"
+    ],
+    "output_is_list": [
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true
+    ],
+    "output_name": [
+      "images",
+      "audio",
+      "fps",
+      "frame_count",
+      "source_images",
+      "report",
+      "images_pre_refine",
+      "images_pre_face_refine"
+    ],
+    "name": "MiniMaxH3Director",
+    "display_name": "MiniMaxH3Director",
+    "description": "MiniMax H3 Director: MiniMaxH3ImageToVideo / ReferenceToVideo conditioning, single-stage KSampler + MiniMaxH3SigmaShift, LTXVSeparateAVLatent decode. Supports t2v / i2v / fl2v / r2v / v2v / rv2v. Optional i2v_groups / r2v_groups accept multi-group packs from Director Group nodes (external priority over UI cards). Optional semantic_bridge accepts MiniMax H3 Director Semantic Bridge (cond-token student; Ref2VA forced-compat). Optional selflift accepts MiniMax H3 Director SelfLift (progressive first-pass on this canvas). Optional refine accepts MiniMax H3 Director Refine (second sample / upscale). Optional face_refine accepts MiniMax H3 Director FaceRefine (crop / re-sample / stitch). images_pre_refine is the first-pass video before refine. images_pre_face_refine is the video before face stitch (blocked unless FaceRefine is connected and「输出修脸前」is on). Defaults: 0.4MP 16:9 (864×480), 5s / 124 frames @ 24 fps.",
+    "python_module": "custom_nodes.ComfyUI_MiniMaxH3_Director",
+    "category": "MiniMaxH3",
+    "output_node": false,
+    "has_intermediate_output": false,
+    "search_aliases": []
+  },
+  "UNETLoader": {
+    "input": {
+      "required": {
+        "unet_name": [
+          [
+            "FireRed-Image-Edit-1.1_fp8mixed_comfy.safetensors",
+            "Krea2\\Krea2-MuseByStable_v30Turbo_fp8.safetensors",
+            "Krea2\\krea2_turbo_fp8_scaled.safetensors",
+            "Krea2_Anything2RealCharacters-V2_int8.safetensors",
+            "Minimax_H3\\minimax_h3_fl2va_pruned_fp8_scaled.safetensors",
+            "Minimax_H3\\minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+            "Minimax_H3\\minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
+            "Minimax_H3\\minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+            "Qwen\\Qwen21-noctQUncensoredRealismBuiltOn_v40Base_int8_convrot.safetensors",
+            "Qwen\\Qwen21-rayQwen21_v1_int8_convrot.safetensors",
+            "Qwen\\Qwen21-redqw21UNLOCKEDV2TI2I_redqw21UNLOCKEDV2_int8.safetensors",
+            "Qwen\\qwen_image_2.1_bf16.safetensors",
+            "Qwen\\qwen_image_2.1_int8_convrot.safetensors",
+            "Qwen\\qwen_image_edit_2511_fp8mixed.safetensors",
+            "WanVideo\\wan2.2_animate_14B_int8_convrot.safetensors",
+            "boogu_Anything2RealCharactersV1int8.safetensors",
+            "flux-2-klein\\F2K-9b-darkBeastMar0326Latest_dbkleinv2BFS.safetensors",
+            "flux-2-klein\\Flux2-Klein-9B-True-v2-bf16.safetensors",
+            "flux-2-klein\\Flux2-Klein-9B-True-v2-fp8mixed.safetensors",
+            "flux-2-klein\\flux-2-klein-4b-fp8.safetensors",
+            "flux-2-klein\\flux-2-klein-9b-fp8.safetensors",
+            "flux-2-klein\\flux-2-klein-9b-nvfp4.safetensors",
+            "flux-2-klein\\flux-2-klein-9b.safetensors",
+            "krea2_turbo_fp8.safetensors",
+            "krea2_turbo_fp8_scaled.safetensors",
+            "krea2_turbo_int8_convrot.safetensors"
+          ]
+        ],
+        "weight_dtype": [
+          [
+            "default",
+            "fp8_e4m3fn",
+            "fp8_e4m3fn_fast",
+            "fp8_e5m2"
+          ],
+          {
+            "advanced": true
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "unet_name",
+        "weight_dtype"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "MODEL"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "MODEL"
+    ],
+    "name": "UNETLoader",
+    "display_name": "Load Diffusion Model",
+    "description": "",
+    "python_module": "nodes",
+    "category": "model/loaders",
+    "output_node": false,
+    "has_intermediate_output": false,
+    "search_aliases": []
+  },
+  "LoraLoaderModelOnly": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL"
+        ],
+        "lora_name": [
+          [
+            "F2K_9b-滑块工具-人群people_9B.safetensors",
+            "F2K_9b-滑块工具-头发hair_9B.safetensors",
+            "F2K_9b-滑块工具-照明lighting.safetensors",
+            "F2K_9b-滑块工具-皮肤skin.safetensors",
+            "F2K_9b-滑块工具-胖瘦weight.safetensors",
+            "F2K_9b-滑块工具-胸部Chest_9B.safetensors",
+            "F2K_9b-滑块工具-色调ColorTone.safetensors",
+            "F2K_9b-滑块工具-质量quality.safetensors",
+            "F2K_9b-滑块工具-髋部buttocks_9B.safetensors",
+            "FireRed-Image-Edit-1.0-Lightning-8steps-v1.1.safetensors",
+            "FireRed-Image-Edit-Covercraft.safetensors",
+            "FireRed-Image-Edit-Makeup.safetensors",
+            "FireRed_OmniRealism_20_comfyui.safetensors",
+            "Krea2-功能\\Krea2-四视图QuadView_krea2_v1.safetensors",
+            "Krea2-编辑identity_edit_v1_2.safetensors",
+            "Krea2_Anything2RealCharacters-V1.safetensors",
+            "Krea2_Anything2RealCharacters-V3.safetensors",
+            "Qwen-Image-Lightning-8steps-V2.0.safetensors",
+            "Qwen-style\\PanelPainter_v3_Qwen2511.safetensors",
+            "Qwen-style\\anime2real2511_25.safetensors",
+            "Qwen-style\\anything2real_2601_A_final_patched.safetensors",
+            "Qwen-style\\coloring.safetensors",
+            "Qwen-功能2.1\\Qwen-Image-2.1 NSW Image Edit.safetensors",
+            "Qwen-功能2.1\\Qwen-Image-2.1-LR-8step-lora-r128.safetensors",
+            "Qwen-功能2.1\\Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors",
+            "Qwen-功能2.1\\Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r256.safetensors",
+            "Qwen-功能2.1\\Qwen21-NSW Qwen by TheseAlpacas V2.safetensors",
+            "Qwen-功能2.1\\Qwen21-亚洲hina_QwenImage2.1_asianMix_Lora_v3.0-rank64.safetensors",
+            "Qwen-功能2.1\\Qwen21-任转漫Nick_2anime_QwenImage2.1.safetensors",
+            "Qwen-功能2.1\\Qwen21-任转真Anything2RealCharacters.safetensors",
+            "Qwen-功能2.1\\Qwen21-任转真MoreReal.safetensors",
+            "Qwen-功能2.1\\Qwen21-任转真SinoX_QW2.1_Anything2Real_v1.1.safetensors",
+            "Qwen-功能2.1\\Qwen21-任转真a2real_qwen_image21_lora_v1.safetensors",
+            "Qwen-功能2.1\\Qwen21-图像扩展qwen-image-2.1-outpaint-v2.safetensors",
+            "Qwen-功能2.1\\Qwen21-图像融合Fusion_2000.safetensors",
+            "Qwen-功能2.1\\Qwen21-换头bfs_head_v1.1_qwen_2.1.safetensors",
+            "Qwen-功能2.1\\Qwen21-换身bfs_body_swap_v1.0_qwen_2.1.safetensors",
+            "Qwen-功能2.1\\Qwen21-无位移一致性consistency.safetensors",
+            "Qwen-功能2.1\\Qwen21-水印移除watermark_remover_v2.safetensors",
+            "Qwen-功能2.1\\Qwen21-漫转真Anime2Real _Alpha.safetensors",
+            "Qwen-功能2.1\\p_qwen_image_2.1_8step_v0.1.safetensors",
+            "Qwen\\Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+            "WAN\\2.1\\lightx2v_I2V_14B_480p_cfg_step_distill_rank32_bf16.safetensors",
+            "WanVideo\\lightx2v_I2V_14B_480p_cfg_step_distill_rank128_bf16.safetensors",
+            "WanVideo\\lightx2v_I2V_14B_480p_cfg_step_distill_rank128_bf16_verified.safetensors",
+            "WanVideo\\wan2.1_i2v_lora_rank64_lightx2v_4step.safetensors",
+            "WanVideo\\wan2.2_animate_14B_relight_lora_bf16.safetensors",
+            "bfs_head_v1_flux-klein_9b_step3500_rank128.safetensors",
+            "comfyui_portrait_lora64.safetensors",
+            "flux-2-klein\\Klein_9B-NSFW.safetensors",
+            "flux-2-klein\\Klein_9B-The_Body_Version_M.safetensors",
+            "flux-2-klein\\Klein_9B-anime2real-semi(漫转真).safetensors",
+            "flux-2-klein\\Klein_9B-anything2real_a_patched.safetensors",
+            "flux-2-klein\\Klein_9B-op_aesthetics(上身和面部优化).safetensors",
+            "flux-2-klein\\Klein_9B-一致性consis.safetensors",
+            "flux-2-klein\\Klein_9B-漫转真AnythingtoRealCharacters.safetensors",
+            "flux-2-klein\\flux-2-klein-NSFW.safetensors",
+            "flux-2-klein\\gakki-auto-height.safetensors",
+            "flux-2-klein\\lora-000010-shanxin.safetensors",
+            "flux-2-klein\\lora-tuotuo.safetensors",
+            "flux-2-klein\\lora-咬人猫.safetensors",
+            "flux-2-klein\\tuotuo.safetensors",
+            "flux-2-klein\\tuotuo2.safetensors",
+            "flux-2-klein\\xinxiaomong.safetensors",
+            "flux-2-klein\\yangmiV73-000006.safetensors",
+            "flux-2-klein\\yangmi_v4.safetensors",
+            "flux-2-klein\\zyr.safetensors",
+            "flux-2-klein\\咬人猫.safetensors",
+            "flux-2-klein\\山新.safetensors",
+            "flux2_klein_9b_refcontrol_canny.safetensors",
+            "flux2_klein_9b_refcontrol_depth.safetensors",
+            "flux2_klein_9b_refcontrol_lineart.safetensors",
+            "flux2_klein_9b_refcontrol_normal.safetensors",
+            "krea2_identity_edit_v1_2_r128.safetensors",
+            "manga_colorization.safetensors",
+            "minimax_h3\\h3_character_swap_pro4500_1000.safetensors",
+            "minimax_h3\\h3_character_swap_v1.5.safetensors",
+            "minimax_h3\\minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy.safetensors",
+            "minimax_h3\\minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+            "minimax_h3\\minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+            "qwen2.1\\动作编辑VNCCS_QI2_PoseStudioV2_3294845.safetensors",
+            "refcontrol_v2_poses.safetensors"
+          ]
+        ],
+        "strength_model": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": -100.0,
+            "max": 100.0,
+            "step": 0.01
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "model",
+        "lora_name",
+        "strength_model"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "MODEL"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "MODEL"
+    ],
+    "name": "LoraLoaderModelOnly",
+    "display_name": "Load LoRA",
+    "description": "This LoRAs loader is used to modify the diffusion model, altering the way in which latents are denoised such as applying styles. Multiple LoRA nodes can be linked together.",
+    "python_module": "nodes",
+    "category": "model/loaders",
+    "output_node": false,
+    "has_intermediate_output": false,
+    "output_tooltips": [
+      "The modified diffusion model.",
+      "The modified CLIP model."
+    ],
+    "search_aliases": [
+      "lora",
+      "load lora",
+      "apply lora",
+      "lora loader",
+      "lora model"
+    ],
+    "essentials_category": "Image Generation"
+  },
+  "ComfyRemoteH3VideoOutput": {
+    "input": {
+      "required": {
+        "report": [
+          "STRING",
+          {
+            "forceInput": true
+          }
+        ],
+        "expected_segments": [
+          "INT",
+          {
+            "min": 1,
+            "max": 10000,
+            "default": 2
+          }
+        ],
+        "frame_rate": [
+          "FLOAT",
+          {
+            "default": 24
+          }
+        ],
+        "request_id": [
+          "STRING",
+          {
+            "default": ""
+          }
+        ]
+      }
+    },
+    "output": [
+      "STRING"
+    ],
+    "output_node": true
+  }
+}

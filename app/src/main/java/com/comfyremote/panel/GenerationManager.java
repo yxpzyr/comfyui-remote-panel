@@ -171,16 +171,24 @@ public final class GenerationManager {
         try {
             ComfyProgressSocket.Handle handle = ComfyProgressSocket.connect(server, clientId, new ComfyProgressSocket.Listener() {
                 private long lastProgressAt;
+                private boolean directorProgress;
                 private boolean matches(String p) { return p == null || p.isEmpty() || promptId.equals(p); }
 
                 @Override public void onProgress(String p, int value, int max, String node) {
-                    if (!matches(p) || max <= 0) return;
+                    if (!matches(p) || max <= 0 || directorProgress) return;
                     long now = android.os.SystemClock.elapsedRealtime();
                     if (value < max && lastProgressAt > 0 && now - lastProgressAt < 500) return;
                     lastProgressAt = now;
                     int percent = 10 + Math.round((Math.max(0, Math.min(value, max)) * 82f) / max);
                     JobStore.updateProgress(context, localId, percent, node,
                             "生成中 · " + Math.max(0, value) + " / " + max);
+                    notifyListeners(JobStore.find(context, localId));
+                }
+
+                @Override public void onDirectorProgress(String p, String node, int percent, String message) {
+                    if (!matches(p)) return;
+                    directorProgress = true;
+                    JobStore.updateProgress(context, localId, percent, node, message);
                     notifyListeners(JobStore.find(context, localId));
                 }
 
