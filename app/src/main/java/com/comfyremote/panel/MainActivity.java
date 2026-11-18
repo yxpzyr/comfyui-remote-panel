@@ -241,7 +241,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.8.13 · H3 手机导演台", 13, false);
+        TextView subtitle = text("V2.8.14 · H3 手机导演台", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);

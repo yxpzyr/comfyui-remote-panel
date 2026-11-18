@@ -1,0 +1,81 @@
+name: Validate and sign V2.8.14 dynamic combo repair
+
+on:
+  push:
+    branches: [ "feature/v2-8-14-dynamic-combo" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Validate desktop output bridge
+        run: |
+          python3 -m unittest discover -s desktop_bridge/tests -v
+      - name: Build APKs and run JVM regressions
+        run: gradle assembleDebug assembleDebugAndroidTest testDebugUnitTest --stacktrace
+      - name: Enable emulator KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify native storyboard, image upload, queue and existing media regressions
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: default
+          arch: x86_64
+          ram-size: 1536M
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none -no-snapshot
+          disable-animations: true
+          script: |
+            bash scripts/verify-h3-native.sh
+            adb pull /sdcard/Download/ComfyRemoteValidation/dynamic-combo-native-request.json device-validation/dynamic-combo-native-request.json
+            python3 -c 'import json; p=json.load(open("device-validation/dynamic-combo-native-request.json")); assert all(p[n]["inputs"]["sampling_mode"]=="off" for n in ["1901","1902"])'
+      - name: Upload regression reports and native evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ComfyRemote-V2.8.14-test-reports
+          path: |
+            app/build/reports/
+            app/build/test-results/
+            app/build/outputs/androidTest-results/
+            device-validation/
+      - name: Restore permanent signing keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/comfyui-release.p12"
+          test -s "$RUNNER_TEMP/comfyui-release.p12"
+      - name: Build permanently signed release
+        env:
+          ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/comfyui-release.p12
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle assembleRelease --stacktrace
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ComfyRemote-V2.8.14-signed
+          path: app/build/outputs/apk/release/app-release.apk
+

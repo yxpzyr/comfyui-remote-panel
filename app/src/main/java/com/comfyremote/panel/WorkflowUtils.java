@@ -311,13 +311,14 @@ public final class WorkflowUtils {
             while (names.hasNext()) {
                 String name = names.next();
                 Object value = inputs.opt(name);
-                if (value == null || value == JSONObject.NULL || value instanceof JSONArray || value instanceof JSONObject) continue;
+                if (value == null || value == JSONObject.NULL || value instanceof JSONArray) continue;
 
                 FieldChoice fromSchema = fieldFromObjectInfo(id, name, title, classType, value, nodeDef);
                 if (fromSchema != null) {
                     out.add(fromSchema);
                     continue;
                 }
+                if (value instanceof JSONObject) continue;
 
                 String n = name.toLowerCase(Locale.ROOT);
                 if (value instanceof Boolean) {
@@ -358,6 +359,12 @@ public final class WorkflowUtils {
         JSONObject meta = spec.length() > 1 ? spec.optJSONObject(1) : null;
         if (meta != null && (meta.optBoolean("image_upload", false) || meta.optBoolean("forceInput", false))) return null;
 
+        boolean dynamicCombo = String.valueOf(typeSpec).startsWith("COMFY_DYNAMICCOMBO");
+        if (value instanceof JSONObject) {
+            if (!dynamicCombo) return null;
+            value = DynamicComboGuard.selectedKey(value, inputName, spec);
+            if (value == null) return null;
+        }
         List<String> comboOptions = new ArrayList<>();
         List<Object> rawComboOptions = new ArrayList<>();
         JSONArray sourceOptions = typeSpec instanceof JSONArray ? (JSONArray) typeSpec
@@ -365,6 +372,7 @@ public final class WorkflowUtils {
         if (sourceOptions != null) {
             for (int i = 0; i < sourceOptions.length(); i++) {
                 Object item = sourceOptions.opt(i);
+                if (dynamicCombo) item = DynamicComboGuard.optionKey(item);
                 comboOptions.add(String.valueOf(item));
                 rawComboOptions.add(item);
             }
@@ -532,8 +540,16 @@ public final class WorkflowUtils {
             this.min = min;
             this.max = max;
             this.step = step;
-            this.options = options == null ? new ArrayList<>() : options;
-            this.rawOptions = rawOptions == null ? new ArrayList<>() : rawOptions;
+            this.options = options == null ? new ArrayList<>() : new ArrayList<>(options);
+            this.rawOptions = rawOptions == null ? new ArrayList<>() : new ArrayList<>(rawOptions);
+            // Repair option definitions cached by older parameter panels.
+            for (int i = 0; i < this.rawOptions.size(); i++) {
+                Object raw = this.rawOptions.get(i);
+                if (!DynamicComboGuard.isDefinition(raw)) continue;
+                Object key = DynamicComboGuard.optionKey(raw);
+                this.rawOptions.set(i, key);
+                if (i < this.options.size()) this.options.set(i, String.valueOf(key));
+            }
         }
 
         public boolean hasMin() { return !Double.isNaN(min); }

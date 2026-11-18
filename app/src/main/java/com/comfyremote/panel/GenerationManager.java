@@ -114,6 +114,14 @@ public final class GenerationManager {
                     JSONObject objectInfo = WorkflowUiConverter.getObjectInfoCached(server);
                     submissionInfo = objectInfo;
                     PromptValueNormalizer.normalizeComboValues(submittedPrompt, objectInfo);
+                    JSONObject configuredPrompt = null;
+                    if (DynamicComboGuard.needsUiRecovery(submittedPrompt, objectInfo) &&
+                            job.workflowId != null && !job.workflowId.isEmpty()) {
+                        WorkflowProfile profile = WorkflowStore.loadById(context, job.workflowId);
+                        JSONObject sourceUi = profile == null ? null : profile.uiObjectOrNull();
+                        if (sourceUi != null) configuredPrompt = DynamicComboGuard.configuredFromUi(sourceUi);
+                    }
+                    DynamicComboGuard.repair(submittedPrompt, objectInfo, configuredPrompt);
                     // Guard ALL native SaveVideo nodes, not just schema fields marked
                     // COMFY_DYNAMICCOMBO_V3 / required. ComfyUI revisions can expose
                     // format as plain COMBO or under optional in /object_info.

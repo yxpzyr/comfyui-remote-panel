@@ -49,6 +49,15 @@ public final class PromptValueNormalizer {
             String type = node.optString("class_type", "").toLowerCase(java.util.Locale.ROOT);
             if (type.equals("savevideo") || type.endsWith("_savevideo") || type.endsWith(".savevideo"))
                 return true;
+            if (type.equals("textgenerate")) return true;
+            JSONObject inputs = node.optJSONObject("inputs");
+            if (inputs != null) {
+                Iterator<String> fields = inputs.keys();
+                while (fields.hasNext()) {
+                    Object value = inputs.opt(fields.next());
+                    if (DynamicComboGuard.isDefinition(value)) return true;
+                }
+            }
         }
         return false;
     }
