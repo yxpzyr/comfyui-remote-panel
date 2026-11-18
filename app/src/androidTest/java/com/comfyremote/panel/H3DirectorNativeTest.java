@@ -62,7 +62,10 @@ public class H3DirectorNativeTest {
             EditText seconds=activity.getWindow().getDecorView().findViewWithTag("h3-duration-0");seconds.setText("7.5");
         });
         capture("h3-director-editor.png");
-        inst().runOnMainSync(()->find(activity.getWindow().getDecorView(),ScrollView.class).fullScroll(View.FOCUS_DOWN));
+        inst().runOnMainSync(()->{
+            ScrollView scroll=find(activity.getWindow().getDecorView(),ScrollView.class);
+            scroll.scrollTo(0,scroll.getChildAt(0).getHeight());
+        });
         inst().waitForIdleSync();capture("h3-director-shots.png");
         inst().runOnMainSync(activity::finish);inst().waitForIdleSync();
         H3DirectorActivity reopened=launch(profile,"8188");
@@ -147,7 +150,7 @@ public class H3DirectorNativeTest {
                 assertNotNull("Existing queue must collect the standard video output",completed);
                 assertFalse(completed.expectsTextOutput);assertEquals(1,completed.outputRefs().size());
                 assertEquals("h3_complete.mp4",completed.outputRefs().get(0).filename);
-                File directory=new File("/sdcard/Pictures/ComfyRemoteValidation");directory.mkdirs();
+                File directory=app().getFilesDir();
                 try(Writer output=new OutputStreamWriter(new FileOutputStream(new File(directory,"h3-native-request.json")),StandardCharsets.UTF_8)){output.write(prompt.toString(2));}
             }finally{inst().runOnMainSync(activity::finish);}
         }
