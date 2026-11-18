@@ -150,8 +150,13 @@ public class H3DirectorNativeTest {
                 assertNotNull("Existing queue must collect the standard video output",completed);
                 assertFalse(completed.expectsTextOutput);assertEquals(1,completed.outputRefs().size());
                 assertEquals("h3_complete.mp4",completed.outputRefs().get(0).filename);
-                File directory=app().getFilesDir();
-                try(Writer output=new OutputStreamWriter(new FileOutputStream(new File(directory,"h3-native-request.json")),StandardCharsets.UTF_8)){output.write(prompt.toString(2));}
+                ContentValues evidence=new ContentValues();
+                evidence.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME,"h3-native-request.json");
+                evidence.put(android.provider.MediaStore.MediaColumns.MIME_TYPE,"application/json");
+                evidence.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,"Download/ComfyRemoteValidation");
+                Uri log=app().getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,evidence);
+                assertNotNull(log);
+                try(Writer output=new OutputStreamWriter(app().getContentResolver().openOutputStream(log),StandardCharsets.UTF_8)){output.write(prompt.toString(2));}
             }finally{inst().runOnMainSync(activity::finish);}
         }
     }
