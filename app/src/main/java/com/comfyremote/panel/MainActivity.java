@@ -1845,6 +1845,21 @@ public class MainActivity extends Activity {
         String key = WorkflowProfile.overrideKey(f.nodeId, f.inputName);
         Object committed = activeProfile.overrides.has(key) ? activeProfile.overrides.opt(key) : f.value;
         Object shown = transientParameterValues.containsKey(key) ? transientParameterValues.get(key) : committed;
+        if (f.kind == WorkflowUtils.FieldChoice.COMBO && DynamicComboGuard.isDefinition(shown)) {
+            Object restored = f.value;
+            try {
+                JSONObject original = DynamicComboGuard.configuredFromUi(activeProfile.uiObjectOrNull())
+                        .optJSONObject(f.nodeId);
+                JSONObject originalValues = original == null ? null : original.optJSONObject("inputs");
+                Object configured = originalValues == null ? null : originalValues.opt(f.inputName);
+                if (configured != null && f.options.contains(String.valueOf(configured))) restored = configured;
+            } catch (Exception ignored) {}
+            if (restored == null || restored instanceof JSONObject || !f.options.contains(String.valueOf(restored)))
+                restored = DynamicComboGuard.optionKey(shown);
+            shown = restored;
+            // Keep the repair temporary until the user explicitly saves parameter edits.
+            transientParameterValues.put(key, restored);
+        }
         FieldBinding b = new FieldBinding(f);
         b.baselineValue = committed;
         b.initializing = true;

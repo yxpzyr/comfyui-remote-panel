@@ -55,6 +55,7 @@ public class DynamicComboNativeTest {
             app.getSharedPreferences("comfy_remote",0).edit().putString("server",base).putString("generation_jobs_v18","[]").commit();
             WorkflowUiConverter.clearObjectInfoCache();
             WorkflowProfile profile=WorkflowProfile.create("Dynamic choice validation",good,new JSONObject().put("nodes",nodes));
+            for(String id:new String[]{"1901","1902"})profile.overrides.put(WorkflowProfile.overrideKey(id,"sampling_mode"),on);
             WorkflowStore.upsert(app,profile);WorkflowStore.setActiveId(app,profile.id);
             MainActivity activity=(MainActivity)inst.startActivitySync(new Intent(app,MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             try{
