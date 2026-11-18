@@ -118,12 +118,13 @@ public class H3DirectorNativeTest {
                 pickerFilter.addCategory(Intent.CATEGORY_OPENABLE);
                 pickerFilter.addDataType("image/*");
                 Instrumentation.ActivityMonitor monitor=inst().addMonitor(pickerFilter,new Instrumentation.ActivityResult(android.app.Activity.RESULT_OK,result),true);
-                inst().runOnMainSync(()->{
-                    Button choose=activity.getWindow().getDecorView().findViewWithTag("h3-image-shared-images-0");assertNotNull(choose);choose.performClick();
-                });
-                inst().waitForIdleSync();
-                assertEquals("The test monitor must intercept the image document intent",1,monitor.getHits());
-                inst().removeMonitor(monitor);
+                try{
+                    inst().runOnMainSync(()->{
+                        Button choose=activity.getWindow().getDecorView().findViewWithTag("h3-image-shared-images-0");assertNotNull(choose);choose.performClick();
+                    });
+                    inst().waitForIdleSync();
+                    assertEquals("The test monitor must intercept the image document intent",1,monitor.getHits());
+                }finally{inst().removeMonitor(monitor);}
                 long deadline=SystemClock.elapsedRealtime()+20000;
                 boolean[] selected={false};
                 while(SystemClock.elapsedRealtime()<deadline){

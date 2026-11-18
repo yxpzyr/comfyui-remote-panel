@@ -46,10 +46,7 @@ jobs:
           ram-size: 1536M
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none -no-snapshot
           disable-animations: true
-          script: |
-            gradle connectedDebugAndroidTest --stacktrace || task_result=$?
-            adb pull /sdcard/Pictures/ComfyRemoteValidation device-validation
-            exit "${task_result:-0}"
+          script: bash scripts/verify-h3-native.sh
       - name: Upload regression reports and native evidence
         if: always()
         uses: actions/upload-artifact@v4
