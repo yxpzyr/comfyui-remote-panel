@@ -61,7 +61,10 @@ public class H3DirectorNativeTest {
             EditText prompt=activity.getWindow().getDecorView().findViewWithTag("h3-prompt-0");prompt.setText("A saved continuous pond scene");
             EditText seconds=activity.getWindow().getDecorView().findViewWithTag("h3-duration-0");seconds.setText("7.5");
         });
-        capture("h3-director-editor.png");inst().runOnMainSync(activity::finish);inst().waitForIdleSync();
+        capture("h3-director-editor.png");
+        inst().runOnMainSync(()->find(activity.getWindow().getDecorView(),ScrollView.class).fullScroll(View.FOCUS_DOWN));
+        inst().waitForIdleSync();capture("h3-director-shots.png");
+        inst().runOnMainSync(activity::finish);inst().waitForIdleSync();
         H3DirectorActivity reopened=launch(profile,"8188");
         try{
             inst().runOnMainSync(()->{
@@ -111,11 +114,15 @@ public class H3DirectorNativeTest {
                 Bitmap image=Bitmap.createBitmap(32,32,Bitmap.Config.ARGB_8888);image.eraseColor(0xff4488bb);
                 try(OutputStream output=new FileOutputStream(chosen)){image.compress(Bitmap.CompressFormat.PNG,100,output);}image.recycle();
                 Intent result=new Intent().setData(Uri.fromFile(chosen)).setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                Instrumentation.ActivityMonitor monitor=inst().addMonitor(new IntentFilter(Intent.ACTION_OPEN_DOCUMENT),new Instrumentation.ActivityResult(android.app.Activity.RESULT_OK,result),true);
+                IntentFilter pickerFilter=new IntentFilter(Intent.ACTION_OPEN_DOCUMENT);
+                pickerFilter.addCategory(Intent.CATEGORY_OPENABLE);
+                Instrumentation.ActivityMonitor monitor=inst().addMonitor(pickerFilter,new Instrumentation.ActivityResult(android.app.Activity.RESULT_OK,result),true);
                 inst().runOnMainSync(()->{
                     Button choose=activity.getWindow().getDecorView().findViewWithTag("h3-image-shared-images-0");assertNotNull(choose);choose.performClick();
                 });
-                inst().waitForIdleSync();inst().removeMonitor(monitor);
+                inst().waitForIdleSync();
+                assertEquals("The test monitor must intercept the image document intent",1,monitor.getHits());
+                inst().removeMonitor(monitor);
                 long deadline=SystemClock.elapsedRealtime()+20000;
                 boolean[] selected={false};
                 while(SystemClock.elapsedRealtime()<deadline){
@@ -144,3 +151,4 @@ public class H3DirectorNativeTest {
         }
     }
 }
+
