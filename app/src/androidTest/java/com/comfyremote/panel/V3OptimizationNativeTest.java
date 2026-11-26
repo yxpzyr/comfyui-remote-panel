@@ -48,6 +48,13 @@ public class V3OptimizationNativeTest {
         AtomicReference<WorkflowLibraryActivity> current=new AtomicReference<>(first);
         try{
             ready(first);AtomicLong longest=new AtomicLong();
+            inst().runOnMainSync(()->{try{
+                TextView title=(TextView)field(first,"title");int[] location=new int[2];title.getLocationOnScreen(location);
+                if(android.os.Build.VERSION.SDK_INT>=35){
+                    int top=title.getRootWindowInsets().getInsets(android.view.WindowInsets.Type.statusBars()).top;
+                    assertTrue("library header clears system status bar",location[1]>=top);
+                }
+            }catch(Exception e){throw new RuntimeException(e);}});
             for(int pass=0;pass<12;pass++){
                 inst().runOnMainSync(()->{try{
                     WorkflowLibraryActivity a=current.get();ListView list=(ListView)field(a,"list");boolean found=false;

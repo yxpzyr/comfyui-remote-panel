@@ -86,6 +86,11 @@ public class VideoNativeIntegrationTest {
                 AtomicLong elapsed = new AtomicLong();
                 long requestedAt = SystemClock.elapsedRealtime();
                 instrumentation().runOnMainSync(() -> {
+                    if(android.os.Build.VERSION.SDK_INT>=35){
+                        android.view.View back=activity.findViewById(R.id.video_back);int[] location=new int[2];back.getLocationOnScreen(location);
+                        int top=back.getRootWindowInsets().getInsets(android.view.WindowInsets.Type.statusBars()).top;
+                        assertTrue("video back button clears system status bar",location[1]>=top);
+                    }
                     long before = SystemClock.elapsedRealtime();
                     activity.findViewById(R.id.video_back).performClick();
                     elapsed.set(SystemClock.elapsedRealtime() - before);

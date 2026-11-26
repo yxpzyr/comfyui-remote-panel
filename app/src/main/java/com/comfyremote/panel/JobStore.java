@@ -196,6 +196,7 @@ public final class JobStore {
 
     public static void attachPrompt(Context context, String localId, String promptId, String clientId) {
         update(context, localId, j -> {
+            if(j.isTerminal())return;
             j.clientId = clientId == null ? "" : clientId;
             j.promptId = promptId == null ? "" : promptId;
             j.status = JobRecord.QUEUED;
@@ -252,6 +253,7 @@ public final class JobStore {
 
     public static void complete(Context context, String localId, List<ImageRef> refs, JSONArray texts, String message) {
         update(context, localId, j -> {
+            if(j.isTerminal())return;
             JSONArray a = new JSONArray();
             if (refs != null) for (ImageRef ref : refs) a.put(ref.toJson());
             j.outputRefsJson = a.toString();
@@ -283,6 +285,7 @@ public final class JobStore {
     /** Persist V2.3 first-seen output order while a task is still running. */
     public static void observeOutputs(Context context, String localId, List<ImageRef> refs) {
         update(context, localId, j -> {
+            if(j.isTerminal())return;
             JSONArray a = new JSONArray();
             if (refs != null) for (ImageRef ref : refs) a.put(ref.toJson());
             j.outputRefsJson = a.toString();

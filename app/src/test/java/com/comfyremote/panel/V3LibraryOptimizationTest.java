@@ -88,6 +88,17 @@ public class V3LibraryOptimizationTest {
             System.out.println("V3_LIBRARY workflows=500 visible_cards="+list.getChildCount()+" searchable_results="+search.getAdapter().getCount());
         }finally{c.pause().stop().destroy();}
     }
+    @Test public void homeShortcutsAreBoundedAndAlwaysIncludeTheCurrentWorkflow()throws Exception{
+        List<WorkflowProfile> profiles=new ArrayList<>();
+        for(int i=0;i<500;i++)profiles.add(WorkflowProfile.create("快捷工作流 "+i,new JSONObject(),null));
+        WorkflowStore.save(app(),profiles);WorkflowStore.setActiveId(app(),profiles.get(0).id);
+        ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();
+        try{
+            LinearLayout strip=(LinearLayout)field(c.get(),"workflowStrip");assertEquals(13,strip.getChildCount());
+            boolean selected=false;for(int i=0;i<strip.getChildCount();i++)if(((Button)strip.getChildAt(i)).getText().toString().equals(profiles.get(0).name))selected=true;
+            assertTrue(selected);assertEquals("更多…",((Button)strip.getChildAt(12)).getText().toString());
+        }finally{c.pause().stop().destroy();}
+    }
     @Test public void collapsedParameterNodesCreateNoEditorsAndRetainSeedAndTemporaryValues()throws Exception{
         JSONObject prompt=new JSONObject();
         for(int i=1;i<=160;i++)prompt.put(""+i,new JSONObject().put("class_type","TestSampler").put("_meta",new JSONObject().put("title","测试节点 "+i))

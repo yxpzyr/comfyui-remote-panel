@@ -79,6 +79,29 @@ public class V3SubmissionRecoveryTest {
         JobStore.updateStatus(app(),j.localId,JobRecord.CANCELLED,"cancelled",0);
         JobStore.markSubmitting(app(),j.localId);
         JobStore.updateStatus(app(),j.localId,JobRecord.SUBMISSION_UNKNOWN,"late response",0);
+        JobStore.attachPrompt(app(),j.localId,"late-prompt","late-client");
+        JobStore.complete(app(),j.localId,java.util.Collections.emptyList(),"late completion");
         assertEquals(JobRecord.CANCELLED,JobStore.find(app(),j.localId).status);
+        assertEquals("",JobStore.find(app(),j.localId).promptId);
+    }
+    private android.widget.Button button(android.view.View view,String name){
+        if(view instanceof android.widget.Button&&((android.widget.Button)view).getText().toString().equals(name))return (android.widget.Button)view;
+        if(view instanceof android.view.ViewGroup){android.view.ViewGroup group=(android.view.ViewGroup)view;
+            for(int i=0;i<group.getChildCount();i++){android.widget.Button found=button(group.getChildAt(i),name);if(found!=null)return found;}}
+        return null;
+    }
+    @Test public void uncertainTaskCanEndLocalTrackingWithoutPretendingToCancelServerWork()throws Exception{
+        JobRecord j=JobRecord.create("wf","uncertain","","","8188","{}");j.status=JobRecord.SUBMISSION_UNKNOWN;JobStore.add(app(),j);
+        org.robolectric.android.controller.ActivityController<QueueActivity> controller=Robolectric.buildActivity(QueueActivity.class).setup();
+        try{
+            QueueActivity activity=controller.get();java.lang.reflect.Method card=QueueActivity.class.getDeclaredMethod("jobCard",JobRecord.class,Integer.class,android.widget.LinearLayout.class);card.setAccessible(true);
+            android.view.View row=(android.view.View)card.invoke(activity,j,null,null);
+            assertNotNull(button(row,"核对提交回执"));assertNull(button(row,"取消等待"));
+            button(row,"结束本地跟踪").performClick();
+            android.app.AlertDialog dialog=org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+            dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE).performClick();
+            assertEquals(JobRecord.CANCELLED,JobStore.find(app(),j.localId).status);
+            assertTrue(JobStore.find(app(),j.localId).message.contains("服务器任务状态请在电脑确认"));
+        }finally{controller.pause().stop().destroy();}
     }
 }

@@ -56,6 +56,23 @@ public final class ThemeManager {
             else flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
             w.getDecorView().setSystemUiVisibility(flags);
         }
+        if(Build.VERSION.SDK_INT>=35)Api35.installInsets(activity);
+    }
+
+    @android.annotation.TargetApi(35)
+    private static final class Api35 {
+        static void installInsets(Activity activity){
+            View content=activity.getWindow().getDecorView().findViewById(android.R.id.content);
+            if(content==null)return;
+            content.setBackgroundColor(background(activity));
+            content.setOnApplyWindowInsetsListener((view,insets)->{
+                android.graphics.Insets safe=insets.getInsets(android.view.WindowInsets.Type.systemBars()
+                        |android.view.WindowInsets.Type.displayCutout()|android.view.WindowInsets.Type.ime());
+                view.setPadding(safe.left,safe.top,safe.right,safe.bottom);
+                return insets;
+            });
+            content.requestApplyInsets();
+        }
     }
 
     public static int background(Context c) { return isDark(c) ? Color.rgb(17, 19, 22) : Color.rgb(246, 247, 249); }

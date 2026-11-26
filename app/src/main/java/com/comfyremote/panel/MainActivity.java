@@ -266,7 +266,7 @@ public class MainActivity extends Activity {
         workflowStrip.setOrientation(LinearLayout.HORIZONTAL);
         workflowScroll.addView(workflowStrip);
         workflowCard.addView(workflowScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-        TextView workflowTip = text("横向按钮显示当前工作流所在文件夹；点“工作流库”进入真正的文件夹视图，可新建文件夹、移动工作流或导入整个手机文件夹。", 12, false);
+        TextView workflowTip = text("快捷切换当前文件夹的常用或最近更新工作流；其余工作流从“更多”或“工作流库”选择。", 12, false);
         workflowTip.setTextColor(ThemeManager.muted(this));
         workflowTip.setPadding(0, dp(6), 0, 0);
         workflowCard.addView(workflowTip);
@@ -496,7 +496,12 @@ public class MainActivity extends Activity {
             workflowStrip.addView(empty);
         } else {
             WorkflowStore.sort(visible);
-            for (WorkflowProfile profile : visible) {
+            List<WorkflowProfile> shortcuts=new ArrayList<>(visible.subList(0,Math.min(12,visible.size())));
+            if(activeProfile!=null&&WorkflowStore.find(visible,activeProfile.id)!=null&&WorkflowStore.find(shortcuts,activeProfile.id)==null){
+                shortcuts.add(0,WorkflowStore.find(visible,activeProfile.id));
+                if(shortcuts.size()>12)shortcuts.remove(shortcuts.size()-1);
+            }
+            for (WorkflowProfile profile : shortcuts) {
                 boolean active = activeProfile != null && activeProfile.id.equals(profile.id);
                 Button b = button((profile.favorite ? "★ " : "") + profile.name);
                 GradientDrawable bg = new GradientDrawable();
@@ -508,6 +513,10 @@ public class MainActivity extends Activity {
                 lp.setMargins(0, 0, dp(8), 0);
                 workflowStrip.addView(b, lp);
                 b.setOnClickListener(v -> switchWorkflow(profile.id));
+            }
+            if(visible.size()>shortcuts.size()){
+                Button more=button("更多…");more.setOnClickListener(v->showWorkflowList());
+                workflowStrip.addView(more,new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,dp(44)));
             }
         }
         if (variantButton != null) {

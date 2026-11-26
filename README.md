@@ -1,3 +1,11 @@
+# ComfyUI 远程面板 3.0beta
+
+当前版本基于 2.8.14，versionCode 40。重点优化工作流大库加载、可见列表渲染、折叠参数、队列断网恢复与保存可靠性；保留 H3 手机导演台、随机种子、文本结果和图片/视频功能。详细变更见 [CHANGELOG_3.0beta.md](CHANGELOG_3.0beta.md)。
+
+自动化验证入口为 `.github/workflows/build-v3-beta.yml`，包括桌面桥接测试、JVM 回归与压力测试、Android lint、API 30/API 35 原生集成操作及永久证书签名。模拟器通过情况和实体手机验收边界以最终随包自检报告为准。
+
+以下为历史版本记录。
+
 ## V2.8.8 修复 SaveVideo.format 被错误识别为 codec 对象
 
 - 修正 V2.8.7 提交前判断：当 SaveVideo.format 被旧版转换器误置为 `{"codec":"auto"}` 一类对象时，不再直接报 “format 对象缺少 format 键”。
