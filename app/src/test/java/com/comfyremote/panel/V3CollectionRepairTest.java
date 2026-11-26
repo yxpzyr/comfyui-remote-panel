@@ -90,4 +90,12 @@ public class V3CollectionRepairTest {
         WorkflowCollectionRepair.repair(p,"8188");assertTrue(p.isCollection());assertEquals("group:2",p.activeVariantId);assertEquals(current,p.promptJson);
         assertFalse(p.hasSavedVariantPrompt("group:0"));assertEquals(9,p.variantStates.getJSONObject("group:0").getJSONObject("overrides").getInt("other"));
     }
+    @Test public void selectedSecondGroupMovesIntoTheMergedComponentWithAllItsOutputs()throws Exception{
+        WorkflowProfile p=oldProfile();p.activateVariant("group:1",new JSONObject());p.overrides.put(WorkflowProfile.overrideKey("1","seed"),999);
+        p.uiJson=withThird().toString();p.variants.put(new JSONObject().put("id","group:2").put("group_index",2).put("outputs",new JSONArray().put("20")));
+        try(MockWebServer server=server(fixture("schema"))){WorkflowCollectionRepair.repair(p,server.url("/").toString());}
+        assertTrue(p.isCollection());assertEquals("group:0",p.activeVariantId);
+        assertEquals(999,p.overrides.getInt(WorkflowProfile.overrideKey("1","seed")));
+        assertTrue(p.promptObject().has("10"));assertTrue(p.promptObject().has("11"));assertFalse(p.promptObject().has("20"));
+    }
 }

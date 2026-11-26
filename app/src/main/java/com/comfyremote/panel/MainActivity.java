@@ -449,12 +449,13 @@ public class MainActivity extends Activity {
                             (!beforeVariant.equals(safe(activeProfile.activeVariantId))||beforeUpdated!=activeProfile.updatedAt)))return;
                     String previous=activeProfile==null?"":activeProfile.id;
                     profiles=nextProfiles;workflowFolders=nextFolders;activeProfile=next;normalizeFolderFilter();
-                    if(next!=null)WorkflowStore.setActiveId(this,next.id);
+                    if(next!=null){WorkflowStore.setActiveId(this,next.id);WorkflowProfile row=WorkflowStore.find(profiles,next.id);if(row!=null)row.collectionReviewNeeded=false;}
                     if(!previous.equals(next==null?"":next.id)){
                         transientParameterValues.clear();expandedParameterNodes.clear();parameterObjectInfo=null;parameterMetadataProfileId="";
                     }
                     if(saved!=null)restoreUiSession(saved);
                     rebuildWorkflowStrip();rebuildDynamicControls();applyAdvancedVisibility();
+                    if(next==null&&!profiles.isEmpty())statusText.setText("状态：当前工作流检查未完成，请连接 ComfyUI 后从工作流库重新选择；原文件已保留");
                     if(saved!=null)mainScroll.post(()->mainScroll.scrollTo(0,restoredScrollY));
                 });
             }catch(Exception error){runOnUiThread(()->{if(!isDestroyed()&&request==libraryLoadGeneration)showError("读取工作流失败",error);});}
@@ -905,6 +906,7 @@ public class MainActivity extends Activity {
     }
 
     private void activateWorkflow(WorkflowProfile next){
+        WorkflowProfile row=WorkflowStore.find(profiles,next.id);if(row!=null)row.collectionReviewNeeded=false;
         transientParameterValues.clear();
         expandedParameterNodes.clear();
         parameterObjectInfo = null;

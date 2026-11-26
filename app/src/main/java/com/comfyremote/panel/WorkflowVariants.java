@@ -95,12 +95,6 @@ public final class WorkflowVariants {
         JSONArray links = ui.optJSONArray("links");
         if (links == null) return new JSONArray();
         try {
-            Map<String, JSONObject> all = new LinkedHashMap<>();
-            for (int i = 0; i < nodes.length(); i++) {
-                JSONObject node = nodes.optJSONObject(i);
-                if (node != null) all.put(String.valueOf(node.opt("id")), node);
-            }
-            Map<String, String> origins = linkOrigins(links);
             List<Set<String>> paths = new ArrayList<>();
             int[] parent = new int[result.length()];
             for (int i = 0; i < result.length(); i++) {
