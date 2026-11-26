@@ -100,6 +100,7 @@ public class V3SubmissionRecoveryTest {
             button(row,"结束本地跟踪").performClick();
             android.app.AlertDialog dialog=org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
             dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE).performClick();
+            Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
             assertEquals(JobRecord.CANCELLED,JobStore.find(app(),j.localId).status);
             assertTrue(JobStore.find(app(),j.localId).message.contains("服务器任务状态请在电脑确认"));
         }finally{controller.pause().stop().destroy();}
