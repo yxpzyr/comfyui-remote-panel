@@ -133,7 +133,13 @@ public class MainActivity extends Activity {
         workflowFolderFilter = prefs.getString(PREF_FOLDER_FILTER, FOLDER_ALL);
         normalizeFolderFilter();
         boolean warmLibrary=WorkflowStore.isSummaryIndexReady(this);
-        if(warmLibrary){profiles=WorkflowStore.loadSummaries(this);resolveActiveProfile();restoreUiSession(savedInstanceState);}
+        if(warmLibrary){
+            profiles=WorkflowStore.loadSummaries(this);
+            WorkflowProfile selected=WorkflowStore.find(profiles,WorkflowStore.getActiveId(this));
+            if(selected==null&&!profiles.isEmpty())selected=profiles.get(0);
+            if(selected!=null&&selected.collectionReviewNeeded)warmLibrary=false;
+            else{resolveActiveProfile();restoreUiSession(savedInstanceState);}
+        }
         buildUi();
         rebuildWorkflowStrip();
         rebuildDynamicControls();
@@ -469,7 +475,7 @@ public class MainActivity extends Activity {
     private WorkflowProfile loadFullProfileOrNull(WorkflowProfile profile) {
         if (profile == null) return null;
         try {
-            WorkflowProfile full = profile.metadataOnly ? WorkflowStore.loadById(this, profile.id) : profile;
+            WorkflowProfile full = profile.metadataOnly ? WorkflowStore.open(this, profile.id,currentServer()) : profile;
             if (WorkflowVariants.discoverNewVariants(full)) WorkflowStore.upsert(this, full);
             return full;
         } catch (Exception e) {
@@ -875,11 +881,30 @@ public class MainActivity extends Activity {
     private void switchWorkflowNow(String profileId) {
         captureSessionInputs();
         saveOutputSelection();
+        WorkflowProfile summary=WorkflowStore.find(profiles,profileId);
+        final int request=++libraryLoadGeneration;
+        if(summary!=null&&summary.collectionReviewNeeded){
+            variantSwitching=true;refreshSubmitEnabled();statusText.setText("状态：正在核对并修复旧版合集识别，请保持 ComfyUI 可连接…");
+            pool.execute(()->{
+                WorkflowProfile next=loadFullProfileOrNull(summary);
+                runOnUiThread(()->{
+                    if(isDestroyed()||request!=libraryLoadGeneration)return;
+                    variantSwitching=false;
+                    if(next==null){refreshSubmitEnabled();showError("工作流检查未完成",new Exception("请确认 ComfyUI 可连接后重新选择；原工作流文件已保留"));return;}
+                    activateWorkflow(next);
+                });
+            });return;
+        }
+        variantSwitching=false;
         WorkflowProfile next = loadFullProfileOrNull(WorkflowStore.find(profiles, profileId));
         if (next == null) {
             toast("工作流配置读取失败，请检查文件是否完整");
             return;
         }
+        activateWorkflow(next);
+    }
+
+    private void activateWorkflow(WorkflowProfile next){
         transientParameterValues.clear();
         expandedParameterNodes.clear();
         parameterObjectInfo = null;

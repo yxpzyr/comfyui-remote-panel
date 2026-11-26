@@ -27,7 +27,7 @@ final class WorkflowMetadataIndex {
         value=new State();
         if(file.isFile() && file.length()<=12L*1024*1024) try {
             JSONObject document=new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8));
-            if(document.optInt("version")==1 && document.optJSONObject("entries")!=null)
+            if(document.optInt("version")==2 && document.optJSONObject("entries")!=null)
                 value.entries=document.getJSONObject("entries");
         } catch(Exception error){Log.w("WorkflowIndex","列表索引将重新生成",error);}
         value.modified=file.lastModified();value.size=file.length();CACHE.put(key,value);return value;
@@ -74,7 +74,7 @@ final class WorkflowMetadataIndex {
         File file=index(directory),temp=new File(file.getParentFile(),"library.tmp");
         try{
             if(!file.getParentFile().isDirectory()&&!file.getParentFile().mkdirs())throw new IOException("索引目录不可写");
-            JSONObject document=new JSONObject().put("version",1).put("entries",state.entries);
+            JSONObject document=new JSONObject().put("version",2).put("entries",state.entries);
             try(Writer out=Files.newBufferedWriter(temp.toPath(),StandardCharsets.UTF_8)){out.write(document.toString());}
             try{Files.move(temp.toPath(),file.toPath(),StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);}
             catch(AtomicMoveNotSupportedException unsupported){Files.move(temp.toPath(),file.toPath(),StandardCopyOption.REPLACE_EXISTING);}
@@ -85,13 +85,16 @@ final class WorkflowMetadataIndex {
     private static JSONObject entry(File file,WorkflowProfile value){
         try{return new JSONObject().put("modified",file.lastModified()).put("size",file.length()).put("profile",
                 new JSONObject().put("id",value.id).put("name",value.name).put("folder_id",value.folderId)
-                        .put("favorite",value.favorite).put("created_at",value.createdAt).put("updated_at",value.updatedAt));}
+                        .put("favorite",value.favorite).put("created_at",value.createdAt).put("updated_at",value.updatedAt)
+                        .put("collection_review",value.metadataOnly?value.collectionReviewNeeded:
+                                value.isCollection()&&value.collectionDetectionVersion!=WorkflowVariants.DETECTION_VERSION));}
         catch(Exception error){throw new IllegalStateException(error);}
     }
     private static WorkflowProfile profile(JSONObject value){
         if(value==null)return null;
         WorkflowProfile profile=new WorkflowProfile(value.optString("id"),value.optString("name"),"{}",null,
                 value.optBoolean("favorite"),value.optLong("created_at"),value.optLong("updated_at"),new JSONObject());
-        profile.folderId=value.optString("folder_id","");profile.metadataOnly=true;return profile;
+        profile.folderId=value.optString("folder_id","");profile.metadataOnly=true;
+        profile.collectionReviewNeeded=value.optBoolean("collection_review");return profile;
     }
 }

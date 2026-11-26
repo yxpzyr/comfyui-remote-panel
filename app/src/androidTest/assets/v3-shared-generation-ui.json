@@ -1,0 +1,105 @@
+{
+  "nodes": [
+    {
+      "id": 1,
+      "type": "KSamplerSimple",
+      "pos": [
+        30,
+        30
+      ],
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            1,
+            2
+          ]
+        }
+      ],
+      "widgets_values": [
+        123
+      ]
+    },
+    {
+      "id": 10,
+      "type": "SaveImage",
+      "pos": [
+        100,
+        100
+      ],
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 1
+        }
+      ],
+      "outputs": [],
+      "widgets_values": [
+        "main"
+      ]
+    },
+    {
+      "id": 11,
+      "type": "SaveImage",
+      "pos": [
+        600,
+        100
+      ],
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 2
+        }
+      ],
+      "outputs": [],
+      "widgets_values": [
+        "check"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      10,
+      0,
+      "IMAGE"
+    ],
+    [
+      2,
+      1,
+      0,
+      11,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [
+    {
+      "title": "材质与特征保护",
+      "bounding": [
+        0,
+        0,
+        400,
+        400
+      ]
+    },
+    {
+      "title": "完整输出与检查图",
+      "bounding": [
+        500,
+        0,
+        400,
+        400
+      ]
+    }
+  ]
+}

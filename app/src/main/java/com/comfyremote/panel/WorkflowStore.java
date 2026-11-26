@@ -103,6 +103,7 @@ public final class WorkflowStore {
         String folder = "";
         long created = 1L, updated = 1L;
         boolean favorite = false;
+        int detectionVersion=0,variantCount=0;
         try (JsonReader r = new JsonReader(
                 new InputStreamReader(Files.newInputStream(file.toPath()), StandardCharsets.UTF_8))) {
             r.beginObject();
@@ -115,6 +116,10 @@ public final class WorkflowStore {
                     case "favorite": favorite = r.peek() == JsonToken.BOOLEAN ? r.nextBoolean() : skipBoolean(r); break;
                     case "created_at": created = readLongOr(r, created); break;
                     case "updated_at": updated = readLongOr(r, updated); break;
+                    case "collection_detection_version": detectionVersion=(int)readLongOr(r,0);break;
+                    case "variants":
+                        if(r.peek()==JsonToken.BEGIN_ARRAY){r.beginArray();while(r.hasNext()){r.skipValue();variantCount++;}r.endArray();}
+                        else r.skipValue();break;
                     default: r.skipValue(); break;
                 }
             }
@@ -125,6 +130,7 @@ public final class WorkflowStore {
                     favorite, created, updated, new JSONObject());
             p.folderId = folder == null ? "" : folder;
             p.metadataOnly = true;
+            p.collectionReviewNeeded=variantCount>=2&&detectionVersion!=WorkflowVariants.DETECTION_VERSION;
             return p;
         } catch (Exception e) {
             android.util.Log.e("WorkflowStore", "读取工作流列表元数据失败: " + file.getName(), e);
@@ -185,6 +191,20 @@ public final class WorkflowStore {
         synchronized (LOCK) {
             return readFull(dir(context), id);
         }
+    }
+
+    static WorkflowProfile open(Context context,String id,String server)throws Exception{
+        File source=new File(dir(context),id+".json");WorkflowProfile profile;long modified,size;
+        synchronized(LOCK){profile=readFull(dir(context),id);modified=source.lastModified();size=source.length();}
+        if(profile==null||!profile.isCollection()||profile.uiJson==null||profile.collectionDetectionVersion==WorkflowVariants.DETECTION_VERSION)return profile;
+        WorkflowCollectionRepair.repair(profile,server);
+        synchronized(LOCK){
+            if(source.lastModified()!=modified||source.length()!=size)throw new IllegalStateException("工作流刚被更新，请重新选择；原文件已保留");
+            File backups=new File(dir(context),"backup_before_3_0beta");
+            if(!backups.isDirectory()&&!backups.mkdirs())throw new IllegalStateException("工作流备份失败，未执行升级");
+            File backup=new File(backups,source.getName());if(!backup.exists())Files.copy(source.toPath(),backup.toPath());
+            writeProfile(dir(context),profile);
+        }return profile;
     }
 
     public static void save(Context context, List<WorkflowProfile> profiles) {

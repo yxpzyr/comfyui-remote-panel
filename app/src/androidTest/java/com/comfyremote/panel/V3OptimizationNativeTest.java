@@ -101,4 +101,40 @@ public class V3OptimizationNativeTest {
             JobStore.updateStatus(app(),j.localId,JobRecord.CANCELLED,"模拟器验证结束",0);
         }
     }
+    private JSONObject fixture(String name)throws Exception{
+        try(InputStream in=inst().getContext().getAssets().open("v3-shared-generation-"+name+".json")){
+            ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] buffer=new byte[4096];int n;while((n=in.read(buffer))>=0)out.write(buffer,0,n);
+            return new JSONObject(out.toString("UTF-8"));
+        }
+    }
+    @Test public void oldCollectionOpensAsOneWorkflowAndKeepsItsSavedSeed()throws Exception{
+        String previous=WorkflowStore.getActiveId(app()),previousServer=app().getSharedPreferences("comfy_remote",0).getString("server","8188");
+        JSONObject schema=fixture("schema");
+        try(MockWebServer server=new MockWebServer()){
+            server.setDispatcher(new Dispatcher(){public MockResponse dispatch(RecordedRequest request){
+                return new MockResponse().setBody(request.getPath().equals("/object_info")?schema.toString():"{}");
+            }});server.start();WorkflowUiConverter.clearObjectInfoCache();String base=server.url("/").toString();
+            app().getSharedPreferences("comfy_remote",0).edit().putString("server",base).commit();
+            WorkflowProfile p=WorkflowProfile.create("旧版误拆工作流验证",new JSONObject(),fixture("ui"));JSONArray variants=new JSONArray();
+            for(int i=0;i<2;i++)variants.put(new JSONObject().put("id","group:"+i).put("group_index",i).put("outputs",new JSONArray().put(""+(10+i))));
+            p.initializeCollection(variants,"group:0");p.collectionDetectionVersion=0;p.overrides.put(WorkflowProfile.overrideKey("1","seed"),333);
+            WorkflowStore.upsert(app(),p);WorkflowStore.setActiveId(app(),p.id);
+            MainActivity activity=(MainActivity)inst().startActivitySync(new Intent(app(),MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            try{
+                AtomicBoolean complete=new AtomicBoolean();long deadline=SystemClock.elapsedRealtime()+15000;
+                while(!complete.get()&&SystemClock.elapsedRealtime()<deadline){inst().runOnMainSync(()->{try{
+                    WorkflowProfile active=(WorkflowProfile)field(activity,"activeProfile");complete.set(active!=null&&active.id.equals(p.id)&&!active.isCollection());
+                }catch(Exception e){throw new RuntimeException(e);}});if(!complete.get())Thread.sleep(50);}
+                assertTrue("old split workflow repaired on open",complete.get());inst().waitForIdleSync();
+                inst().runOnMainSync(()->{try{
+                    WorkflowProfile active=(WorkflowProfile)field(activity,"activeProfile");assertTrue(active.promptObject().has("10"));assertTrue(active.promptObject().has("11"));
+                    assertEquals(333,active.overrides.getInt(WorkflowProfile.overrideKey("1","seed")));
+                    assertEquals(android.view.View.GONE,((Button)field(activity,"variantButton")).getVisibility());
+                }catch(Exception e){throw new RuntimeException(e);}});
+                assertTrue(new File(app().getFilesDir(),"workflows_v18/backup_before_3_0beta/"+p.id+".json").isFile());
+                Bitmap image=inst().getUiAutomation().takeScreenshot();if(image!=null){evidence("v3-repaired-single-workflow.png",image);image.recycle();}
+                android.util.Log.i("V3Validation","collection_repair=true full_outputs=2 saved_seed=333 backup=true");
+            }finally{inst().runOnMainSync(activity::finish);}
+        }finally{WorkflowStore.setActiveId(app(),previous);app().getSharedPreferences("comfy_remote",0).edit().putString("server",previousServer).commit();}
+    }
 }

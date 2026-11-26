@@ -1,0 +1,36 @@
+{
+  "KSamplerSimple": {
+    "input": {
+      "required": {
+        "seed": [
+          "INT",
+          {
+            "default": 123,
+            "min": 0,
+            "max": 10000
+          }
+        ]
+      }
+    },
+    "output": [
+      "IMAGE"
+    ]
+  },
+  "SaveImage": {
+    "input": {
+      "required": {
+        "images": [
+          "IMAGE"
+        ],
+        "filename_prefix": [
+          "STRING",
+          {
+            "default": "output"
+          }
+        ]
+      }
+    },
+    "output_node": true,
+    "output": []
+  }
+}
