@@ -80,6 +80,7 @@ public class MainActivity extends Activity {
     private volatile int libraryLoadGeneration;
     private boolean workflowLoading;
     private int connectionRequestGeneration;
+    private String connectedServer="";
     private final ExecutorService workflowPool=Executors.newSingleThreadExecutor();
 
     private final List<ImageBinding> imageBindings = new ArrayList<>();
@@ -2071,6 +2072,7 @@ public class MainActivity extends Activity {
 
     private void refreshParameterMetadataAsync(boolean userInitiated) {
         if (activeProfile == null) { if (userInitiated) toast("请先选择工作流"); return; }
+        if(!userInitiated&&!hasConfirmedConnection())return;
         if (parameterRefreshInFlight) { if (userInitiated) toast("正在检测参数节点…"); return; }
         final String profileId = activeProfile.id;
         final String server = currentServer();
@@ -2169,7 +2171,7 @@ public class MainActivity extends Activity {
                     refreshSubmitEnabled();
                 });
             }
-            TextView verified = text(activeProfile.outputNodesVerified ? "✓ 已根据当前 ComfyUI 节点定义确认输出点" : "当前为本地识别结果；App 会尝试连接 ComfyUI 进一步确认。", 11, false);
+            TextView verified = text(activeProfile.outputNodesVerified ? "✓ 已根据当前 ComfyUI 节点定义确认输出点" : "当前为本地识别结果；连接成功后可进一步确认输出节点。", 11, false);
             verified.setTextColor(activeProfile.outputNodesVerified ? ThemeManager.success(this) : ThemeManager.warning(this));
             outputSelectorList.addView(verified);
         }
@@ -2193,6 +2195,7 @@ public class MainActivity extends Activity {
 
     private void refreshOutputMetadataAsync(boolean userInitiated) {
         if (activeProfile == null) { if (userInitiated) toast("请先选择工作流"); return; }
+        if(!userInitiated&&!hasConfirmedConnection())return;
         final String profileId = activeProfile.id;
         final String variantAtStart = activeProfile.activeVariantId;
         if (!outputRefreshInFlight.add(profileId)) { if (userInitiated) toast("正在检测输出节点…"); return; }
@@ -2887,6 +2890,10 @@ public class MainActivity extends Activity {
         return WorkflowUiConverter.getObjectInfoCached(server);
     }
 
+    private boolean hasConfirmedConnection(){
+        return !connectedServer.isEmpty()&&connectedServer.equals(ComfyApiClient.normalizeBase(currentServer()));
+    }
+
     private void testConnection() {
         saveAddress();
         final String server=currentServer();final int request=++connectionRequestGeneration;
@@ -2897,13 +2904,17 @@ public class MainActivity extends Activity {
                 new ComfyApiClient(server).testConnection();
                 runOnUiThread(() -> {
                     if(isDestroyed()||request!=connectionRequestGeneration||!server.equals(currentServer()))return;
+                    connectedServer=ComfyApiClient.normalizeBase(server);
                     connectionState.setText("● 已连接  " + ComfyApiClient.normalizeBase(server));
                     connectionState.setTextColor(ThemeManager.success(this));
+                    refreshOutputMetadataAsync(false);
+                    if(advancedExpanded)refreshParameterMetadataAsync(false);
                     toast("ComfyUI 连接成功");
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
                     if(isDestroyed()||request!=connectionRequestGeneration||!server.equals(currentServer()))return;
+                    connectedServer="";
                     connectionState.setText("● 连接失败");
                     connectionState.setTextColor(ThemeManager.error(this));
                     showError("连接失败", e);
