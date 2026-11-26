@@ -206,6 +206,9 @@ public final class GenerationManager {
                 long now=android.os.SystemClock.elapsedRealtime();Long previous=LAST_RECEIPT_CHECK.get(localId);
                 if(previous!=null&&now-previous<60000)return;
                 LAST_RECEIPT_CHECK.put(localId,now);
+                if(safe(job.clientId).isEmpty()){
+                    update(app,localId,JobRecord.SUBMISSION_UNKNOWN,"旧版本未保存回执标识，请在电脑确认任务；本任务不会自动重发",-1);return;
+                }
                 update(app,localId,JobRecord.SUBMISSION_UNKNOWN,"正在核对服务器回执；不会自动重发",-1);
                 String id=new ComfyApiClient(serverFor(job,"8188")).findSubmissionReceipt(job.clientId);
                 JobRecord latest=JobStore.find(app,localId);if(latest==null||latest.isTerminal())return;

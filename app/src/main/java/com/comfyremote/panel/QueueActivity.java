@@ -262,11 +262,6 @@ public class QueueActivity extends Activity {
 
         TextView message = text(job.message == null ? "" : job.message, 12, false);
         message.setPadding(0, dp(5), 0, 0);
-        if(JobRecord.SUBMISSION_UNKNOWN.equals(job.status)){
-            Button check=button("核对提交回执");
-            check.setOnClickListener(v->GenerationManager.checkSubmissionReceipt(this,job.localId));
-            card.addView(check,new LinearLayout.LayoutParams(-1,dp(48)));
-        }
         if (JobRecord.FAILED.equals(job.status)) {
             message.setMaxLines(5);
             message.setEllipsize(TextUtils.TruncateAt.END);
@@ -320,6 +315,19 @@ public class QueueActivity extends Activity {
             card.addView(hint);
         }
 
+        if(JobRecord.SUBMISSION_UNKNOWN.equals(job.status)){
+            Button check=button("核对提交回执");
+            check.setOnClickListener(v->GenerationManager.checkSubmissionReceipt(this,job.localId));
+            card.addView(check,new LinearLayout.LayoutParams(-1,dp(48)));
+            Button forget=button("结束本地跟踪");
+            forget.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("结束本地跟踪？")
+                    .setMessage("仅结束手机上的回执核对，不会停止服务器任务。请先在电脑确认任务状态，避免重复生成。")
+                    .setNegativeButton("继续核对",null).setPositiveButton("结束跟踪",(d,which)->{
+                        JobStore.updateStatus(this,job.localId,JobRecord.CANCELLED,"已结束本地跟踪；服务器任务状态请在电脑确认",0);
+                        renderJobs();
+                    }).show());
+            card.addView(forget,new LinearLayout.LayoutParams(-1,dp(48)));
+        }
         if (JobRecord.FAILED.equals(job.status)) {
             Button details = button("📋 查看 / 复制完整错误");
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(

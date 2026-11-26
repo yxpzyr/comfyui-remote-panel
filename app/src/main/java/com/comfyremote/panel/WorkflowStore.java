@@ -120,6 +120,7 @@ public final class WorkflowStore {
             }
             r.endObject();
             if (id == null || id.isEmpty()) id = fileId;
+            if(!id.matches("[A-Za-z0-9_-]+")||!id.equals(fileId))throw new IllegalStateException("工作流标识与文件不符，原文件已保留");
             WorkflowProfile p = new WorkflowProfile(id, name, "{}", null,
                     favorite, created, updated, new JSONObject());
             p.folderId = folder == null ? "" : folder;
@@ -156,6 +157,7 @@ public final class WorkflowStore {
 
     private static WorkflowProfile readFull(File directory, String id) {
         if (id == null || id.isEmpty()) return null;
+        if(!id.matches("[A-Za-z0-9_-]+"))throw new IllegalArgumentException("工作流标识无效");
         File file = new File(directory, id + ".json");
         if (!file.isFile()) return null;
         try {
@@ -214,6 +216,7 @@ public final class WorkflowStore {
     public static void delete(Context context, String id) {
         synchronized (LOCK) {
             if (id != null && !id.isEmpty()) {
+                if(!id.matches("[A-Za-z0-9_-]+"))throw new IllegalArgumentException("工作流标识无效");
                 File file=new File(dir(context), id + ".json");
                 if(file.exists()&&!file.delete())throw new IllegalStateException("工作流文件无法删除，原记录已保留");
                 WorkflowMetadataIndex.remove(dir(context), file.getName());

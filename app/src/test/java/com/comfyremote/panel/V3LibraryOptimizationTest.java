@@ -116,7 +116,7 @@ public class V3LibraryOptimizationTest {
         assertFalse((boolean)equal.invoke(null,9007199254740992L,9007199254740993L));
         assertTrue((boolean)equal.invoke(null,20,20L));
         WorkflowProfile p=WorkflowProfile.create("有限数值",new JSONObject().put("1",new JSONObject().put("class_type","Sampler")
-                .put("inputs",new JSONObject().put("cfg",7.0))),null);
+                .put("inputs",new JSONObject().put("cfg",7.5))),null);
         WorkflowStore.upsert(app(),p);WorkflowStore.setActiveId(app(),p.id);
         ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();
         try{
