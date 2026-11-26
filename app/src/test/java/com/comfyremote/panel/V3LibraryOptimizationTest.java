@@ -18,6 +18,8 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 public class V3LibraryOptimizationTest {
     private Application app(){return RuntimeEnvironment.getApplication();}
+    private static String read(java.nio.file.Path path)throws Exception{return new String(Files.readAllBytes(path),java.nio.charset.StandardCharsets.UTF_8);}
+    private static void write(java.nio.file.Path path,String value)throws Exception{Files.write(path,value.getBytes(java.nio.charset.StandardCharsets.UTF_8));}
     private Object field(Object target,String name)throws Exception{
         java.lang.reflect.Field f=target.getClass().getDeclaredField(name);f.setAccessible(true);return f.get(target);
     }
@@ -33,11 +35,11 @@ public class V3LibraryOptimizationTest {
         String padding="x".repeat(65536);
         for(int i=0;i<600;i++){
             WorkflowProfile p=WorkflowProfile.create("大型工作流 "+i,new JSONObject(),null);p.id="item-"+i;p.uiJson=padding;
-            Files.writeString(new File(directory,p.id+".json").toPath(),p.toJson().toString());
+            write(new File(directory,p.id+".json").toPath(),p.toJson().toString());
         }
         AtomicInteger reads=new AtomicInteger();
         java.util.function.Function<File,WorkflowProfile> reader=file->{try{
-            reads.incrementAndGet();WorkflowProfile p=WorkflowProfile.fromJson(new JSONObject(Files.readString(file.toPath())));
+            reads.incrementAndGet();WorkflowProfile p=WorkflowProfile.fromJson(new JSONObject(read(file.toPath())));
             p.promptJson="{}";p.uiJson=null;p.metadataOnly=true;return p;
         }catch(Exception e){throw new IllegalStateException(e);}};
         long cold=System.nanoTime();assertEquals(600,WorkflowMetadataIndex.load(directory,reader).size());cold=System.nanoTime()-cold;
@@ -45,13 +47,13 @@ public class V3LibraryOptimizationTest {
         long warm=System.nanoTime();List<WorkflowProfile> rows=WorkflowMetadataIndex.load(directory,reader);warm=System.nanoTime()-warm;
         assertEquals(600,rows.size());assertEquals(0,reads.get());
         for(WorkflowProfile p:rows){assertTrue(p.metadataOnly);assertNull(p.uiJson);assertEquals("{}",p.promptJson);}
-        File changed=new File(directory,"item-17.json");JSONObject json=new JSONObject(Files.readString(changed.toPath()));
-        json.put("name","修改后的工作流名称");Files.writeString(changed.toPath(),json.toString());
+        File changed=new File(directory,"item-17.json");JSONObject json=new JSONObject(read(changed.toPath()));
+        json.put("name","修改后的工作流名称");write(changed.toPath(),json.toString());
         assertEquals(600,WorkflowMetadataIndex.load(directory,reader).size());assertEquals(1,reads.get());
         assertTrue(new File(directory,"item-12.json").delete());
         assertEquals(599,WorkflowMetadataIndex.load(directory,reader).size());assertEquals(1,reads.get());
         // A damaged cache can be thrown away; every source workflow is still readable.
-        File index=new File(directory,"index_v3/library.json");Files.writeString(index.toPath(),"broken");reads.set(0);
+        File index=new File(directory,"index_v3/library.json");write(index.toPath(),"broken");reads.set(0);
         assertFalse(WorkflowMetadataIndex.ready(directory));assertEquals(599,WorkflowMetadataIndex.load(directory,reader).size());
         assertEquals(599,reads.get());
         System.out.println("V3_INDEX files=600 graph_bytes=39321600 cold_ms="+cold/1000000+" warm_ms="+warm/1000000+" warm_graph_reads=0");
@@ -62,7 +64,7 @@ public class V3LibraryOptimizationTest {
         WorkflowStore.upsert(app(),original);WorkflowStore.upsert(app(),other);
         File dir=new File(app().getFilesDir(),"workflows_v18");File source=new File(dir,original.id+".json");
         byte[] before=Files.readAllBytes(source.toPath());File blocker=new File(dir,original.id+".json.tmp");assertTrue(blocker.mkdir());
-        Files.writeString(new File(blocker,"occupied").toPath(),"block");
+        write(new File(blocker,"occupied").toPath(),"block");
         original.name="保存不应成功";
         try{WorkflowStore.save(app(),Collections.singletonList(original));fail("must report write failure");}
         catch(IllegalStateException expected){assertTrue(expected.getMessage().contains("保存失败"));}
