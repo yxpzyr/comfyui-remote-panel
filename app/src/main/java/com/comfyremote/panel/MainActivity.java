@@ -426,6 +426,9 @@ public class MainActivity extends Activity {
     private void reloadLibraryInBackground(Bundle saved) {
         final int request=++libraryLoadGeneration;
         final String expected=WorkflowStore.getActiveId(this);
+        final WorkflowProfile beforeLoad=activeProfile;
+        final String beforeVariant=beforeLoad==null?"":safe(beforeLoad.activeVariantId);
+        final long beforeUpdated=beforeLoad==null?0:beforeLoad.updatedAt;
         if(profiles.isEmpty())workflowState.setText("正在读取工作流…");
         pool.execute(()->{
             try{
@@ -436,6 +439,8 @@ public class MainActivity extends Activity {
                 final WorkflowProfile next=loadFullProfileOrNull(summary);
                 runOnUiThread(()->{
                     if(isDestroyed()||request!=libraryLoadGeneration||!expected.equals(WorkflowStore.getActiveId(this)))return;
+                    if(activeProfile!=beforeLoad || (activeProfile!=null&&
+                            (!beforeVariant.equals(safe(activeProfile.activeVariantId))||beforeUpdated!=activeProfile.updatedAt)))return;
                     String previous=activeProfile==null?"":activeProfile.id;
                     profiles=nextProfiles;workflowFolders=nextFolders;activeProfile=next;normalizeFolderFilter();
                     if(next!=null)WorkflowStore.setActiveId(this,next.id);
@@ -2272,7 +2277,8 @@ public class MainActivity extends Activity {
         if (a == b) return true;
         if (a == null || b == null || a == JSONObject.NULL || b == JSONObject.NULL) return false;
         if (a instanceof Number && b instanceof Number) {
-            return Math.abs(((Number) a).doubleValue() - ((Number) b).doubleValue()) < 1e-9;
+            try{return new java.math.BigDecimal(a.toString()).compareTo(new java.math.BigDecimal(b.toString()))==0;}
+            catch(NumberFormatException invalid){return false;}
         }
         return String.valueOf(a).equals(String.valueOf(b));
     }

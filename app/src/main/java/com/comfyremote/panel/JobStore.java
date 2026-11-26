@@ -173,6 +173,7 @@ public final class JobStore {
 
     public static void markSubmitting(Context context, String localId) {
         update(context, localId, j -> {
+            if(j.isTerminal()||"attempted".equals(j.submissionPhase))return;
             j.status = JobRecord.SUBMITTING;
             j.submissionPhase = "preparing";
             j.message = "正在提交到 ComfyUI";
@@ -230,6 +231,7 @@ public final class JobStore {
 
     public static void updateStatus(Context context, String localId, String status, String message, int outputCount) {
         update(context, localId, j -> {
+            if(j.isTerminal()&&!j.status.equals(status))return;
             j.status = status;
             j.message = message == null ? "" : message;
             if (outputCount >= 0) j.outputCount = outputCount;

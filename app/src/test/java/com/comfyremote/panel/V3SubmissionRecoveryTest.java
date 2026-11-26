@@ -74,4 +74,11 @@ public class V3SubmissionRecoveryTest {
             assertTrue(JobStore.find(app(),j.localId).message.contains("bad seed"));assertEquals(1,server.getRequestCount());
         }
     }
+    @Test public void lateNetworkCallbacksCannotResurrectCancelledOrCompletedTasks()throws Exception{
+        JobRecord j=JobRecord.create("wf","cancelled","","","8188","{}");JobStore.add(app(),j);
+        JobStore.updateStatus(app(),j.localId,JobRecord.CANCELLED,"cancelled",0);
+        JobStore.markSubmitting(app(),j.localId);
+        JobStore.updateStatus(app(),j.localId,JobRecord.SUBMISSION_UNKNOWN,"late response",0);
+        assertEquals(JobRecord.CANCELLED,JobStore.find(app(),j.localId).status);
+    }
 }

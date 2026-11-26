@@ -241,7 +241,8 @@ public final class H3DirectorActivity extends Activity {
         if (pendingRole == null) { toast("图片位置已失效，请重新点选择"); return; }
         try {
             Uri uri = data.getData();
-            try { getContentResolver().takePersistableUriPermission(uri, data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION); }
+            try { if((data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION)!=0)
+                getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION); }
             catch (SecurityException ignored) {}
             JSONObject slot = H3DirectorPlan.imageSlot(draft, pendingShot, pendingRole, pendingIndex);
             H3DirectorPlan.selectImage(slot, uri.toString()); saveDraft(); render();

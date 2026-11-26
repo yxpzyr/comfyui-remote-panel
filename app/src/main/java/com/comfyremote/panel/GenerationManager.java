@@ -286,7 +286,7 @@ public final class GenerationManager {
                 MONITORING.remove(promptId);
                 NODE_EXECUTED_AT.remove(promptId);
                 JobRecord j = JobStore.find(app, localId);
-                if (j == null || j.isTerminal()) closeSocket(promptId);
+                if (j == null || j.isTerminal()) {closeSocket(promptId);LAST_SOCKET_ATTEMPT.remove(promptId);}
             }
         });
     }

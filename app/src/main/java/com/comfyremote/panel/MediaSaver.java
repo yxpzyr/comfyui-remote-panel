@@ -123,7 +123,7 @@ public final class MediaSaver {
     }
 
     public static String guessMime(String name) {
-        String lower = name == null ? "" : name.toLowerCase();
+        String lower = name == null ? "" : name.toLowerCase(java.util.Locale.ROOT);
         if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
         if (lower.endsWith(".webp")) return "image/webp";
         if (lower.endsWith(".mp4") || lower.endsWith(".m4v")) return "video/mp4";

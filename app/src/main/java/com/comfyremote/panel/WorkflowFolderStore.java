@@ -98,6 +98,6 @@ public final class WorkflowFolderStore {
     }
 
     private static void sort(List<WorkflowFolder> list) {
-        list.sort(Comparator.comparing((WorkflowFolder f) -> f.name.toLowerCase()));
+        list.sort(Comparator.comparing((WorkflowFolder f) -> f.name.toLowerCase(java.util.Locale.ROOT)));
     }
 }

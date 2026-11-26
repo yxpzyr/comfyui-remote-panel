@@ -251,12 +251,12 @@ public class WorkflowLibraryActivity extends Activity {
             try{
                 List<WorkflowFolder> nextFolders=WorkflowFolderStore.load(this);
                 List<WorkflowProfile> nextProfiles=WorkflowStore.loadSummaries(this);
-                runOnUiThread(()->{
+                postIfAlive(()->{
                     if(isDestroyed()||request!=loadGeneration)return;
                     folders=nextFolders;profiles=nextProfiles;loaded=true;
                     renderLoaded();
                 });
-            }catch(Exception error){runOnUiThread(()->{
+            }catch(Exception error){postIfAlive(()->{
                 if(!isDestroyed()&&request==loadGeneration)showError("读取工作流库失败",error);
             });}
         });
@@ -331,11 +331,12 @@ public class WorkflowLibraryActivity extends Activity {
         }
     }
 
+    private void postIfAlive(Runnable action){ super.runOnUiThread(()->{if(!isFinishing()&&!isDestroyed())action.run();}); }
     private void mutateLibrary(Runnable mutation){
         status.setText("正在保存…");
         pool.execute(()->{
-            try{mutation.run();runOnUiThread(()->{if(!isDestroyed()){status.setText("");render();}});}
-            catch(Exception error){runOnUiThread(()->{if(!isDestroyed()){status.setText("保存失败，原数据已保留");showError("保存工作流库失败",error);render();}});}
+            try{mutation.run();postIfAlive(()->{if(!isDestroyed()){status.setText("");render();}});}
+            catch(Exception error){postIfAlive(()->{if(!isDestroyed()){status.setText("保存失败，原数据已保留");showError("保存工作流库失败",error);render();}});}
         });
     }
 
@@ -440,13 +441,13 @@ public class WorkflowLibraryActivity extends Activity {
                 if (jsonFiles.isEmpty()) throw new Exception("所选文件夹里没有找到 JSON 工作流");
                 String sourceName = WorkflowImporter.treeDisplayName(this, treeUri);
                 WorkflowFolder folder = WorkflowFolderStore.create(this, sourceName);
-                runOnUiThread(() -> status.setText("已找到 " + jsonFiles.size() + " 个 JSON，正在导入到 “" + folder.name + "”…"));
+                postIfAlive(() -> status.setText("已找到 " + jsonFiles.size() + " 个 JSON，正在导入到 “" + folder.name + "”…"));
                 ImportResult result = importBatch(jsonFiles, folder.id, server);
                 if (result.success == 0) WorkflowFolderStore.delete(this, folder.id);
-                runOnUiThread(() -> finishImport(result,
+                postIfAlive(() -> finishImport(result,
                         result.success > 0 ? "已从文件夹导入到：" + folder.name : "文件夹导入失败"));
             } catch (Exception e) {
-                runOnUiThread(() -> {
+                postIfAlive(() -> {
                     importing = false;
                     render();
                     showError("文件夹导入失败", e);
@@ -461,7 +462,7 @@ public class WorkflowLibraryActivity extends Activity {
         final String server = currentServer();
         pool.submit(() -> {
             ImportResult result = importBatch(uris, folderId == null ? "" : folderId, server);
-            runOnUiThread(() -> finishImport(result, successPrefix));
+            postIfAlive(() -> finishImport(result, successPrefix));
         });
     }
 
@@ -474,7 +475,7 @@ public class WorkflowLibraryActivity extends Activity {
         for (int i = 0; i < uris.size(); i++) {
             Uri uri = uris.get(i);
             int done = i + 1;
-            runOnUiThread(() -> status.setText("正在导入 " + done + " / " + uris.size() + " · " + WorkflowImporter.displayName(this, uri)));
+            postIfAlive(() -> status.setText("正在导入 " + done + " / " + uris.size() + " · " + WorkflowImporter.displayName(this, uri)));
             try {
                 WorkflowProfile profile = WorkflowImporter.importProfile(this, uri, folderId, latest, objectInfo, server);
                 latest.add(profile);
@@ -572,7 +573,7 @@ public class WorkflowLibraryActivity extends Activity {
                         WorkflowStore.upsert(this, p);
                     }
                     WorkflowFolderStore.delete(this, folder.id);
-                    runOnUiThread(()->{if(!isDestroyed()){
+                    postIfAlive(()->{if(!isDestroyed()){
                         if (folder.id.equals(currentFolderId)) currentFolderId = null;
                         toast("文件夹已删除，工作流已移到未分类");
                     }});
@@ -612,7 +613,7 @@ public class WorkflowLibraryActivity extends Activity {
                     String unique = WorkflowStore.uniqueName(WorkflowStore.loadSummaries(this), desired, folderId, p.id);
                     p.name = unique;
                     WorkflowStore.upsert(this, p);
-                    if (!unique.equals(desired)) runOnUiThread(()->{if(!isDestroyed())toast("同一文件夹存在同名工作流，已自动改名");});
+                    if (!unique.equals(desired)) postIfAlive(()->{if(!isDestroyed())toast("同一文件夹存在同名工作流，已自动改名");});
                     });
                 }).show();
     }
@@ -632,7 +633,7 @@ public class WorkflowLibraryActivity extends Activity {
                     p.name = WorkflowStore.uniqueName(latest, p.name, target, p.id);
                     p.folderId = target;
                     WorkflowStore.upsert(this, p);
-                    runOnUiThread(()->{if(!isDestroyed())toast("已移动到 "+destinationLabel);});
+                    postIfAlive(()->{if(!isDestroyed())toast("已移动到 "+destinationLabel);});
                     });
                 })
                 .setNegativeButton("取消", null)

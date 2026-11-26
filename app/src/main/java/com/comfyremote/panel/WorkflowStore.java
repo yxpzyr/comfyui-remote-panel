@@ -323,6 +323,6 @@ public final class WorkflowStore {
         Collections.sort(list, Comparator
                 .comparing((WorkflowProfile p) -> !p.favorite)
                 .thenComparing(Comparator.comparingLong((WorkflowProfile p) -> p.updatedAt).reversed())
-                .thenComparing(p -> p.name.toLowerCase()));
+                .thenComparing(p -> p.name.toLowerCase(java.util.Locale.ROOT)));
     }
 }

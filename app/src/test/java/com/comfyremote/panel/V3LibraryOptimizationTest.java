@@ -111,4 +111,19 @@ public class V3LibraryOptimizationTest {
             assertEquals(2,materialized);System.out.println("V3_PARAMETERS fields=320 initial_editors=0 expanded_editors="+materialized);
         }finally{c.pause().stop().destroy();}
     }
+    @Test public void adjacentLargeSeedsAreDifferentAndNonFiniteNumbersCannotBeSubmitted()throws Exception{
+        java.lang.reflect.Method equal=MainActivity.class.getDeclaredMethod("valuesEquivalent",Object.class,Object.class);equal.setAccessible(true);
+        assertFalse((boolean)equal.invoke(null,9007199254740992L,9007199254740993L));
+        assertTrue((boolean)equal.invoke(null,20,20L));
+        WorkflowProfile p=WorkflowProfile.create("有限数值",new JSONObject().put("1",new JSONObject().put("class_type","Sampler")
+                .put("inputs",new JSONObject().put("cfg",7.0))),null);
+        WorkflowStore.upsert(app(),p);WorkflowStore.setActiveId(app(),p.id);
+        ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();
+        try{
+            MainActivity a=c.get();((Map<String,Object>)field(a,"transientParameterValues")).put(WorkflowProfile.overrideKey("1","cfg"),"NaN");
+            Object b=((List<?>)field(a,"fieldBindings")).get(0);
+            try{call(a,"readFieldValue",new Class[]{b.getClass()},b);fail("NaN must be rejected");}
+            catch(java.lang.reflect.InvocationTargetException expected){assertTrue(expected.getCause().getMessage().contains("有限数值"));}
+        }finally{c.pause().stop().destroy();}
+    }
 }

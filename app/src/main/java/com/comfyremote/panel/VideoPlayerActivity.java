@@ -246,6 +246,7 @@ public class VideoPlayerActivity extends Activity {
         closing = true; ui.removeCallbacksAndMessages(null); stopSession();
         downloads.shutdown(); super.onDestroy();
     }
+    @android.annotation.TargetApi(33)
     private static final class Api33 {
         static void register(VideoPlayerActivity activity) {
             activity.getOnBackInvokedDispatcher().registerOnBackInvokedCallback(

@@ -237,7 +237,7 @@ public class ComfyApiClient {
         if (file == null || !file.isFile()) throw new Exception("蒙版图片文件不存在");
         String display = "mobile_" + System.currentTimeMillis() + "_" + sanitize(file.getName());
         String boundary = "----ComfyRemote" + UUID.randomUUID();
-        String lower = file.getName().toLowerCase();
+        String lower = file.getName().toLowerCase(java.util.Locale.ROOT);
         String mime = lower.endsWith(".png") ? "image/png" : lower.endsWith(".webp") ? "image/webp" : "image/jpeg";
 
         Exception last = null;
@@ -710,7 +710,7 @@ public class ComfyApiClient {
         JSONObject status = entry.optJSONObject("status");
         if (status == null) return false;
         if (status.optBoolean("completed", false)) return true;
-        String s = status.optString("status_str", "").toLowerCase();
+        String s = status.optString("status_str", "").toLowerCase(java.util.Locale.ROOT);
         return s.equals("success") || s.equals("completed") || s.equals("error");
     }
 
