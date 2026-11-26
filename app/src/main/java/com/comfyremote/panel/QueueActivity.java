@@ -262,6 +262,11 @@ public class QueueActivity extends Activity {
 
         TextView message = text(job.message == null ? "" : job.message, 12, false);
         message.setPadding(0, dp(5), 0, 0);
+        if(JobRecord.SUBMISSION_UNKNOWN.equals(job.status)){
+            Button check=button("核对提交回执");
+            check.setOnClickListener(v->GenerationManager.checkSubmissionReceipt(this,job.localId));
+            card.addView(check,new LinearLayout.LayoutParams(-1,dp(48)));
+        }
         if (JobRecord.FAILED.equals(job.status)) {
             message.setMaxLines(5);
             message.setEllipsize(TextUtils.TruncateAt.END);
@@ -542,6 +547,7 @@ public class QueueActivity extends Activity {
     private String statusLabel(String status) {
         if (JobRecord.LOCAL_QUEUED.equals(status)) return "本地等待";
         if (JobRecord.SUBMITTING.equals(status)) return "提交中";
+        if (JobRecord.SUBMISSION_UNKNOWN.equals(status)) return "回执待确认";
         if (JobRecord.UPLOADING.equals(status)) return "准备中";
         if (JobRecord.QUEUED.equals(status)) return "等待中";
         if (JobRecord.RUNNING.equals(status)) return "生成中";

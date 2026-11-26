@@ -174,9 +174,19 @@ public final class JobStore {
     public static void markSubmitting(Context context, String localId) {
         update(context, localId, j -> {
             j.status = JobRecord.SUBMITTING;
+            j.submissionPhase = "preparing";
             j.message = "正在提交到 ComfyUI";
             j.progressPercent = Math.max(j.progressPercent, 2);
         });
+    }
+
+    public static void markSubmissionAttempted(Context context,String localId,String clientId) {
+        synchronized(LOCK){
+            update(context,localId,j->{if(!j.isTerminal()){j.clientId=clientId;j.submissionPhase="attempted";}});
+            // Persist the receipt key before the non-idempotent POST can leave the device.
+            if(!context.getSharedPreferences(PREFS,Context.MODE_PRIVATE).edit().putString(KEY,cachedRaw).commit())
+                throw new IllegalStateException("提交记录未能保存，本次未发送");
+        }
     }
 
     public static void attachPrompt(Context context, String localId, String promptId) {

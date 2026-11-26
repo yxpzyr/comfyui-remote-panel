@@ -77,6 +77,7 @@ public class MainActivity extends Activity {
     private boolean variantSwitching = false;
     private volatile boolean workflowImporting = false;
     private boolean refreshWorkflowsOnResume = false;
+    private int libraryLoadGeneration;
 
     private final List<ImageBinding> imageBindings = new ArrayList<>();
     private final List<FieldBinding> fieldBindings = new ArrayList<>();
@@ -131,13 +132,13 @@ public class MainActivity extends Activity {
         workflowFolders = WorkflowFolderStore.load(this);
         workflowFolderFilter = prefs.getString(PREF_FOLDER_FILTER, FOLDER_ALL);
         normalizeFolderFilter();
-        profiles = WorkflowStore.loadSummaries(this);
-        resolveActiveProfile();
-        restoreUiSession(savedInstanceState);
+        boolean warmLibrary=WorkflowStore.isSummaryIndexReady(this);
+        if(warmLibrary){profiles=WorkflowStore.loadSummaries(this);resolveActiveProfile();restoreUiSession(savedInstanceState);}
         buildUi();
         rebuildWorkflowStrip();
         rebuildDynamicControls();
         mainScroll.post(() -> mainScroll.scrollTo(0, restoredScrollY));
+        if(!warmLibrary)reloadLibraryInBackground(savedInstanceState);
         GenerationManager.resumePending(this, currentServer());
         syncLatestCompletedOutput();
     }
@@ -156,19 +157,7 @@ public class MainActivity extends Activity {
         super.onResume();
         if (refreshWorkflowsOnResume) {
             refreshWorkflowsOnResume = false;
-            String previousProfileId = activeProfile == null ? "" : activeProfile.id;
-            workflowFolders = WorkflowFolderStore.load(this);
-            profiles = WorkflowStore.loadSummaries(this);
-            resolveActiveProfile();
-            String resumedProfileId = activeProfile == null ? "" : activeProfile.id;
-            if (!previousProfileId.equals(resumedProfileId)) {
-                transientParameterValues.clear();
-                expandedParameterNodes.clear();
-                parameterObjectInfo = null;
-                parameterMetadataProfileId = "";
-            }
-            rebuildWorkflowStrip();
-            rebuildDynamicControls();
+            reloadLibraryInBackground(null);
         }
         GenerationManager.resumePending(this, currentServer());
         refreshQueueButton();
@@ -188,6 +177,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         screenVisible = false;
+        libraryLoadGeneration++;
         outputLoadGeneration++;
         pool.shutdown(); batchPool.shutdown();
         super.onDestroy();
@@ -241,7 +231,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("V2.8.14 · H3 手机导演台", 13, false);
+        TextView subtitle = text("3.0beta · 工作流与媒体性能优化", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -431,6 +421,33 @@ public class MainActivity extends Activity {
         root.addView(tip);
         applyAdvancedVisibility();
         setContentView(mainScroll);
+    }
+
+    private void reloadLibraryInBackground(Bundle saved) {
+        final int request=++libraryLoadGeneration;
+        final String expected=WorkflowStore.getActiveId(this);
+        if(profiles.isEmpty())workflowState.setText("正在读取工作流…");
+        pool.execute(()->{
+            try{
+                List<WorkflowFolder> nextFolders=WorkflowFolderStore.load(this);
+                List<WorkflowProfile> nextProfiles=WorkflowStore.loadSummaries(this);
+                WorkflowProfile summary=WorkflowStore.find(nextProfiles,expected);
+                if(summary==null&&!nextProfiles.isEmpty())summary=nextProfiles.get(0);
+                final WorkflowProfile next=loadFullProfileOrNull(summary);
+                runOnUiThread(()->{
+                    if(isDestroyed()||request!=libraryLoadGeneration||!expected.equals(WorkflowStore.getActiveId(this)))return;
+                    String previous=activeProfile==null?"":activeProfile.id;
+                    profiles=nextProfiles;workflowFolders=nextFolders;activeProfile=next;normalizeFolderFilter();
+                    if(next!=null)WorkflowStore.setActiveId(this,next.id);
+                    if(!previous.equals(next==null?"":next.id)){
+                        transientParameterValues.clear();expandedParameterNodes.clear();parameterObjectInfo=null;parameterMetadataProfileId="";
+                    }
+                    if(saved!=null)restoreUiSession(saved);
+                    rebuildWorkflowStrip();rebuildDynamicControls();applyAdvancedVisibility();
+                    if(saved!=null)mainScroll.post(()->mainScroll.scrollTo(0,restoredScrollY));
+                });
+            }catch(Exception error){runOnUiThread(()->{if(!isDestroyed()&&request==libraryLoadGeneration)showError("读取工作流失败",error);});}
+        });
     }
 
     private void resolveActiveProfile() {
@@ -1818,12 +1835,19 @@ public class MainActivity extends Activity {
                 nodeBox.addView(content);
                 header.setOnClickListener(v -> {
                     boolean nowExpanded = content.getVisibility() != View.VISIBLE;
+                    if(nowExpanded&&content.getChildCount()==0){
+                        fieldBindings.removeIf(binding->binding.choice.nodeId.equals(first.nodeId));
+                        for(WorkflowUtils.FieldChoice f:nodeFields)addParameterField(content,f);
+                    }
                     content.setVisibility(nowExpanded ? View.VISIBLE : View.GONE);
                     if (nowExpanded) expandedParameterNodes.add(first.nodeId); else expandedParameterNodes.remove(first.nodeId);
                     header.setText((nowExpanded ? "▾ " : "▸ ") + first.nodeLabel() + "\n可调参数 " + nodeFields.size());
                 });
 
-                for (WorkflowUtils.FieldChoice f : nodeFields) addParameterField(content, f);
+                for (WorkflowUtils.FieldChoice f : nodeFields) {
+                    if(expanded)addParameterField(content,f);
+                    else {FieldBinding binding=new FieldBinding(f);binding.baselineValue=committedParameterValue(f);fieldBindings.add(binding);}
+                }
                 LinearLayout.LayoutParams nodeLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
                 nodeLp.setMargins(0, 0, 0, dp(8));
                 parameterList.addView(nodeBox, nodeLp);
@@ -1841,10 +1865,13 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void addParameterField(LinearLayout parent, WorkflowUtils.FieldChoice f) {
-        String key = WorkflowProfile.overrideKey(f.nodeId, f.inputName);
-        Object committed = activeProfile.overrides.has(key) ? activeProfile.overrides.opt(key) : f.value;
-        Object shown = transientParameterValues.containsKey(key) ? transientParameterValues.get(key) : committed;
+    private Object committedParameterValue(WorkflowUtils.FieldChoice f){
+        String key=WorkflowProfile.overrideKey(f.nodeId,f.inputName);
+        return activeProfile.overrides.has(key)?activeProfile.overrides.opt(key):f.value;
+    }
+    private Object shownParameterValue(WorkflowUtils.FieldChoice f){
+        String key=WorkflowProfile.overrideKey(f.nodeId,f.inputName);
+        Object shown=transientParameterValues.containsKey(key)?transientParameterValues.get(key):committedParameterValue(f);
         if (f.kind == WorkflowUtils.FieldChoice.COMBO && DynamicComboGuard.isDefinition(shown)) {
             Object restored = f.value;
             try {
@@ -1860,6 +1887,11 @@ public class MainActivity extends Activity {
             // Keep the repair temporary until the user explicitly saves parameter edits.
             transientParameterValues.put(key, restored);
         }
+        return shown;
+    }
+    private void addParameterField(LinearLayout parent, WorkflowUtils.FieldChoice f) {
+        Object committed=committedParameterValue(f);
+        Object shown=shownParameterValue(f);
         FieldBinding b = new FieldBinding(f);
         b.baselineValue = committed;
         b.initializing = true;
@@ -2184,7 +2216,16 @@ public class MainActivity extends Activity {
     private Object readFieldValue(FieldBinding b) throws Exception {
         WorkflowUtils.FieldChoice f = b.choice;
         Object value;
-        if (f.kind == WorkflowUtils.FieldChoice.BOOL) {
+        if(b.switchView==null&&b.spinnerView==null&&b.editView==null){
+            Object shown=shownParameterValue(f);
+            if(f.kind==WorkflowUtils.FieldChoice.INT)value=Long.parseLong(String.valueOf(shown).trim());
+            else if(f.kind==WorkflowUtils.FieldChoice.FLOAT)value=Double.parseDouble(String.valueOf(shown).trim());
+            else if(f.kind==WorkflowUtils.FieldChoice.BOOL)value=shown instanceof Boolean?shown:Boolean.parseBoolean(String.valueOf(shown));
+            else if(f.kind==WorkflowUtils.FieldChoice.COMBO&&!f.options.isEmpty()){
+                int index=f.options.indexOf(String.valueOf(shown));
+                value=index<0?shown:f.rawComboValueAt(index);
+            }else value=shown;
+        } else if (f.kind == WorkflowUtils.FieldChoice.BOOL) {
             value = b.switchView != null && b.switchView.isChecked();
         } else if (f.kind == WorkflowUtils.FieldChoice.COMBO && b.spinnerView != null) {
             value = f.rawComboValueAt(b.spinnerView.getSelectedItemPosition());
@@ -2204,6 +2245,7 @@ public class MainActivity extends Activity {
 
         if (value instanceof Number) {
             double n = ((Number) value).doubleValue();
+            if(!Double.isFinite(n))throw new Exception(f.nodeLabel()+" · "+f.inputName+" 需要有限数值");
             boolean autoSeed = f.kind == WorkflowUtils.FieldChoice.INT && SeedPolicy.isSeed(f.inputName) && n == -1;
             if (f.kind == WorkflowUtils.FieldChoice.INT && SeedPolicy.isSeed(f.inputName) && n < -1)
                 throw new Exception("种子只支持 -1（每次随机）或非负固定数值");

@@ -26,6 +26,9 @@ public final class GenerationManager {
     private static final ExecutorService SUBMITTER = Executors.newSingleThreadExecutor();
     private static final ExecutorService MONITOR_POOL = Executors.newCachedThreadPool();
     private static final Set<String> SUBMITTING = ConcurrentHashMap.newKeySet();
+    private static final Set<String> CHECKING_SUBMISSIONS = ConcurrentHashMap.newKeySet();
+    private static final Map<String,Long> LAST_RECEIPT_CHECK = new ConcurrentHashMap<>();
+    private static final Map<String,Long> LAST_SOCKET_ATTEMPT = new ConcurrentHashMap<>();
     private static final Set<String> MONITORING = ConcurrentHashMap.newKeySet();
     private static final java.util.concurrent.atomic.AtomicBoolean RESUMING = new java.util.concurrent.atomic.AtomicBoolean();
     private static final Set<JobListener> LISTENERS = new CopyOnWriteArraySet<>();
@@ -61,12 +64,17 @@ public final class GenerationManager {
         List<JobRecord> local = new ArrayList<>();
         for (JobRecord job : jobs) {
             if (job.isTerminal()) continue;
+            if((job.promptId==null||job.promptId.isEmpty()) &&
+                    (JobRecord.SUBMISSION_UNKNOWN.equals(job.status)||
+                    (JobRecord.SUBMITTING.equals(job.status)&&!"preparing".equals(job.submissionPhase)))){
+                if(!SUBMITTING.contains(job.localId))checkSubmissionReceipt(app,job.localId);
+                continue;
+            }
             if ((job.promptId == null || job.promptId.isEmpty()) && job.hasSubmissionPayload() &&
                     (JobRecord.LOCAL_QUEUED.equals(job.status) || JobRecord.SUBMITTING.equals(job.status))) {
                 local.add(job);
             } else if (job.promptId != null && !job.promptId.isEmpty()) {
-                if (job.clientId != null && !job.clientId.isEmpty() && !SOCKETS.containsKey(job.promptId))
-                    startProgressSocket(app, job.localId, job.promptId, job.clientId, serverFor(job, fallbackServer));
+                ensureProgressSocket(app,job,serverFor(job,fallbackServer));
                 monitorPrompt(app, serverFor(job, fallbackServer), job.localId, job.promptId);
             }
         }
@@ -77,7 +85,11 @@ public final class GenerationManager {
     private static void submitStoredJob(Context context, String localId) {
         JobRecord job = JobStore.find(context, localId);
         if (job == null || job.isTerminal() || !job.hasSubmissionPayload()) return;
+        if(JobRecord.SUBMISSION_UNKNOWN.equals(job.status)||"attempted".equals(job.submissionPhase)){
+            checkSubmissionReceipt(context,localId);return;
+        }
         String server = serverFor(job, "8188");
+        boolean requestStarted=false;
         try {
             job = JobStore.loadSubmission(context, localId);
             JobStore.markSubmitting(context, localId);
@@ -153,6 +165,10 @@ public final class GenerationManager {
             }
             JSONObject seeds = SeedPolicy.resolve(submittedPrompt, submissionInfo);
             JobStore.freezeSubmission(context, localId, submittedPrompt, seeds);
+            JobStore.markSubmissionAttempted(context,localId,api.getClientId());
+            JobRecord beforePost=JobStore.find(context,localId);
+            if(beforePost==null||beforePost.isTerminal())return;
+            requestStarted=true;
             String promptId = api.queuePrompt(submittedPrompt);
             JobRecord afterSubmit = JobStore.find(context, localId);
             if (afterSubmit == null || afterSubmit.isTerminal()) {
@@ -166,6 +182,13 @@ public final class GenerationManager {
         } catch (Exception e) {
             JobRecord current = JobStore.find(context, localId);
             if (current != null && !current.isTerminal()) {
+                boolean rejected=e instanceof ComfyApiClient.HttpFailure &&
+                        ((ComfyApiClient.HttpFailure)e).code>=400&&((ComfyApiClient.HttpFailure)e).code<500&&
+                        ((ComfyApiClient.HttpFailure)e).code!=408;
+                if(requestStarted&&!rejected){
+                    update(context,localId,JobRecord.SUBMISSION_UNKNOWN,"提交回执未确认，请核对服务器状态；本任务不会自动重发",-1);
+                    checkSubmissionReceipt(context,localId);return;
+                }
                 String error = "提交失败：" + safeMessage(e);
                 JobStore.saveErrorDetails(context, localId, error);
                 update(context, localId, JobRecord.FAILED,
@@ -174,8 +197,41 @@ public final class GenerationManager {
         }
     }
 
+    public static void checkSubmissionReceipt(Context context,String localId){
+        if(!CHECKING_SUBMISSIONS.add(localId))return;
+        Context app=context.getApplicationContext();
+        SUBMITTER.execute(()->{
+            try{
+                JobRecord job=JobStore.find(app,localId);if(job==null||job.isTerminal()||!safe(job.promptId).isEmpty())return;
+                long now=android.os.SystemClock.elapsedRealtime();Long previous=LAST_RECEIPT_CHECK.get(localId);
+                if(previous!=null&&now-previous<60000)return;
+                LAST_RECEIPT_CHECK.put(localId,now);
+                update(app,localId,JobRecord.SUBMISSION_UNKNOWN,"正在核对服务器回执；不会自动重发",-1);
+                String id=new ComfyApiClient(serverFor(job,"8188")).findSubmissionReceipt(job.clientId);
+                JobRecord latest=JobStore.find(app,localId);if(latest==null||latest.isTerminal())return;
+                if(!id.isEmpty()){
+                    JobStore.attachPrompt(app,localId,id,job.clientId);notifyListeners(JobStore.find(app,localId));
+                    startProgressSocket(app,localId,id,job.clientId,serverFor(job,"8188"));
+                    monitorPrompt(app,serverFor(job,"8188"),localId,id);LAST_RECEIPT_CHECK.remove(localId);
+                }else update(app,localId,JobRecord.SUBMISSION_UNKNOWN,"未找到回执。请在电脑确认任务；核对范围为队列与最近 5 个历史任务，不会自动重发",-1);
+            }catch(Exception error){update(app,localId,JobRecord.SUBMISSION_UNKNOWN,"回执核对暂不可用；不会自动重发。稍后可再次核对",-1);}
+            finally{CHECKING_SUBMISSIONS.remove(localId);}
+        });
+    }
+
+    private static void ensureProgressSocket(Context context,JobRecord job,String server){
+        if(safe(job.clientId).isEmpty())return;
+        synchronized(SOCKETS){
+            ComfyProgressSocket.Handle handle=SOCKETS.get(job.promptId);
+            long now=android.os.SystemClock.elapsedRealtime();Long last=LAST_SOCKET_ATTEMPT.get(job.promptId);
+            if((handle==null||!handle.isActive())&&(last==null||now-last>=30000))
+                startProgressSocket(context,job.localId,job.promptId,job.clientId,server);
+        }
+    }
+
     private static void startProgressSocket(Context context, String localId, String promptId, String clientId, String server) {
         closeSocket(promptId);
+        LAST_SOCKET_ATTEMPT.put(promptId,android.os.SystemClock.elapsedRealtime());
         try {
             ComfyProgressSocket.Handle handle = ComfyProgressSocket.connect(server, clientId, new ComfyProgressSocket.Listener() {
                 private long lastProgressAt;
@@ -257,6 +313,7 @@ public final class GenerationManager {
             catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
             JobRecord current = JobStore.find(context, localId);
             if (current == null || current.isTerminal()) return;
+            ensureProgressSocket(context,current,server);
 
             try {
                 JSONObject history = null;
@@ -449,6 +506,11 @@ public final class GenerationManager {
         if (job == null) return;
         Context app = context.getApplicationContext();
         if (job.promptId == null || job.promptId.isEmpty()) {
+            JobRecord current=JobStore.find(app,job.localId);
+            if(current!=null&&("attempted".equals(current.submissionPhase)||JobRecord.SUBMISSION_UNKNOWN.equals(current.status))){
+                update(app,job.localId,JobRecord.SUBMISSION_UNKNOWN,"请求已发出，请先核对服务器回执再取消",-1);
+                checkSubmissionReceipt(app,job.localId);return;
+            }
             update(app, job.localId, JobRecord.CANCELLED, "已取消本地等待提交任务", -1);
             return;
         }

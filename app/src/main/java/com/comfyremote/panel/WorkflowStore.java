@@ -55,7 +55,8 @@ public final class WorkflowStore {
                             }
                         }
                         out.add(profile);
-                    } catch (Exception ignored) {}
+                    } catch (IllegalStateException error) { throw error; }
+                    catch (Exception error) { android.util.Log.w("WorkflowStore","无法读取工作流，原文件已保留",error); }
                 }
             }
 
@@ -78,28 +79,21 @@ public final class WorkflowStore {
     public static List<WorkflowProfile> loadSummaries(Context context) {
         synchronized (LOCK) {
             File directory = dir(context);
-            List<WorkflowProfile> summaries = new ArrayList<>();
-            File[] files = directory.listFiles((d, name) -> name.endsWith(".json"));
-            if (files != null) {
-                for (File file : files) {
-                    WorkflowProfile summary = readSummary(file);
-                    if (summary != null) summaries.add(summary);
-                }
-            }
+            List<WorkflowProfile> summaries = WorkflowMetadataIndex.load(directory, WorkflowStore::readSummary);
             // Preserve the legacy import path on a fresh installation.
             if (summaries.isEmpty() &&
                     !context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                             .getBoolean(KEY_MIGRATED, false)) {
                 load(context);
-                files = directory.listFiles((d, name) -> name.endsWith(".json"));
-                if (files != null) for (File file : files) {
-                    WorkflowProfile summary = readSummary(file);
-                    if (summary != null) summaries.add(summary);
-                }
+                summaries = WorkflowMetadataIndex.load(directory, WorkflowStore::readSummary);
             }
             sort(summaries);
             return summaries;
         }
+    }
+
+    static boolean isSummaryIndexReady(Context context) {
+        synchronized (LOCK) { return WorkflowMetadataIndex.ready(dir(context)); }
     }
 
     private static WorkflowProfile readSummary(File file) {
@@ -198,12 +192,13 @@ public final class WorkflowStore {
             for (WorkflowProfile profile : profiles) {
                 WorkflowProfile full = ensureFull(dir, profile);
                 keep.add(full.id + ".json");
-                writeProfile(dir, full);
+                writeProfile(dir, full, false);
             }
             File[] existing = dir.listFiles((d, name) -> name.endsWith(".json"));
             if (existing != null) {
-                for (File f : existing) if (!keep.contains(f.getName())) f.delete();
+                for (File f : existing) if (!keep.contains(f.getName())&&!f.delete())throw new IllegalStateException("工作流删除失败: "+f.getName());
             }
+            WorkflowMetadataIndex.load(dir, WorkflowStore::readSummary);
         }
     }
 
@@ -218,10 +213,14 @@ public final class WorkflowStore {
 
     public static void delete(Context context, String id) {
         synchronized (LOCK) {
-            if (id != null && !id.isEmpty()) new File(dir(context), id + ".json").delete();
+            if (id != null && !id.isEmpty()) {
+                File file=new File(dir(context), id + ".json");
+                if(file.exists()&&!file.delete())throw new IllegalStateException("工作流文件无法删除，原记录已保留");
+                WorkflowMetadataIndex.remove(dir(context), file.getName());
+            }
             String active = getActiveId(context);
             if (id != null && id.equals(active)) {
-                List<WorkflowProfile> remain = load(context);
+                List<WorkflowProfile> remain = loadSummaries(context);
                 setActiveId(context, remain.isEmpty() ? "" : remain.get(0).id);
             }
         }
@@ -278,28 +277,35 @@ public final class WorkflowStore {
             writeProfile(dir(context), profile);
             out.add(profile);
             p.edit().putString(KEY_ACTIVE, profile.id).apply();
-        } catch (Exception ignored) {}
+        } catch (Exception error) { throw new IllegalStateException("旧版工作流迁移失败，原始数据已保留",error); }
     }
 
     private static File dir(Context context) {
         File d = new File(context.getFilesDir(), DIR_NAME);
-        if (!d.exists()) d.mkdirs();
+        if (!d.isDirectory() && !d.mkdirs()) throw new IllegalStateException("工作流目录不可写，原数据未改动");
         return d;
     }
 
     private static void writeProfile(File dir, WorkflowProfile profile) {
+        writeProfile(dir, profile, true);
+    }
+
+    private static void writeProfile(File dir, WorkflowProfile profile, boolean persistIndex) {
+        if(profile.id==null||!profile.id.matches("[A-Za-z0-9_-]+"))throw new IllegalArgumentException("工作流标识无效");
         File target = new File(dir, profile.id + ".json");
         File temp = new File(dir, profile.id + ".json.tmp");
         try {
-            Files.write(temp.toPath(), profile.toJson().toString().getBytes(StandardCharsets.UTF_8));
+            try(java.io.Writer writer=Files.newBufferedWriter(temp.toPath(),StandardCharsets.UTF_8)) {
+                writer.write(profile.toJson().toString());
+            }
             try {
                 Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (Exception atomicUnsupported) {
+            } catch (java.nio.file.AtomicMoveNotSupportedException atomicUnsupported) {
                 Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
             }
-        } catch (Exception ignored) {
-            temp.delete();
-        }
+            WorkflowMetadataIndex.record(dir,target,profile,persistIndex);
+        } catch (Exception error) { throw new IllegalStateException("工作流保存失败，原文件已保留",error); }
+        finally { temp.delete(); }
     }
 
     private static boolean containsName(List<WorkflowProfile> profiles, String name, String folderId, String excludeProfileId) {

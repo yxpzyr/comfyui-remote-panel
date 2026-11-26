@@ -44,6 +44,29 @@ public class ComfyApiClient {
     public String getBase() { return base; }
     public String getClientId() { return clientId; }
 
+    public String findSubmissionReceipt(String client) throws Exception {
+        if(client==null||client.isEmpty())return "";
+        String queued=readSubmissionReceipt("/queue",client,false);
+        if(!queued.isEmpty())return queued;
+        return readSubmissionReceipt("/history?max_items=5",client,true);
+    }
+    private String readSubmissionReceipt(String path,String client,boolean history)throws Exception{
+        for(String endpoint:new String[]{path,"/api"+path}){
+            HttpURLConnection connection=(HttpURLConnection)new URL(base+endpoint).openConnection();
+            connection.setConnectTimeout(8000);connection.setReadTimeout(15000);
+            try{
+                int code=connection.getResponseCode();if(code==404)continue;
+                if(code!=200)throw new java.io.IOException("核对回执 HTTP "+code);
+                try(InputStream in=connection.getInputStream()){return SubmissionReceipt.read(in,client,history);}
+            }finally{connection.disconnect();}
+        }return "";
+    }
+
+    static final class HttpFailure extends Exception {
+        final int code;
+        HttpFailure(int code,String detail){super(detail);this.code=code;}
+    }
+
     public static String normalizeBase(String text) {
         String s = text == null ? "" : text.trim();
         if (s.matches("^\\d{2,5}$")) s = "127.0.0.1:" + s;
@@ -939,8 +962,8 @@ public class ComfyApiClient {
             HttpResult r = request("POST", p, data, "application/json; charset=utf-8", connect, read);
             if (r.code >= 200 && r.code < 300) return r;
             if (r.code != 404 && r.code != 405)
-                throw new Exception("HTTP " + r.code + " " + p + ": " + describePromptError(r.text()));
-            last = new Exception("HTTP " + r.code + " " + p);
+                throw new HttpFailure(r.code,"HTTP " + r.code + " " + p + ": " + describePromptError(r.text()));
+            last = new HttpFailure(r.code,"HTTP " + r.code + " " + p);
         }
         throw last == null ? new Exception("请求失败") : last;
     }
@@ -1014,6 +1037,7 @@ public class ComfyApiClient {
             con.setRequestProperty("Accept", "*/*");
             if (body != null) {
                 con.setDoOutput(true);
+                con.setFixedLengthStreamingMode(body.length);
                 if (contentType != null) con.setRequestProperty("Content-Type", contentType);
                 try (OutputStream out = con.getOutputStream()) { out.write(body); }
             }

@@ -20,16 +20,16 @@ public final class ComfyProgressSocket {
         default void onDirectorProgress(String promptId, String node, int percent, String message) {}
     }
 
-    public interface Handle { void close(); default boolean isOpen() { return false; } }
+    public interface Handle { void close(); default boolean isOpen() { return false; } default boolean isActive(){return isOpen();} }
 
     private ComfyProgressSocket() {}
 
-    public static Handle connect(String server, String clientId, Listener listener) {
-        OkHttpClient client = new OkHttpClient.Builder()
+    private static final OkHttpClient CLIENT = new OkHttpClient.Builder()
                 .connectTimeout(8, TimeUnit.SECONDS)
                 .readTimeout(0, TimeUnit.MILLISECONDS)
                 .pingInterval(25, TimeUnit.SECONDS)
                 .build();
+    public static Handle connect(String server, String clientId, Listener listener) {
         String base = ComfyApiClient.normalizeBase(server);
         String ws = base.startsWith("https://") ? "wss://" + base.substring(8) : "ws://" + base.substring(7);
         String encodedClient;
@@ -38,9 +38,11 @@ public final class ComfyProgressSocket {
         String url = ws + "/ws?clientId=" + encodedClient;
         Request request = new Request.Builder().url(url).build();
         java.util.concurrent.atomic.AtomicBoolean connected = new java.util.concurrent.atomic.AtomicBoolean();
-        WebSocket socket = client.newWebSocket(request, new WebSocketListener() {
+        java.util.concurrent.atomic.AtomicBoolean active = new java.util.concurrent.atomic.AtomicBoolean(true);
+        WebSocket socket = CLIENT.newWebSocket(request, new WebSocketListener() {
             @Override public void onOpen(WebSocket webSocket, Response response) { connected.set(true); }
-            @Override public void onClosed(WebSocket webSocket, int code, String reason) { connected.set(false); }
+            @Override public void onClosed(WebSocket webSocket, int code, String reason) { connected.set(false);active.set(false); }
+            @Override public void onClosing(WebSocket webSocket,int code,String reason){connected.set(false);active.set(false);webSocket.close(code,reason);}
             @Override public void onMessage(WebSocket webSocket, String text) {
                 try {
                     JSONObject root = new JSONObject(text);
@@ -70,16 +72,17 @@ public final class ComfyProgressSocket {
 
             @Override public void onFailure(WebSocket webSocket, Throwable t, Response response) {
                 connected.set(false);
+                active.set(false);
                 // Polling remains the fallback source of truth; no user-facing failure needed here.
             }
         });
         return new Handle() {
           @Override public boolean isOpen() { return connected.get(); }
+          @Override public boolean isActive(){return active.get();}
           @Override public void close() {
             connected.set(false);
-            try { socket.close(1000, "done"); } catch (Exception ignored) {}
-            try { client.dispatcher().executorService().shutdown(); } catch (Exception ignored) {}
-            try { client.connectionPool().evictAll(); } catch (Exception ignored) {}
+            active.set(false);
+            socket.cancel();
           }
         };
     }

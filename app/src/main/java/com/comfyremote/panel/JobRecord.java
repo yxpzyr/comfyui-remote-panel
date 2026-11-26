@@ -12,6 +12,7 @@ import java.util.UUID;
 public final class JobRecord {
     public static final String LOCAL_QUEUED = "LOCAL_QUEUED";
     public static final String SUBMITTING = "SUBMITTING";
+    public static final String SUBMISSION_UNKNOWN = "SUBMISSION_UNKNOWN";
     public static final String UPLOADING = "UPLOADING"; // kept for migration / older records
     public static final String QUEUED = "QUEUED";
     public static final String RUNNING = "RUNNING";
@@ -23,6 +24,7 @@ public final class JobRecord {
     public String localId;
     public String promptId;
     public String clientId = "";
+    public String submissionPhase = "";
     public String textOutputsJson = "[]";
     public String resolvedSeedsJson = "{}";
     public boolean textResultSaved;
@@ -129,6 +131,7 @@ public final class JobRecord {
             o.put("local_id", localId);
             o.put("prompt_id", promptId);
             o.put("client_id", clientId);
+            o.put("submission_phase", submissionPhase);
             o.put("text_outputs_json", textOutputsJson);
             o.put("text_result_saved", hasTextOutput());
             o.put("resolved_seeds_json", resolvedSeedsJson);
@@ -162,6 +165,7 @@ public final class JobRecord {
         j.localId = o.optString("local_id", UUID.randomUUID().toString());
         j.promptId = o.optString("prompt_id", "");
         j.clientId = o.optString("client_id", "");
+        j.submissionPhase = o.optString("submission_phase", "");
         j.textOutputsJson = o.optString("text_outputs_json", "[]");
         j.textResultSaved = o.optBoolean("text_result_saved", false);
         j.resolvedSeedsJson = o.optString("resolved_seeds_json", "{}");
