@@ -107,7 +107,7 @@ public class V3OptimizationNativeTest {
             return new JSONObject(out.toString("UTF-8"));
         }
     }
-    @Test public void oldCollectionOpensAsOneWorkflowAndKeepsItsSavedSeed()throws Exception{
+    @Test public void explicitOldCollectionReviewKeepsItsSavedSeed()throws Exception{
         String previous=WorkflowStore.getActiveId(app()),previousServer=app().getSharedPreferences("comfy_remote",0).getString("server","8188");
         JSONObject schema=fixture("schema");
         try(MockWebServer server=new MockWebServer()){
@@ -121,6 +121,10 @@ public class V3OptimizationNativeTest {
             WorkflowStore.upsert(app(),p);WorkflowStore.setActiveId(app(),p.id);
             MainActivity activity=(MainActivity)inst().startActivitySync(new Intent(app(),MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             try{
+                inst().runOnMainSync(()->{try{
+                    WorkflowProfile local=(WorkflowProfile)field(activity,"activeProfile");assertNotNull(local);assertTrue(local.isCollection());
+                    java.lang.reflect.Method review=MainActivity.class.getDeclaredMethod("reviewCurrentCollection");review.setAccessible(true);review.invoke(activity);
+                }catch(Exception e){throw new RuntimeException(e);}});
                 AtomicBoolean complete=new AtomicBoolean();long deadline=SystemClock.elapsedRealtime()+15000;
                 while(!complete.get()&&SystemClock.elapsedRealtime()<deadline){inst().runOnMainSync(()->{try{
                     WorkflowProfile active=(WorkflowProfile)field(activity,"activeProfile");complete.set(active!=null&&active.id.equals(p.id)&&!active.isCollection());

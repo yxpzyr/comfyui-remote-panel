@@ -1,3 +1,7 @@
+# ComfyUI 远程面板 3.0beta1
+
+修复 3.0beta 旧工作流切换依赖联网复查的回归，versionCode 41。详见 [CHANGELOG_3.0beta1.md](CHANGELOG_3.0beta1.md)。
+
 # ComfyUI 远程面板 3.0beta
 
 当前版本基于 2.8.14，versionCode 40。重点优化工作流大库加载、可见列表渲染、折叠参数、队列断网恢复与保存可靠性；保留 H3 手机导演台、随机种子、文本结果和图片/视频功能。详细变更见 [CHANGELOG_3.0beta.md](CHANGELOG_3.0beta.md)。

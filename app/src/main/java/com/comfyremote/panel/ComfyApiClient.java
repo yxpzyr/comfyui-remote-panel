@@ -84,7 +84,14 @@ public class ComfyApiClient {
                 last = new Exception("HTTP " + r.code + " " + path);
             } catch (Exception e) { last = e; }
         }
-        throw new Exception("无法连接 ComfyUI：" + (last == null ? "未知错误" : last.getMessage()));
+        String cause=last==null?"未知错误":String.valueOf(last.getMessage());
+        String detail=cause;
+        if(cause.contains("unexpected end of stream"))detail="连接被提前关闭；请检查电脑端 ComfyUI 是否仍在监听，以及 Tailscale / 端口转发是否可用";
+        else if(last instanceof java.net.ConnectException)detail="目标拒绝连接；请检查电脑端服务和转发目标端口";
+        String target;
+        try{URL url=new URL(base);target=url.getProtocol()+"://"+url.getHost()+(url.getPort()<0?"":":"+url.getPort());}
+        catch(Exception invalid){target="当前地址";}
+        throw new Exception("无法连接 ComfyUI（"+target+"）："+detail,last);
     }
 
     public UploadResult uploadImage(Context context, Uri uri) throws Exception {

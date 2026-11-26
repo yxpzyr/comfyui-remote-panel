@@ -77,7 +77,10 @@ public class MainActivity extends Activity {
     private boolean variantSwitching = false;
     private volatile boolean workflowImporting = false;
     private boolean refreshWorkflowsOnResume = false;
-    private int libraryLoadGeneration;
+    private volatile int libraryLoadGeneration;
+    private boolean workflowLoading;
+    private int connectionRequestGeneration;
+    private final ExecutorService workflowPool=Executors.newSingleThreadExecutor();
 
     private final List<ImageBinding> imageBindings = new ArrayList<>();
     private final List<FieldBinding> fieldBindings = new ArrayList<>();
@@ -137,8 +140,7 @@ public class MainActivity extends Activity {
             profiles=WorkflowStore.loadSummaries(this);
             WorkflowProfile selected=WorkflowStore.find(profiles,WorkflowStore.getActiveId(this));
             if(selected==null&&!profiles.isEmpty())selected=profiles.get(0);
-            if(selected!=null&&selected.collectionReviewNeeded)warmLibrary=false;
-            else{resolveActiveProfile();restoreUiSession(savedInstanceState);}
+            resolveActiveProfile();restoreUiSession(savedInstanceState);
         }
         buildUi();
         rebuildWorkflowStrip();
@@ -185,7 +187,7 @@ public class MainActivity extends Activity {
         screenVisible = false;
         libraryLoadGeneration++;
         outputLoadGeneration++;
-        pool.shutdown(); batchPool.shutdown();
+        workflowPool.shutdownNow();pool.shutdown(); batchPool.shutdown();
         super.onDestroy();
     }
 
@@ -237,7 +239,7 @@ public class MainActivity extends Activity {
         titleRow.addView(appearanceBtn, new LinearLayout.LayoutParams(dp(96), dp(44)));
         root.addView(titleRow);
         appearanceBtn.setOnClickListener(v -> showAppearanceMenu());
-        TextView subtitle = text("3.0beta · 工作流与媒体性能优化", 13, false);
+        TextView subtitle = text("3.0beta1 · 本地切换与连接修复", 13, false);
         subtitle.setTextColor(ThemeManager.secondary(this));
         subtitle.setPadding(0, dp(4), 0, dp(12));
         root.addView(subtitle);
@@ -436,7 +438,8 @@ public class MainActivity extends Activity {
         final String beforeVariant=beforeLoad==null?"":safe(beforeLoad.activeVariantId);
         final long beforeUpdated=beforeLoad==null?0:beforeLoad.updatedAt;
         if(profiles.isEmpty())workflowState.setText("正在读取工作流…");
-        pool.execute(()->{
+        workflowLoading=true;refreshSubmitEnabled();
+        workflowPool.execute(()->{
             try{
                 List<WorkflowFolder> nextFolders=WorkflowFolderStore.load(this);
                 List<WorkflowProfile> nextProfiles=WorkflowStore.loadSummaries(this);
@@ -444,21 +447,23 @@ public class MainActivity extends Activity {
                 if(summary==null&&!nextProfiles.isEmpty())summary=nextProfiles.get(0);
                 final WorkflowProfile next=loadFullProfileOrNull(summary);
                 runOnUiThread(()->{
-                    if(isDestroyed()||request!=libraryLoadGeneration||!expected.equals(WorkflowStore.getActiveId(this)))return;
-                    if(activeProfile!=beforeLoad || (activeProfile!=null&&
+                    if(isDestroyed()||request!=libraryLoadGeneration)return;
+                    workflowLoading=false;refreshSubmitEnabled();
+                    if(!expected.equals(WorkflowStore.getActiveId(this)))return;
+                    if(activeProfile!=beforeLoad || (activeProfile!=null&&activeProfile.id.equals(expected)&&
                             (!beforeVariant.equals(safe(activeProfile.activeVariantId))||beforeUpdated!=activeProfile.updatedAt)))return;
                     String previous=activeProfile==null?"":activeProfile.id;
                     profiles=nextProfiles;workflowFolders=nextFolders;activeProfile=next;normalizeFolderFilter();
-                    if(next!=null){WorkflowStore.setActiveId(this,next.id);WorkflowProfile row=WorkflowStore.find(profiles,next.id);if(row!=null)row.collectionReviewNeeded=false;}
+                    if(next!=null)WorkflowStore.setActiveId(this,next.id);
                     if(!previous.equals(next==null?"":next.id)){
                         transientParameterValues.clear();expandedParameterNodes.clear();parameterObjectInfo=null;parameterMetadataProfileId="";
                     }
                     if(saved!=null)restoreUiSession(saved);
                     rebuildWorkflowStrip();rebuildDynamicControls();applyAdvancedVisibility();
-                    if(next==null&&!profiles.isEmpty())statusText.setText("状态：当前工作流检查未完成，请连接 ComfyUI 后从工作流库重新选择；原文件已保留");
+                    if(next==null&&!profiles.isEmpty())statusText.setText("状态：本地工作流读取失败，原文件已保留，请重新选择");
                     if(saved!=null)mainScroll.post(()->mainScroll.scrollTo(0,restoredScrollY));
                 });
-            }catch(Exception error){runOnUiThread(()->{if(!isDestroyed()&&request==libraryLoadGeneration)showError("读取工作流失败",error);});}
+            }catch(Exception error){runOnUiThread(()->{if(!isDestroyed()&&request==libraryLoadGeneration){workflowLoading=false;refreshSubmitEnabled();showError("读取工作流失败",error);}});}
         });
     }
 
@@ -476,9 +481,8 @@ public class MainActivity extends Activity {
     private WorkflowProfile loadFullProfileOrNull(WorkflowProfile profile) {
         if (profile == null) return null;
         try {
-            WorkflowProfile full = profile.metadataOnly ? WorkflowStore.open(this, profile.id,currentServer()) : profile;
-            if (WorkflowVariants.discoverNewVariants(full)) WorkflowStore.upsert(this, full);
-            return full;
+            // Local selection never recompiles, discovers variants, or contacts the server.
+            return profile.metadataOnly ? WorkflowStore.loadById(this,profile.id) : profile;
         } catch (Exception e) {
             android.util.Log.e("MainActivity", "无法加载所选工作流 " + profile.id, e);
             return null;
@@ -875,38 +879,30 @@ public class MainActivity extends Activity {
     }
 
     private void switchWorkflow(String profileId) {
-        if (activeProfile != null && activeProfile.id.equals(profileId)) return;
+        if (!workflowLoading && activeProfile != null && activeProfile.id.equals(profileId)) return;
         runAfterParameterChangesHandled(() -> switchWorkflowNow(profileId));
     }
 
     private void switchWorkflowNow(String profileId) {
-        captureSessionInputs();
-        saveOutputSelection();
+        captureSessionInputs();saveOutputSelection();
         WorkflowProfile summary=WorkflowStore.find(profiles,profileId);
+        if(summary==null){toast("找不到本地工作流，请重新打开工作流库");return;}
         final int request=++libraryLoadGeneration;
-        if(summary!=null&&summary.collectionReviewNeeded){
-            variantSwitching=true;refreshSubmitEnabled();statusText.setText("状态：正在核对并修复旧版合集识别，请保持 ComfyUI 可连接…");
-            pool.execute(()->{
-                WorkflowProfile next=loadFullProfileOrNull(summary);
-                runOnUiThread(()->{
-                    if(isDestroyed()||request!=libraryLoadGeneration)return;
-                    variantSwitching=false;
-                    if(next==null){refreshSubmitEnabled();showError("工作流检查未完成",new Exception("请确认 ComfyUI 可连接后重新选择；原工作流文件已保留"));return;}
-                    activateWorkflow(next);
-                });
-            });return;
-        }
-        variantSwitching=false;
-        WorkflowProfile next = loadFullProfileOrNull(WorkflowStore.find(profiles, profileId));
-        if (next == null) {
-            toast("工作流配置读取失败，请检查文件是否完整");
-            return;
-        }
-        activateWorkflow(next);
+        variantSwitching=false;workflowLoading=true;refreshSubmitEnabled();
+        statusText.setText("状态：正在切换到 "+summary.name+"…");
+        workflowPool.execute(()->{
+            if(request!=libraryLoadGeneration)return;
+            WorkflowProfile next=loadFullProfileOrNull(summary);
+            runOnUiThread(()->{
+                if(isDestroyed()||request!=libraryLoadGeneration)return;
+                workflowLoading=false;
+                if(next==null){refreshSubmitEnabled();showError("工作流读取失败",new Exception("本地工作流无法读取，当前工作流未更改；请检查文件是否完整"));return;}
+                activateWorkflow(next);
+            });
+        });
     }
 
     private void activateWorkflow(WorkflowProfile next){
-        WorkflowProfile row=WorkflowStore.find(profiles,next.id);if(row!=null)row.collectionReviewNeeded=false;
         transientParameterValues.clear();
         expandedParameterNodes.clear();
         parameterObjectInfo = null;
@@ -1109,14 +1105,37 @@ public class MainActivity extends Activity {
         String starAction = activeProfile.favorite ? "取消常用置顶" : "★ 设为常用置顶";
         new AlertDialog.Builder(this)
                 .setTitle(activeProfile.name + " · " + folderNameForProfile(activeProfile))
-                .setItems(new String[]{"重命名", "移动到文件夹", starAction, "删除这个工作流"}, (dialog, which) -> {
+                .setItems(new String[]{"重命名", "移动到文件夹", starAction, "删除这个工作流", "检查旧版合集识别（需连接）"}, (dialog, which) -> {
                     if (which == 0) renameCurrentWorkflow();
                     else if (which == 1) showMoveCurrentWorkflowDialog();
                     else if (which == 2) toggleFavorite();
-                    else runAfterParameterChangesHandled(this::deleteCurrentWorkflow);
+                    else if(which==3)runAfterParameterChangesHandled(this::deleteCurrentWorkflow);
+                    else runAfterParameterChangesHandled(this::reviewCurrentCollection);
                 })
                 .setNegativeButton("关闭", null)
                 .show();
+    }
+
+    private void reviewCurrentCollection(){
+        if(activeProfile==null||workflowLoading||variantSwitching)return;
+        if(!activeProfile.isCollection()||activeProfile.collectionDetectionVersion==WorkflowVariants.DETECTION_VERSION){toast("当前没有待检查的旧版合集");return;}
+        final String id=activeProfile.id,server=currentServer();final int request=++libraryLoadGeneration;
+        variantSwitching=true;refreshSubmitEnabled();statusText.setText("状态：正在检查旧版合集识别…");
+        pool.execute(()->{
+            try{
+                new ComfyApiClient(server).testConnection();
+                WorkflowProfile reviewed=WorkflowStore.open(this,id,server);
+                runOnUiThread(()->{
+                    if(isDestroyed()||request!=libraryLoadGeneration)return;
+                    variantSwitching=false;activateWorkflow(reviewed);
+                    statusText.setText(reviewed.isCollection()?"状态：检查完成，保留独立合集功能":"状态：检查完成，已恢复为完整工作流");
+                });
+            }catch(Exception error){runOnUiThread(()->{
+                if(isDestroyed()||request!=libraryLoadGeneration)return;
+                variantSwitching=false;refreshSubmitEnabled();statusText.setText("状态：检查未完成，继续使用本地已保存工作流");
+                showError("合集检查未完成",error);
+            });}
+        });
     }
 
     private void showMoveCurrentWorkflowDialog() {
@@ -1556,8 +1575,9 @@ public class MainActivity extends Activity {
 
     private void refreshSubmitEnabled() {
         if (submitButton == null) return;
+        if(variantButton!=null)variantButton.setEnabled(!variantSwitching&&!workflowLoading);
         submitButton.setText(textWorkflowMode ? "▶ 生成提示词" : "▶ 生成当前图");
-        boolean ready = activeProfile != null && !variantSwitching;
+        boolean ready = activeProfile != null && !variantSwitching && !workflowLoading;
         if (ready) {
             for (ImageBinding b : imageBindings) {
                 if (b.replaceSwitch != null && b.replaceSwitch.isChecked()) {
@@ -2166,7 +2186,7 @@ public class MainActivity extends Activity {
         if (activeProfile == null || outputNodeBindings.isEmpty()) return;
         Set<String> selected = new LinkedHashSet<>();
         for (OutputNodeBinding b : outputNodeBindings) if (b.switchView != null && b.switchView.isChecked()) selected.add(b.choice.id);
-        if (selected.isEmpty()) return;
+        if (selected.isEmpty()||selected.equals(activeProfile.selectedOutputNodeIds())) return;
         activeProfile.setSelectedOutputNodeIds(selected);
         WorkflowStore.upsert(this, activeProfile);
     }
@@ -2869,18 +2889,21 @@ public class MainActivity extends Activity {
 
     private void testConnection() {
         saveAddress();
+        final String server=currentServer();final int request=++connectionRequestGeneration;
         connectionState.setText("● 正在检测…");
         connectionState.setTextColor(ThemeManager.warning(this));
         pool.submit(() -> {
             try {
-                new ComfyApiClient(currentServer()).testConnection();
+                new ComfyApiClient(server).testConnection();
                 runOnUiThread(() -> {
-                    connectionState.setText("● 已连接  " + ComfyApiClient.normalizeBase(currentServer()));
+                    if(isDestroyed()||request!=connectionRequestGeneration||!server.equals(currentServer()))return;
+                    connectionState.setText("● 已连接  " + ComfyApiClient.normalizeBase(server));
                     connectionState.setTextColor(ThemeManager.success(this));
                     toast("ComfyUI 连接成功");
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
+                    if(isDestroyed()||request!=connectionRequestGeneration||!server.equals(currentServer()))return;
                     connectionState.setText("● 连接失败");
                     connectionState.setTextColor(ThemeManager.error(this));
                     showError("连接失败", e);
